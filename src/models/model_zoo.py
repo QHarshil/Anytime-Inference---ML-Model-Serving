@@ -184,6 +184,23 @@ class ModelZoo:
         self._cache[key] = (model, transform)
         return LoadedImageModel(model=model, transform=transform)
 
+    def load_model(
+        self,
+        task: str,
+        model_name: str,
+        variant: str,
+        device: str,
+    ):
+        """Convenience loader that returns the model and its tokenizer/transform for ``task``."""
+
+        if task == "text":
+            loaded = self.load_text_model(model_name, variant, device)
+            return loaded.model, loaded.tokenizer
+        if task == "vision":
+            loaded = self.load_image_model(model_name, variant, device)
+            return loaded.model, loaded.transform
+        raise ValueError(f"Unknown task: {task}")
+
     def predict_image(
         self,
         model_name: str,

@@ -7,12 +7,12 @@ Deadline-aware configuration selection for ML inference systems.
 This project implements a cascade-based planner that jointly optimizes model variant, quantization, batch size, and device selection to meet latency deadlines while maximizing task accuracy. The system profiles configurations offline and selects optimal settings at runtime based on deadline constraints.
 
 **Key contributions:**
-- Real inference measurements (not simulated)
+- Real inference measurements (per-request latency traces, not synthetic sampling)
 - Cascade evaluation with two-stage inference
 - Statistical rigor (paired tests, effect sizes, confidence intervals)
-- Comprehensive ablation studies (model size, quantization, batch size, device, cascade)
-- Workload sensitivity analysis (steady vs. bursty traffic)
-- Graceful degradation strategies
+- Ablation studies across model size, quantization, and batch size
+- Trace-driven workload sensitivity analysis (steady vs. bursty traffic)
+- Graceful degradation strategies grounded in recorded latencies
 
 ## Quick Start
 
@@ -84,7 +84,7 @@ The pipeline consists of 10 experiments that must be run in order:
 2. **02_profile_accuracy.py** - Profile accuracy for all configurations
 3. **03_run_baselines.py** - Evaluate baseline methods (StaticSmall, StaticLarge, ThroughputAutotuner, INFaaS-style)
 4. **04_run_planner.py** - Evaluate CascadePlanner with different thresholds
-5. **05_ablation.py** - Ablation studies (model size, quantization, batch size, device, cascade)
+5. **05_ablation.py** - Ablation studies (model size, quantization, batch size)
 6. **06_statistical_tests.py** - Statistical significance testing
 7. **07_pareto_analysis.py** - Pareto frontier analysis and dominance comparisons
 8. **08_workload.py** - Workload sensitivity analysis
@@ -96,14 +96,14 @@ The pipeline consists of 10 experiments that must be run in order:
 Results are saved to `results/` directory:
 
 **CSV files:**
-- `latency_profile.csv` - Latency measurements for all configurations
-- `accuracy_profile.csv` - Accuracy measurements for all configurations
+- `latency_profiles.csv` - Latency measurements for all configurations
+- `accuracy_profiles.csv` - Accuracy measurements for all configurations
 - `baseline_results.csv` - Baseline method evaluations
 - `planner_results.csv` - Planner evaluations
 - `ablation_results.csv` - Ablation study results
 - `statistical_tests.csv` - Statistical test results
 - `pareto_analysis.csv` - Pareto analysis results
-- `workload_sensitivity.csv` - Workload sensitivity results
+- `workload_sensitivity.csv` - Workload sensitivity results (trace-driven)
 - `failure_miss_analysis.csv` - Deadline miss analysis
 - `failure_degradation_strategies.csv` - Graceful degradation strategies
 
@@ -112,7 +112,7 @@ Results are saved to `results/` directory:
 - `02_baseline_comparison.png` - Baseline comparison (hit rate and accuracy)
 - `03_cascade_threshold.png` - Cascade threshold sensitivity
 - `04_ablation_studies.png` - Ablation study results
-- `05_workload_sensitivity.png` - Workload sensitivity
+- `05_workload_sensitivity.png` - Workload sensitivity (steady vs. bursty)
 - `06_statistical_significance.png` - Statistical significance (effect sizes)
 
 ## Expected Results
@@ -224,4 +224,3 @@ MIT License
 ## Contact
 
 For questions or issues, please open a GitHub issue or contact [your-email].
-

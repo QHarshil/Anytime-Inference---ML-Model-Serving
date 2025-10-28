@@ -34,6 +34,7 @@ class InferenceResult:
     
     # Raw measurements (all runs)
     latencies_ms: List[float]
+    latency_samples_ms: List[float]
     accuracies: List[float]
     
     # Statistics
@@ -127,6 +128,7 @@ class RealInferenceEvaluator:
         indices = np.random.choice(len(inputs), min(num_samples, len(inputs)), replace=False)
         
         all_latencies = []
+        all_sample_latencies: List[float] = []
         all_accuracies = []
         
         for run_idx in range(num_runs):
@@ -190,6 +192,7 @@ class RealInferenceEvaluator:
             
             all_latencies.append(np.mean(run_latencies))
             all_accuracies.append(run_accuracy)
+            all_sample_latencies.extend(run_latencies)
         
         # Compute statistics
         result = InferenceResult(
@@ -200,6 +203,7 @@ class RealInferenceEvaluator:
             device=device,
             batch_size=batch_size,
             latencies_ms=all_latencies,
+            latency_samples_ms=all_sample_latencies,
             accuracies=all_accuracies,
             latency_mean=float(np.mean(all_latencies)),
             latency_std=float(np.std(all_latencies)),
@@ -220,6 +224,7 @@ class RealInferenceEvaluator:
             'device': result.device,
             'batch_size': result.batch_size,
             'latencies_ms': result.latencies_ms,
+            'latency_samples_ms': result.latency_samples_ms,
             'accuracies': result.accuracies,
             'latency_mean': result.latency_mean,
             'latency_std': result.latency_std,
@@ -315,6 +320,7 @@ class CascadeInferenceEvaluator:
         indices = np.random.choice(len(inputs), min(num_samples, len(inputs)), replace=False)
         
         all_latencies = []
+        all_latency_samples = []
         all_stage1_latencies = []
         all_stage2_latencies = []
         all_coverages = []
@@ -401,9 +407,11 @@ class CascadeInferenceEvaluator:
             
             all_latencies.append(np.mean(run_latencies))
             all_stage1_latencies.append(np.mean(run_stage1_latencies))
-            all_stage2_latencies.append(np.mean([l for l in run_stage2_latencies if l > 0]))
+            stage2_positive = [l for l in run_stage2_latencies if l > 0]
+            all_stage2_latencies.append(np.mean(stage2_positive) if stage2_positive else 0.0)
             all_coverages.append(run_coverage)
             all_accuracies.append(run_accuracy)
+            all_latency_samples.extend(run_latencies)
         
         # Aggregate statistics
         result = {
@@ -412,6 +420,7 @@ class CascadeInferenceEvaluator:
             'threshold': threshold,
             'device': device,
             'latencies_ms': all_latencies,
+            'latency_samples_ms': all_latency_samples,
             'stage1_latencies_ms': all_stage1_latencies,
             'stage2_latencies_ms': all_stage2_latencies,
             'coverages': all_coverages,
@@ -433,4 +442,3 @@ class CascadeInferenceEvaluator:
         self._save_cache()
         
         return result
-
