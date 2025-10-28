@@ -38,6 +38,8 @@ env/
 # Data
 data/cifar-10-batches-py/
 data/sst2/
+data/mnist/
+data/cifar10/
 *.pt
 *.pth
 *.ckpt

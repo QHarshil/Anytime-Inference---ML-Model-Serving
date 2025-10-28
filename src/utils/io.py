@@ -52,6 +52,11 @@ def load_json(path: Path) -> Any:
     return data
 
 
+def save_csv(df: pd.DataFrame, path: Path, index: bool = False) -> None:
+    """Save a DataFrame to CSV file (alias for write_dataframe)."""
+    write_dataframe(df, path, index=index)
+
+
 def list_files(directory: Path, pattern: str = "*.csv") -> list[Path]:
     """Return a sorted list of files under ``directory`` matching ``pattern``."""
 

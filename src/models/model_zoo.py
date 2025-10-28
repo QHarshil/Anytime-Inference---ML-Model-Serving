@@ -27,8 +27,8 @@ class ModelZoo:
     """Unified loader for text and image models with basic quantisation."""
 
     TEXT_MODELS: Dict[str, str] = {
-        "distilbert": "distilbert-base-uncased",
-        "minilm": "microsoft/MiniLM-L12-H384-uncased",
+        "distilbert": "distilbert-base-uncased-finetuned-sst-2-english",
+        "minilm": "philschmid/MiniLM-L6-H384-uncased-sst2",
     }
 
     IMAGE_MODELS: Dict[str, str] = {
@@ -88,7 +88,7 @@ class ModelZoo:
         hf_name = self.TEXT_MODELS[model_name]
 
         LOGGER.info("Loading text model %s (%s) on %s", hf_name, variant, device)
-        model = AutoModelForSequenceClassification.from_pretrained(hf_name, num_labels=2)
+        model = AutoModelForSequenceClassification.from_pretrained(hf_name)
         tokenizer = AutoTokenizer.from_pretrained(hf_name)
 
         if variant == "fp16" and device == "cuda":
