@@ -151,7 +151,8 @@ def evaluate_baseline(
     model, tokenizer_or_transform = model_zoo.load_model(
         task=task,
         model_name=config['model'],
-        variant=config['variant']
+        variant=config['variant'],
+        device=config['device']
     )
     
     # Run real inference
@@ -168,14 +169,21 @@ def evaluate_baseline(
         use_cache=True
     )
     
-    # Deadline hit rate
-    deadline_hit_rate = 1.0 if result.latency_p95 < deadline_ms else 0.0
+    sample_latencies = np.array(result.latency_samples_ms, dtype=float)
+    if sample_latencies.size > 0:
+        deadline_hit_rate = float(np.mean(sample_latencies <= deadline_ms))
+    else:
+        deadline_hit_rate = 1.0 if result.latency_p95 < deadline_ms else 0.0
     
     return {
         'method': method_name,
         'task': task,
         'deadline_ms': deadline_ms,
         'seed': seed,
+        'model': config['model'],
+        'variant': config['variant'],
+        'device': config['device'],
+        'batch_size': config['batch_size'],
         'config_selected': f"{config['model']}_{config['variant']}_{config['device']}_b{config['batch_size']}",
         'deadline_hit_rate': deadline_hit_rate,
         'accuracy': result.accuracy_mean,
@@ -283,4 +291,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

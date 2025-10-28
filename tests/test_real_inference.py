@@ -26,6 +26,15 @@ class TestRealInferenceEvaluator(unittest.TestCase):
     def test_inference_result_structure(self):
         """Test InferenceResult dataclass structure."""
         result = InferenceResult(
+            config_id="text_distilbert_fp32_cpu_b1_seed42",
+            task="text",
+            model="distilbert",
+            variant="fp32",
+            device="cpu",
+            batch_size=1,
+            latencies_ms=[100.0, 102.0],
+            latency_samples_ms=[98.0, 101.0, 102.0],
+            accuracies=[0.84, 0.86],
             latency_mean=100.0,
             latency_std=10.0,
             latency_p50=95.0,
@@ -50,9 +59,9 @@ class TestRealInferenceEvaluator(unittest.TestCase):
             'batch_size': 1
         }
         
-        key1 = self.evaluator._make_cache_key(config, 'text', 42, 5, 100)
-        key2 = self.evaluator._make_cache_key(config, 'text', 42, 5, 100)
-        key3 = self.evaluator._make_cache_key(config, 'text', 43, 5, 100)
+        key1 = self.evaluator._get_cache_key(config, 'text', 42)
+        key2 = self.evaluator._get_cache_key(config, 'text', 42)
+        key3 = self.evaluator._get_cache_key(config, 'text', 43)
         
         self.assertEqual(key1, key2)
         self.assertNotEqual(key1, key3)
@@ -115,4 +124,3 @@ class TestStatisticalProperties(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

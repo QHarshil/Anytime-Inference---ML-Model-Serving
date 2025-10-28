@@ -54,13 +54,15 @@ def select_cascade_models(latency_df: pd.DataFrame, accuracy_df: pd.DataFrame, t
     small_config = {
         'model': small['model'],
         'variant': small['variant'],
-        'device': small['device']
+        'device': small['device'],
+        'batch_size': int(small['batch_size'])
     }
-    
+
     large_config = {
         'model': large['model'],
         'variant': large['variant'],
-        'device': large['device']
+        'device': large['device'],
+        'batch_size': int(large.get('batch_size', 1))
     }
     
     return small_config, large_config
@@ -87,13 +89,15 @@ def evaluate_cascade(
     small_model, tokenizer_or_transform = model_zoo.load_model(
         task=task,
         model_name=small_config['model'],
-        variant=small_config['variant']
+        variant=small_config['variant'],
+        device=small_config['device']
     )
-    
+
     large_model, _ = model_zoo.load_model(
         task=task,
         model_name=large_config['model'],
-        variant=large_config['variant']
+        variant=large_config['variant'],
+        device=large_config['device']
     )
     
     # Run real cascade inference
@@ -121,7 +125,11 @@ def evaluate_cascade(
         'threshold': threshold,
         'seed': seed,
         'small_model': small_config['model'],
+        'small_variant': small_config['variant'],
+        'small_device': small_config['device'],
         'large_model': large_config['model'],
+        'large_variant': large_config['variant'],
+        'large_device': large_config['device'],
         'deadline_hit_rate': deadline_hit_rate,
         'accuracy': result['accuracy_mean'],
         'accuracy_std': result['accuracy_std'],
@@ -132,7 +140,9 @@ def evaluate_cascade(
         'lat_std_ms': result['latency_std'],
         'stage1_lat_mean_ms': result['latency_mean'],  # Approximation
         'num_runs': result['num_runs'],
-        'num_samples': result['num_samples_per_run']
+        'num_samples': result['num_samples_per_run'],
+        'cache_key': result['cache_key'],
+        'latency_samples_count': len(result['latency_samples_ms'])
     }
 
 
@@ -228,4 +238,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

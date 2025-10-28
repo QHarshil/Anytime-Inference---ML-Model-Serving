@@ -61,3 +61,8 @@ def list_files(directory: Path, pattern: str = "*.csv") -> list[Path]:
     """Return a sorted list of files under ``directory`` matching ``pattern``."""
 
     return sorted(directory.glob(pattern))
+
+
+def load_csv(path: Path) -> pd.DataFrame:
+    """Load a CSV file (alias for read_dataframe)."""
+    return read_dataframe(path)

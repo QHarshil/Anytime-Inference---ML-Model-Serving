@@ -153,7 +153,7 @@ def main():
     # Step 8: Ablation studies
     success = run_command(
         [sys.executable, "experiments/05_ablation.py"],
-        "Ablation studies (batch, model, quantization, device, cascade)"
+        "Ablation studies (model size, quantization, batch size)"
     )
     if not success:
         print("\n⚠ Warning: Ablation studies failed, continuing...")
@@ -210,4 +210,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
