@@ -1,0 +1,16 @@
+text:
+  - name: distilbert
+    display_name: DistilBERT
+    variants: [fp32, fp16, int8]
+    tokenizer: distilbert-base-uncased
+  - name: minilm
+    display_name: MiniLM
+    variants: [fp32, fp16, int8]
+    tokenizer: microsoft/MiniLM-L12-H384-uncased
+image:
+  - name: mobilenetv2
+    display_name: MobileNetV2
+    variants: [fp32, fp16, int8]
+  - name: resnet18
+    display_name: ResNet18
+    variants: [fp32, fp16, int8]

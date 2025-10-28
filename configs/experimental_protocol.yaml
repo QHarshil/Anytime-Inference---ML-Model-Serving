@@ -1,0 +1,9 @@
+seeds: [42, 43, 44, 45, 46]
+primary_metrics:
+  - deadline_hit_rate
+  - accuracy
+statistical_tests:
+  - paired_t_test
+  - wilcoxon_test
+significance_level: 0.05
+confidence_interval: 0.95
