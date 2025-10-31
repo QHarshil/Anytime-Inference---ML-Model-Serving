@@ -206,21 +206,8 @@ Results vary by hardware, random seeds, and dataset splits. Expected ranges:
 
 ## Citation
 
-If you use this code in your research, please cite:
-
-```bibtex
-@misc{anytime-inference-planner,
-  title={Anytime Inference Planner: Deadline-Aware Configuration Selection for ML Inference},
-  author={[Your Name]},
-  year={2025},
-  url={https://github.com/[your-username]/anytime-inference-planner}
-}
-```
+If you use this code in your research, please cite the repo.
 
 ## License
 
 MIT License
-
-## Contact
-
-For questions or issues, please open a GitHub issue or contact [your-email].
