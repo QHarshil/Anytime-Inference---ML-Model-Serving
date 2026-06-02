@@ -79,7 +79,19 @@ python run_all.py --quick-test   # smaller sample sizes for development
 
 Outputs land under `results/` (per-configuration CSVs and figures).
 
-### Online serving benchmark
+### Self-contained demo
+
+Quickest way to verify the serving stack — builds a tiny synthetic ONNX model
+on the fly so no torch export or C++ build is needed:
+
+```bash
+python scripts/demo_serving.py --duration 3 --arrival-rate 75 --deadline-ms 45
+```
+
+Prints a JSON summary comparing the FP32-only baseline against the adaptive
+policy under an identical Poisson arrival stream.
+
+### Online serving benchmark (real models)
 
 1. Export the FP32 and INT8 ONNX models:
 
