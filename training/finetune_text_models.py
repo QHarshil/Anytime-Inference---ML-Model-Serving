@@ -1,16 +1,4 @@
-"""
-Fine-tune text models on SST-2 dataset.
-
-This script trains DistilBERT and MiniLM models from scratch on SST-2.
-Use this if you want full control over training hyperparameters or need
-to train on a different dataset.
-
-By default, experiments use pre-fine-tuned checkpoints from HuggingFace:
-- distilbert-base-uncased-finetuned-sst-2-english
-- philschmid/MiniLM-L6-H384-uncased-sst2
-
-Output: training/checkpoints/{model_name}/
-"""
+"""Fine-tune DistilBERT and MiniLM on SST-2."""
 
 import sys
 from pathlib import Path
@@ -18,16 +6,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer,
     AutoModelForSequenceClassification,
-    AdamW,
-    get_linear_schedule_with_warmup
+    get_linear_schedule_with_warmup,
 )
 from datasets import load_dataset
 from tqdm import tqdm
-import numpy as np
+
 from src.utils.logger import get_logger
 
 LOGGER = get_logger("training.finetune_text")

@@ -45,6 +45,10 @@ data/cifar10/
 *.pt
 *.pth
 *.ckpt
+*.bin
+*.safetensors
+*.onnx
+training/checkpoints/
 
 # Results (keep structure, ignore data)
 results/*.csv
@@ -58,4 +62,9 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# C++ build artefacts
+runtime_cpp/build/
+
+# Editor / agent
 

@@ -1,10 +1,12 @@
-"""Synthetic workload generators."""
+"""Synthetic workload generators and trace analysis."""
 
-from .traces import SteadyWorkload, BurstyWorkload
-from .trace_analyzer import compute_trace_statistics
+from .traces import WorkloadTrace, steady_workload, bursty_workload
+from .trace_analyzer import TraceStatistics, summarise_trace
 
 __all__ = [
-    "SteadyWorkload",
-    "BurstyWorkload",
-    "compute_trace_statistics",
+    "WorkloadTrace",
+    "steady_workload",
+    "bursty_workload",
+    "TraceStatistics",
+    "summarise_trace",
 ]

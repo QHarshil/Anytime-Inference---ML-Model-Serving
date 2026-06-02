@@ -1,21 +1,4 @@
-"""Pareto frontier analysis and dominance comparisons.
-
-Analyzes the Pareto frontier of configurations in the latency-accuracy space.
-Does NOT claim formal proof of optimality - the planner is greedy over profiled
-configurations.
-
-Metrics:
-- Hypervolume: Area under Pareto frontier (larger is better)
-- Dominance ratio: Fraction of baseline points dominated by planner
-- Pareto efficiency: Fraction of planner points on Pareto frontier
-
-Reference point for hypervolume:
-- Latency: worst (highest) latency
-- Accuracy: worst (lowest) accuracy
-
-Output: results/pareto_analysis.csv
-Schema: method,task,hypervolume,num_pareto_points,dominance_ratio,pareto_efficiency
-"""
+"""Pareto frontier analysis: hypervolume, dominance ratio, Pareto efficiency."""
 
 import sys
 from pathlib import Path
@@ -24,165 +7,107 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import argparse
 import pandas as pd
-import numpy as np
 
 from src.theory.pareto import (
     compute_pareto_frontier,
     compute_hypervolume,
-    dominance_ratio
+    dominance_ratio,
 )
 from src.utils.io import save_csv
 from src.utils.logger import get_logger
 
 LOGGER = get_logger("experiments.pareto")
 
+LATENCY_COL = "lat_p95_ms"
+ACCURACY_COL = "accuracy"
 
-def load_results(results_dir: Path) -> tuple:
-    """Load baseline and planner results."""
+
+def load_results(results_dir: Path):
     baseline_df = pd.read_csv(results_dir / "baseline_results.csv")
     planner_df = pd.read_csv(results_dir / "planner_results.csv")
     return baseline_df, planner_df
 
 
-def analyze_pareto(baseline_df, planner_df, task):
-    """Analyze Pareto frontier for a task.
-    
-    Objectives:
-    - Minimize latency (lat_p95_ms)
-    - Maximize accuracy
-    """
-    LOGGER.info(f"\nAnalyzing {task.upper()}...")
-    
-    # Filter by task
-    baseline_task = baseline_df[baseline_df['task'] == task]
-    planner_task = planner_df[planner_df['task'] == task]
-    
-    # Aggregate over seeds (use mean)
-    baseline_agg = baseline_task.groupby(['method', 'deadline_ms']).agg({
-        'lat_p95_ms': 'mean',
-        'accuracy': 'mean'
-    }).reset_index()
-    
-    planner_agg = planner_task.groupby(['threshold', 'deadline_ms']).agg({
-        'lat_p95_ms': 'mean',
-        'accuracy': 'mean'
-    }).reset_index()
-    
-    # Extract points for each method
-    results = []
-    
-    # Reference point (worst latency, worst accuracy)
-    all_points = pd.concat([
-        baseline_agg[['lat_p95_ms', 'accuracy']],
-        planner_agg[['lat_p95_ms', 'accuracy']]
-    ])
-    ref_latency = all_points['lat_p95_ms'].max()
-    ref_accuracy = all_points['accuracy'].min()
-    
-    LOGGER.info(f"  Reference point: latency={ref_latency:.1f}ms, accuracy={ref_accuracy:.3f}")
-    
-    # Analyze each baseline method
-    for method in baseline_agg['method'].unique():
-        method_points = baseline_agg[baseline_agg['method'] == method][['lat_p95_ms', 'accuracy']].values
-        
-        # Compute Pareto frontier
-        pareto_points = compute_pareto_frontier(
-            method_points,
-            objectives=['minimize', 'maximize']
-        )
-        
-        # Compute hypervolume
-        hv = compute_hypervolume(
-            pareto_points,
-            reference_point=np.array([ref_latency, ref_accuracy]),
-            objectives=['minimize', 'maximize']
-        )
-        
-        # Pareto efficiency
-        pareto_eff = len(pareto_points) / len(method_points) if len(method_points) > 0 else 0.0
-        
-        LOGGER.info(f"  {method}: HV={hv:.1f}, Pareto points={len(pareto_points)}/{len(method_points)}")
-        
-        results.append({
-            'method': method,
-            'task': task,
-            'hypervolume': hv,
-            'num_points': len(method_points),
-            'num_pareto_points': len(pareto_points),
-            'pareto_efficiency': pareto_eff,
-            'dominance_ratio': 0.0  # Computed later
+def _points(df: pd.DataFrame):
+    return list(zip(df[LATENCY_COL].tolist(), df[ACCURACY_COL].tolist()))
+
+
+def analyze_pareto(baseline_df, planner_df, task: str):
+    LOGGER.info("Analyzing task=%s", task)
+    baseline_task = baseline_df[baseline_df["task"] == task]
+    planner_task = planner_df[planner_df["task"] == task]
+
+    baseline_agg = (
+        baseline_task.groupby(["method", "deadline_ms"])[[LATENCY_COL, ACCURACY_COL]]
+        .mean()
+        .reset_index()
+    )
+    planner_agg = (
+        planner_task.groupby(["threshold", "deadline_ms"])[[LATENCY_COL, ACCURACY_COL]]
+        .mean()
+        .reset_index()
+    )
+
+    combined = pd.concat([baseline_agg[[LATENCY_COL, ACCURACY_COL]],
+                          planner_agg[[LATENCY_COL, ACCURACY_COL]]])
+    reference_point = (float(combined[LATENCY_COL].max()), float(combined[ACCURACY_COL].min()))
+    LOGGER.info("  reference latency=%.1fms accuracy=%.3f", *reference_point)
+
+    rows = []
+    for method in baseline_agg["method"].unique():
+        method_df = baseline_agg[baseline_agg["method"] == method]
+        pareto_df = compute_pareto_frontier(method_df, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL)
+        hv = compute_hypervolume(_points(pareto_df), reference_point)
+        eff = len(pareto_df) / len(method_df) if len(method_df) else 0.0
+        rows.append({
+            "method": method,
+            "task": task,
+            "hypervolume": hv,
+            "num_points": len(method_df),
+            "num_pareto_points": len(pareto_df),
+            "pareto_efficiency": eff,
+            "dominance_ratio": 0.0,
         })
-    
-    # Analyze planner
-    planner_points = planner_agg[['lat_p95_ms', 'accuracy']].values
-    
-    pareto_points_planner = compute_pareto_frontier(
-        planner_points,
-        objectives=['minimize', 'maximize']
-    )
-    
-    hv_planner = compute_hypervolume(
-        pareto_points_planner,
-        reference_point=np.array([ref_latency, ref_accuracy]),
-        objectives=['minimize', 'maximize']
-    )
-    
-    pareto_eff_planner = len(pareto_points_planner) / len(planner_points) if len(planner_points) > 0 else 0.0
-    
-    LOGGER.info(f"  CascadePlanner: HV={hv_planner:.1f}, Pareto points={len(pareto_points_planner)}/{len(planner_points)}")
-    
-    # Compute dominance ratio: fraction of baseline points dominated by planner
-    all_baseline_points = baseline_agg[['lat_p95_ms', 'accuracy']].values
+        LOGGER.info("  %s: HV=%.2f pareto=%d/%d", method, hv, len(pareto_df), len(method_df))
+
+    planner_pareto = compute_pareto_frontier(planner_agg, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL)
+    hv_planner = compute_hypervolume(_points(planner_pareto), reference_point)
+    eff_planner = len(planner_pareto) / len(planner_agg) if len(planner_agg) else 0.0
     dom_ratio = dominance_ratio(
-        planner_points,
-        all_baseline_points,
-        objectives=['minimize', 'maximize']
+        planner_agg, baseline_agg, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL
     )
-    
-    LOGGER.info(f"  Dominance ratio: {dom_ratio:.2%} of baseline points dominated by planner")
-    
-    results.append({
-        'method': 'CascadePlanner',
-        'task': task,
-        'hypervolume': hv_planner,
-        'num_points': len(planner_points),
-        'num_pareto_points': len(pareto_points_planner),
-        'pareto_efficiency': pareto_eff_planner,
-        'dominance_ratio': dom_ratio
+    rows.append({
+        "method": "CascadePlanner",
+        "task": task,
+        "hypervolume": hv_planner,
+        "num_points": len(planner_agg),
+        "num_pareto_points": len(planner_pareto),
+        "pareto_efficiency": eff_planner,
+        "dominance_ratio": dom_ratio,
     })
-    
-    return results
+    LOGGER.info("  CascadePlanner: HV=%.2f pareto=%d/%d dom=%.2f",
+                hv_planner, len(planner_pareto), len(planner_agg), dom_ratio)
+    return rows
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
-    
+    _ = args.quick
+
     results_dir = Path("results")
-    
-    LOGGER.info("Loading results...")
     baseline_df, planner_df = load_results(results_dir)
-    
-    all_results = []
-    
-    for task in ['text', 'vision']:
-        results = analyze_pareto(baseline_df, planner_df, task)
-        all_results.extend(results)
-    
-    # Save
-    results_df = pd.DataFrame(all_results)
+
+    all_rows = []
+    for task in ("text", "vision"):
+        all_rows.extend(analyze_pareto(baseline_df, planner_df, task))
+
+    results_df = pd.DataFrame(all_rows)
     output_path = results_dir / "pareto_analysis.csv"
     save_csv(results_df, output_path)
-    
-    LOGGER.info(f"\nComplete. Results: {output_path}")
-    
-    # Summary
-    LOGGER.info("\nSummary:")
-    for _, row in results_df.iterrows():
-        LOGGER.info(f"  {row['method']} ({row['task']}): HV={row['hypervolume']:.1f}, Dom={row['dominance_ratio']:.2%}")
+    LOGGER.info("Wrote %d rows to %s", len(results_df), output_path)
 
 
 if __name__ == "__main__":
     main()
-

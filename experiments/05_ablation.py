@@ -71,7 +71,7 @@ def ablation_model_size(latency_df, accuracy_df, task):
             
             lat_change = ((large_lat_val - small_lat_val) / small_lat_val) * 100
             acc_change = ((large_acc_val - small_acc_val) / small_acc_val) * 100 if small_acc_val > 0 else 0.0
-            throughput_change = -lat_change  # Inverse of latency
+            throughput_change = (small_lat_val / large_lat_val - 1.0) * 100.0
             
             results.append({
                 'ablation_type': 'model_size',
@@ -119,7 +119,7 @@ def ablation_quantization(latency_df, accuracy_df, task):
                     
                     lat_change = ((quant_lat_val - fp32_lat_val) / fp32_lat_val) * 100
                     acc_change = ((quant_acc_val - fp32_acc_val) / fp32_acc_val) * 100 if fp32_acc_val > 0 else 0.0
-                    throughput_change = -lat_change
+                    throughput_change = (fp32_lat_val / quant_lat_val - 1.0) * 100.0
                     
                     results.append({
                         'ablation_type': 'quantization',
@@ -209,7 +209,7 @@ def ablation_device(latency_df, accuracy_df, task):
             
             lat_change = ((gpu_lat_val - cpu_lat_val) / cpu_lat_val) * 100
             acc_change = ((gpu_acc_val - cpu_acc_val) / cpu_acc_val) * 100 if cpu_acc_val > 0 else 0.0
-            throughput_change = -lat_change
+            throughput_change = (cpu_lat_val / gpu_lat_val - 1.0) * 100.0
             
             results.append({
                 'ablation_type': 'device',
@@ -252,7 +252,7 @@ def ablation_cascade(planner_results_df, baseline_results_df, task):
         
         lat_change = ((cascade_lat - single_lat) / single_lat) * 100
         acc_change = ((cascade_acc - single_acc) / single_acc) * 100 if single_acc > 0 else 0.0
-        throughput_change = -lat_change
+        throughput_change = (single_lat / cascade_lat - 1.0) * 100.0
         
         results.append({
             'ablation_type': 'cascade',

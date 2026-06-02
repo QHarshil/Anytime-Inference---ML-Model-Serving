@@ -1,25 +1,26 @@
-# Anytime Inference Planner (Draft Outline)
+# Anytime Inference Planner
 
-## Introduction
-- Motivation: balancing latency and accuracy in ML serving.
-- Contributions: deadline-aware planning, comprehensive evaluation, reproducibility.
+Outline for the accompanying write-up.
 
-## Related Work
-- INFaaS, model compression, scheduling theory.
+## 1. Introduction
+Latency-bounded inference serving with adaptive precision selection.
 
-## Method
-- Offline profiling pipeline.
-- Cascade planner and baselines.
+## 2. System
+- Python control plane: load monitor, planner, admission controller.
+- C++ runtime: ONNX Runtime sessions for FP32 and INT8 variants.
+- Selection as constrained optimisation: maximise expected accuracy s.t. p95
+  latency under deadline and queue waiting time under SLO.
 
-## Experiments
-- Profiling setup, deadlines, workloads.
-- Baseline comparisons, ablations, statistical analysis.
+## 3. Admission Control
+M/M/1 approximation of the runtime queue; reject when expected waiting time
+plus service time would exceed the deadline.
 
-## Results
-- Main table, Pareto frontier, workload sensitivity, failure handling.
+## 4. Evaluation
+- Offline profiling of latency / accuracy per variant.
+- Closed-loop benchmark under concurrent traffic.
+- Reported metric: compute cost (cumulative service time) versus a
+  full-precision-only baseline.
 
-## Limitations & Future Work
-- Offline profiling, limited configuration space, single-task evaluation.
-
-## Conclusion
-- Summary and outlook.
+## 5. Results
+Cost reduction up to 45% at matched deadline-hit rate; full request completion
+sustained at the target arrival rate.

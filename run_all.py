@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""
-Master script to run the entire Anytime Inference Planner pipeline.
-
-Usage:
-    python run_all.py [--skip-download] [--skip-profiling] [--skip-evaluation]
-
-This script will:
-1. Download datasets (if not skipped)
-2. Run latency profiling (if not skipped)
-3. Run accuracy profiling (if not skipped)
-4. Run baseline evaluation (if not skipped)
-5. Run planner evaluation (if not skipped)
-6. Run statistical tests
-7. Run Pareto analysis
-8. Run ablation studies
-9. Run workload experiments
-10. Run failure analysis
-11. Generate all figures
-
-Estimated time: 40-46 hours on GPU
-"""
+"""Run the full offline profiling and evaluation pipeline."""
 
 import argparse
 import subprocess
@@ -201,11 +181,6 @@ def main():
     print("  - results/failure_miss_analysis.csv")
     print("  - results/failure_degradation_strategies.csv")
     print("  - results/plots/*.png")
-    print("\nNext steps:")
-    print("  1. Review results in results/ directory")
-    print("  2. Check plots in results/plots/")
-    print("  3. Read paper/draft.md for detailed analysis")
-    print("  4. Push to GitHub and start emailing supervisors!")
     print("="*80)
 
 if __name__ == "__main__":

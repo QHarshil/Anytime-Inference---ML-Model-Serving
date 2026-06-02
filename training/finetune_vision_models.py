@@ -1,15 +1,4 @@
-"""
-Fine-tune vision models on CIFAR-10 dataset.
-
-This script trains MobileNetV2 and ResNet18 models on CIFAR-10.
-Use this if you want full control over training hyperparameters or need
-to train on a different dataset.
-
-By default, experiments use ImageNet pre-trained models, which work well
-for CIFAR-10 evaluation without fine-tuning.
-
-Output: training/checkpoints/{model_name}/
-"""
+"""Fine-tune MobileNetV2 and ResNet18 on CIFAR-10."""
 
 import sys
 from pathlib import Path
@@ -22,6 +11,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import models, transforms
 from torchvision.datasets import CIFAR10
+from torchvision.models import MobileNet_V2_Weights, ResNet18_Weights
 from tqdm import tqdm
 from src.utils.logger import get_logger
 
@@ -72,19 +62,15 @@ def load_cifar10_dataset():
     return train_dataset, test_dataset
 
 
-def create_model(model_name):
-    """Create model with modified classifier for CIFAR-10."""
-    if model_name == 'mobilenetv2':
-        model = models.mobilenet_v2(pretrained=True)
-        # Modify classifier for CIFAR-10 (10 classes)
+def create_model(model_name: str) -> nn.Module:
+    if model_name == "mobilenetv2":
+        model = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
         model.classifier[1] = nn.Linear(model.last_channel, 10)
-    elif model_name == 'resnet18':
-        model = models.resnet18(pretrained=True)
-        # Modify final layer for CIFAR-10
+    elif model_name == "resnet18":
+        model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
         model.fc = nn.Linear(model.fc.in_features, 10)
     else:
         raise ValueError(f"Unknown model: {model_name}")
-    
     return model
 
 

@@ -1,11 +1,4 @@
-"""Utility to summarize the differences between two Git branches.
-
-This helper is useful for quickly understanding what the current feature
-branch changes relative to the baseline (typically ``main``).  It prints a
-summary of file change counts, the high level directory impact, and optionally
-emits the raw ``git diff --stat`` output so you can inspect the magnitude of the
-change.
-"""
+"""Summarise file-level differences between two Git branches."""
 from __future__ import annotations
 
 import argparse
@@ -19,13 +12,6 @@ StatusMap = Dict[str, List[Tuple[str, str]]]
 
 
 def _run_git_command(args: Iterable[str]) -> str:
-    """Run a git command and return its stdout as text.
-
-    Parameters
-    ----------
-    args:
-        The git sub-command arguments, e.g. ["diff", "--stat", "main..work"].
-    """
     result = subprocess.run(
         ["git", *args],
         check=True,
@@ -36,12 +22,6 @@ def _run_git_command(args: Iterable[str]) -> str:
 
 
 def _parse_name_status(output: str) -> StatusMap:
-    """Parse ``git diff --name-status`` output.
-
-    Returns a mapping from the primary status code to a list of tuples.
-    For add/modify/delete entries the tuple contains ``(path, path)``.
-    For renames it contains ``(old_path, new_path)``.
-    """
     summary: StatusMap = collections.defaultdict(list)
     if not output:
         return summary
@@ -67,7 +47,6 @@ def _format_section(title: str, lines: Iterable[str]) -> str:
 
 
 def generate_report(base: str, head: str, show_stat: bool) -> str:
-    """Generate a textual report summarising ``head`` relative to ``base``."""
     name_status_output = _run_git_command(["diff", "--name-status", f"{base}..{head}"])
     status_summary = _parse_name_status(name_status_output)
 
@@ -108,7 +87,7 @@ def generate_report(base: str, head: str, show_stat: bool) -> str:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base", nargs="?", default="main", help="Baseline branch or commit (default: main)")
-    parser.add_argument("head", nargs="?", default="work", help="Comparison branch or commit (default: work)")
+    parser.add_argument("head", nargs="?", default="HEAD", help="Comparison branch or commit (default: HEAD)")
     parser.add_argument(
         "--stat",
         action="store_true",
@@ -118,7 +97,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     try:
         report = generate_report(args.base, args.head, args.stat)
-    except subprocess.CalledProcessError as exc:  # pragma: no cover - defensive fallback
+    except subprocess.CalledProcessError as exc:
         print(exc.stderr or exc.stdout or str(exc), file=sys.stderr)
         return exc.returncode or 1
 
@@ -129,5 +108,5 @@ def main(argv: Iterable[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     sys.exit(main())

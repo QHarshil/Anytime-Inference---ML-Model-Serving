@@ -10,14 +10,12 @@ import torch
 def cascade_predict_text(
     small_model: torch.nn.Module,
     large_model: torch.nn.Module,
-    tokenizer: "transformers.PreTrainedTokenizer",
+    tokenizer,
     texts: Iterable[str],
     *,
     threshold: float = 0.9,
     device: str = "cpu",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Perform two-stage cascade prediction for text inputs."""
-
     texts = list(texts)
     inputs = tokenizer(
         texts,
@@ -64,13 +62,11 @@ def cascade_predict_image(
     small_model: torch.nn.Module,
     large_model: torch.nn.Module,
     transform,
-    images: Iterable["PIL.Image.Image"],
+    images: Iterable,
     *,
     threshold: float = 0.9,
     device: str = "cpu",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Perform two-stage cascade for image classification."""
-
     images = list(images)
     tensors = torch.stack([transform(img) for img in images]).to(device)
 
@@ -101,84 +97,59 @@ def cascade_predict_image(
 
 
 def cascade_coverage(early_exits: Iterable[bool]) -> float:
-    """Compute cascade coverage (fraction of requests that exit early)."""
-
     early = np.asarray(list(early_exits))
     if early.size == 0:
         return 0.0
     return float(np.mean(early))
 
 
-
-
 class CascadeEvaluator:
-    """Evaluator for 2-stage cascade configurations."""
-    
-    def __init__(self, small_model, large_model, tokenizer_or_transform, task='text', device='cpu'):
-        """
-        Initialize cascade evaluator.
-        
-        Args:
-            small_model: Small/fast model
-            large_model: Large/accurate model
-            tokenizer_or_transform: Tokenizer (text) or transform (vision)
-            task: 'text' or 'vision'
-            device: 'cpu' or 'cuda'
-        """
-        self.small_model = small_model
-        self.large_model = large_model
+    """Two-stage cascade evaluator for text or vision inputs."""
+
+    def __init__(
+        self,
+        small_model: torch.nn.Module,
+        large_model: torch.nn.Module,
+        tokenizer_or_transform,
+        *,
+        task: str = "text",
+        device: str = "cpu",
+    ) -> None:
+        if task not in ("text", "vision"):
+            raise ValueError(f"Unknown task: {task}")
+        self.small_model = small_model.to(device).eval()
+        self.large_model = large_model.to(device).eval()
         self.tokenizer_or_transform = tokenizer_or_transform
         self.task = task
         self.device = device
-        
-        # Move models to device
-        self.small_model.to(device)
-        self.large_model.to(device)
-        self.small_model.eval()
-        self.large_model.eval()
-    
-    def evaluate(self, inputs, labels, threshold=0.9):
-        """
-        Evaluate cascade on a dataset.
-        
-        Args:
-            inputs: List of texts (text) or images (vision)
-            labels: Ground truth labels
-            threshold: Confidence threshold for early exit
-        
-        Returns:
-            dict with accuracy, coverage, predictions, confidences, early_exits
-        """
-        if self.task == 'text':
+
+    def evaluate(self, inputs, labels, *, threshold: float = 0.9) -> dict:
+        if self.task == "text":
             preds, confidences, early_exits = cascade_predict_text(
                 self.small_model,
                 self.large_model,
                 self.tokenizer_or_transform,
                 inputs,
                 threshold=threshold,
-                device=self.device
+                device=self.device,
             )
-        elif self.task == 'vision':
+        else:
             preds, confidences, early_exits = cascade_predict_image(
                 self.small_model,
                 self.large_model,
                 self.tokenizer_or_transform,
                 inputs,
                 threshold=threshold,
-                device=self.device
+                device=self.device,
             )
-        else:
-            raise ValueError(f"Unknown task: {self.task}")
-        
-        labels_array = np.array(labels)
+
+        labels_array = np.asarray(list(labels))
         accuracy = float(np.mean(preds == labels_array))
         coverage = cascade_coverage(early_exits)
-        
         return {
-            'accuracy': accuracy,
-            'coverage': coverage,
-            'predictions': preds,
-            'confidences': confidences,
-            'early_exits': early_exits
+            "accuracy": accuracy,
+            "coverage": coverage,
+            "predictions": preds,
+            "confidences": confidences,
+            "early_exits": early_exits,
         }
-

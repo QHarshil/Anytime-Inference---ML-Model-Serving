@@ -1,28 +1,26 @@
-"""Evaluation utilities for real inference measurements and statistical analysis."""
+"""Evaluation utilities (statistical analysis, real inference)."""
 
-from .real_inference import RealInferenceEvaluator, CascadeInferenceEvaluator, InferenceResult
 from .statistical_analysis import (
     ComparisonResult,
-    compare_methods,
     aggregate_multiple_seeds,
-    compute_confidence_interval,
+    check_assumptions,
     cohens_d,
-    interpret_effect_size,
+    compare_methods,
+    compute_confidence_interval,
     compute_statistical_power,
-    check_assumptions
+    interpret_effect_size,
 )
 
-__all__ = [
-    "RealInferenceEvaluator",
-    "CascadeInferenceEvaluator",
-    "InferenceResult",
-    "ComparisonResult",
-    "compare_methods",
-    "aggregate_multiple_seeds",
-    "compute_confidence_interval",
-    "cohens_d",
-    "interpret_effect_size",
-    "compute_statistical_power",
-    "check_assumptions",
-]
+# real_inference is imported lazily because it pulls in torch, which is not
+# required for code paths that only need statistical analysis.
 
+__all__ = [
+    "ComparisonResult",
+    "aggregate_multiple_seeds",
+    "check_assumptions",
+    "cohens_d",
+    "compare_methods",
+    "compute_confidence_interval",
+    "compute_statistical_power",
+    "interpret_effect_size",
+]

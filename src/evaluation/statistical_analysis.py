@@ -1,19 +1,10 @@
-"""Statistical analysis with proper rigor.
-
-Implements:
-- Multiple independent runs per configuration
-- Proper variance reporting with confidence intervals
-- Power analysis for statistical tests
-- Aggregation over different seeds
-"""
+"""Statistical comparison utilities: paired/unpaired tests, effect sizes, power."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple, Dict
-import warnings
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
 from scipy import stats
 
 from ..utils.logger import get_logger
@@ -23,171 +14,90 @@ LOGGER = get_logger("evaluation.statistical_analysis")
 
 @dataclass
 class ComparisonResult:
-    """Result of statistical comparison between two methods."""
-    
     method_a: str
     method_b: str
     metric: str
-    
-    # Sample statistics
+
     mean_a: float
     std_a: float
     n_a: int
-    
+
     mean_b: float
     std_b: float
     n_b: int
-    
-    # Difference
+
     mean_diff: float
     ci_lower: float
     ci_upper: float
-    
-    # Statistical tests
+
     t_statistic: float
     p_value_ttest: float
-    p_value_wilcoxon: float
-    
-    # Effect size
+    p_value_wilcoxon: Optional[float]
+
     cohens_d: float
     effect_size_interpretation: str
-    
-    # Power analysis
+
     statistical_power: float
     min_detectable_effect: float
-    
-    # Conclusion
+
     significant: bool
     alpha: float
 
 
 def compute_confidence_interval(
-    data: np.ndarray,
-    confidence: float = 0.95
+    data: np.ndarray, confidence: float = 0.95
 ) -> Tuple[float, float, float]:
-    """Compute mean and confidence interval.
-    
-    Args:
-        data: Array of measurements
-        confidence: Confidence level (default 0.95 for 95% CI)
-    
-    Returns:
-        Tuple of (mean, ci_lower, ci_upper)
-    """
-    mean = np.mean(data)
-    std_err = stats.sem(data)
+    """Return (mean, ci_lower, ci_upper) for the given sample."""
+    mean = float(np.mean(data))
+    std_err = float(stats.sem(data))
     ci_range = std_err * stats.t.ppf((1 + confidence) / 2, len(data) - 1)
     return mean, mean - ci_range, mean + ci_range
 
 
 def cohens_d(group_a: np.ndarray, group_b: np.ndarray) -> float:
-    """Compute Cohen's d effect size.
-    
-    Args:
-        group_a: First group measurements
-        group_b: Second group measurements
-    
-    Returns:
-        Cohen's d effect size
-    """
     mean_a = np.mean(group_a)
     mean_b = np.mean(group_b)
     std_a = np.std(group_a, ddof=1)
     std_b = np.std(group_b, ddof=1)
     n_a = len(group_a)
     n_b = len(group_b)
-    
-    # Pooled standard deviation
-    pooled_std = np.sqrt(((n_a - 1) * std_a**2 + (n_b - 1) * std_b**2) / (n_a + n_b - 2))
-    
+    pooled_std = np.sqrt(((n_a - 1) * std_a ** 2 + (n_b - 1) * std_b ** 2) / (n_a + n_b - 2))
     if pooled_std == 0:
         return 0.0
-    
-    return (mean_a - mean_b) / pooled_std
+    return float((mean_a - mean_b) / pooled_std)
 
 
 def interpret_effect_size(d: float) -> str:
-    """Interpret Cohen's d effect size.
-    
-    Args:
-        d: Cohen's d value
-    
-    Returns:
-        Interpretation string
-    """
     abs_d = abs(d)
     if abs_d < 0.2:
         return "negligible"
-    elif abs_d < 0.5:
+    if abs_d < 0.5:
         return "small"
-    elif abs_d < 0.8:
+    if abs_d < 0.8:
         return "medium"
-    else:
-        return "large"
+    return "large"
 
 
 def compute_statistical_power(
-    group_a: np.ndarray,
-    group_b: np.ndarray,
-    alpha: float = 0.05
+    group_a: np.ndarray, group_b: np.ndarray, alpha: float = 0.05
 ) -> float:
-    """Compute statistical power of the test.
-    
-    Uses post-hoc power analysis based on observed effect size.
-    
-    Args:
-        group_a: First group measurements
-        group_b: Second group measurements
-        alpha: Significance level
-    
-    Returns:
-        Statistical power (0-1)
-    """
     n_a = len(group_a)
     n_b = len(group_b)
     effect_size = abs(cohens_d(group_a, group_b))
-    
-    # Degrees of freedom
     df = n_a + n_b - 2
-    
-    # Non-centrality parameter
     ncp = effect_size * np.sqrt((n_a * n_b) / (n_a + n_b))
-    
-    # Critical value
-    t_crit = stats.t.ppf(1 - alpha/2, df)
-    
-    # Power = P(reject H0 | H1 is true)
-    # = P(|T| > t_crit | ncp)
+    t_crit = stats.t.ppf(1 - alpha / 2, df)
     power = 1 - stats.nct.cdf(t_crit, df, ncp) + stats.nct.cdf(-t_crit, df, ncp)
-    
     return float(power)
 
 
 def minimum_detectable_effect(
-    n_a: int,
-    n_b: int,
-    alpha: float = 0.05,
-    power: float = 0.80
+    n_a: int, n_b: int, alpha: float = 0.05, power: float = 0.80
 ) -> float:
-    """Compute minimum detectable effect size.
-    
-    Args:
-        n_a: Sample size group A
-        n_b: Sample size group B
-        alpha: Significance level
-        power: Desired power
-    
-    Returns:
-        Minimum detectable Cohen's d
-    """
     df = n_a + n_b - 2
-    t_crit = stats.t.ppf(1 - alpha/2, df)
+    t_crit = stats.t.ppf(1 - alpha / 2, df)
     t_power = stats.t.ppf(power, df)
-    
-    # Approximate MDE
-    mde = (t_crit + t_power) * np.sqrt((n_a + n_b) / (n_a * n_b))
-    
-    return float(mde)
+    return float((t_crit + t_power) * np.sqrt((n_a + n_b) / (n_a * n_b)))
 
 
 def compare_methods(
@@ -197,71 +107,38 @@ def compare_methods(
     method_b_name: str,
     metric_name: str,
     alpha: float = 0.05,
-    confidence: float = 0.95
+    confidence: float = 0.95,
 ) -> ComparisonResult:
-    """Compare two methods with full statistical rigor.
-    
-    Args:
-        measurements_a: List of measurements for method A
-        measurements_b: List of measurements for method B
-        method_a_name: Name of method A
-        method_b_name: Name of method B
-        metric_name: Name of metric being compared
-        alpha: Significance level
-        confidence: Confidence level for intervals
-    
-    Returns:
-        ComparisonResult with all statistics
-    """
-    data_a = np.array(measurements_a)
-    data_b = np.array(measurements_b)
-    
-    # Basic statistics
-    mean_a, ci_a_lower, ci_a_upper = compute_confidence_interval(data_a, confidence)
-    mean_b, ci_b_lower, ci_b_upper = compute_confidence_interval(data_b, confidence)
-    
-    # Difference
+    data_a = np.asarray(measurements_a)
+    data_b = np.asarray(measurements_b)
+
+    mean_a, _, _ = compute_confidence_interval(data_a, confidence)
+    mean_b, _, _ = compute_confidence_interval(data_b, confidence)
+
     diff = data_a - data_b if len(data_a) == len(data_b) else None
     if diff is not None:
         mean_diff, ci_diff_lower, ci_diff_upper = compute_confidence_interval(diff, confidence)
+        t_stat, p_ttest = stats.ttest_rel(data_a, data_b)
+        try:
+            _, p_wilcoxon = stats.wilcoxon(data_a, data_b, alternative="two-sided")
+        except ValueError:
+            p_wilcoxon = np.nan
     else:
         mean_diff = mean_a - mean_b
-        # Approximate CI for independent samples
-        se_diff = np.sqrt(np.var(data_a, ddof=1)/len(data_a) + np.var(data_b, ddof=1)/len(data_b))
+        se_diff = np.sqrt(
+            np.var(data_a, ddof=1) / len(data_a) + np.var(data_b, ddof=1) / len(data_b)
+        )
         t_crit = stats.t.ppf((1 + confidence) / 2, len(data_a) + len(data_b) - 2)
         ci_diff_lower = mean_diff - t_crit * se_diff
         ci_diff_upper = mean_diff + t_crit * se_diff
-    
-    # Statistical tests
-    if diff is not None:
-        # Paired t-test
-        t_stat, p_ttest = stats.ttest_rel(data_a, data_b)
-        # Wilcoxon signed-rank test
-        try:
-            _, p_wilcoxon = stats.wilcoxon(data_a, data_b, alternative='two-sided')
-        except:
-            p_wilcoxon = np.nan
-    else:
-        # Independent t-test
         t_stat, p_ttest = stats.ttest_ind(data_a, data_b)
-        # Mann-Whitney U test
         try:
-            _, p_wilcoxon = stats.mannwhitneyu(data_a, data_b, alternative='two-sided')
-        except:
+            _, p_wilcoxon = stats.mannwhitneyu(data_a, data_b, alternative="two-sided")
+        except ValueError:
             p_wilcoxon = np.nan
-    
-    # Effect size
+
     d = cohens_d(data_a, data_b)
-    effect_interp = interpret_effect_size(d)
-    
-    # Power analysis
-    power = compute_statistical_power(data_a, data_b, alpha)
-    mde = minimum_detectable_effect(len(data_a), len(data_b), alpha, 0.80)
-    
-    # Conclusion
-    significant = p_ttest < alpha
-    
-    result = ComparisonResult(
+    return ComparisonResult(
         method_a=method_a_name,
         method_b=method_b_name,
         metric=metric_name,
@@ -278,80 +155,58 @@ def compare_methods(
         p_value_ttest=float(p_ttest),
         p_value_wilcoxon=float(p_wilcoxon) if not np.isnan(p_wilcoxon) else None,
         cohens_d=float(d),
-        effect_size_interpretation=effect_interp,
-        statistical_power=float(power),
-        min_detectable_effect=float(mde),
-        significant=bool(significant),
-        alpha=alpha
+        effect_size_interpretation=interpret_effect_size(d),
+        statistical_power=compute_statistical_power(data_a, data_b, alpha),
+        min_detectable_effect=minimum_detectable_effect(len(data_a), len(data_b), alpha, 0.80),
+        significant=bool(p_ttest < alpha),
+        alpha=alpha,
     )
-    
-    return result
 
 
-def aggregate_multiple_seeds(
-    results_by_seed: Dict[int, Dict],
-    metric_name: str
-) -> Dict:
-    """Aggregate results across multiple random seeds.
-    
-    Args:
-        results_by_seed: Dict mapping seed -> results dict
-        metric_name: Name of metric to aggregate
-    
-    Returns:
-        Dict with aggregated statistics
-    """
+def aggregate_multiple_seeds(results_by_seed: Dict[int, Dict], metric_name: str) -> Dict:
     values = [results[metric_name] for results in results_by_seed.values()]
-    data = np.array(values)
-    
+    data = np.asarray(values)
     mean, ci_lower, ci_upper = compute_confidence_interval(data)
-    
     return {
-        'metric': metric_name,
-        'mean': float(mean),
-        'std': float(np.std(data, ddof=1)),
-        'ci_lower': float(ci_lower),
-        'ci_upper': float(ci_upper),
-        'n_seeds': len(values),
-        'seeds': list(results_by_seed.keys()),
-        'values': values
+        "metric": metric_name,
+        "mean": float(mean),
+        "std": float(np.std(data, ddof=1)),
+        "ci_lower": float(ci_lower),
+        "ci_upper": float(ci_upper),
+        "n_seeds": len(values),
+        "seeds": list(results_by_seed.keys()),
+        "values": values,
     }
 
 
-def check_assumptions(
-    data_a: np.ndarray,
-    data_b: np.ndarray
-) -> Dict[str, bool]:
-    """Check statistical test assumptions.
-    
-    Args:
-        data_a: First group data
-        data_b: Second group data
-    
-    Returns:
-        Dict with assumption check results
+def check_assumptions(data_a: np.ndarray, data_b: np.ndarray) -> Dict[str, Optional[bool]]:
+    """Run Shapiro-Wilk (per-group normality) and Levene's (equal variances).
+
+    Keys returned: normality_a, normality_b, equal_variances, normality_ok,
+    equal_variance_ok. The "_ok" keys are the AND/joint summaries.
     """
-    results = {}
-    
-    # Normality (Shapiro-Wilk test)
+    results: Dict[str, Optional[bool]] = {}
+
     if len(data_a) >= 3:
         _, p_norm_a = stats.shapiro(data_a)
-        results['normality_a'] = p_norm_a > 0.05
+        results["normality_a"] = bool(p_norm_a > 0.05)
     else:
-        results['normality_a'] = None
-    
+        results["normality_a"] = None
+
     if len(data_b) >= 3:
         _, p_norm_b = stats.shapiro(data_b)
-        results['normality_b'] = p_norm_b > 0.05
+        results["normality_b"] = bool(p_norm_b > 0.05)
     else:
-        results['normality_b'] = None
-    
-    # Equal variances (Levene's test)
+        results["normality_b"] = None
+
     if len(data_a) >= 2 and len(data_b) >= 2:
         _, p_var = stats.levene(data_a, data_b)
-        results['equal_variances'] = p_var > 0.05
+        results["equal_variances"] = bool(p_var > 0.05)
     else:
-        results['equal_variances'] = None
-    
+        results["equal_variances"] = None
+
+    na, nb = results["normality_a"], results["normality_b"]
+    results["normality_ok"] = (na is True) and (nb is True) if na is not None and nb is not None else None
+    results["equal_variance_ok"] = results["equal_variances"]
     return results
 
