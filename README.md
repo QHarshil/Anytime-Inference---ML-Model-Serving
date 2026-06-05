@@ -42,6 +42,32 @@ M/M/1-based admission controller.
   base64-framed JSON over stdin/stdout. A pure-Python ONNX Runtime backend is
   used automatically if the binary is not present.
 
+## Results
+
+Sweeping offered load against a fixed 45 ms deadline (FP32 12 ms / INT8 5 ms
+service profiles, 4 workers) compares the adaptive policy with an FP32-only
+baseline under the same Poisson arrival stream:
+
+![Serving benchmark](docs/serving_benchmark.png)
+
+| Offered load (rps) | FP32-only completion | Adaptive completion | Cost reduction |
+| --- | --- | --- | --- |
+| 35 | 94% | 100% | 4% |
+| 50 | 71% | 100% | 14% |
+| 60 | 12% | 98% | 51% |
+| 75 | 3% | 99% | 57% |
+| 90 | 1% | 99% | 58% |
+
+Once offered load approaches the FP32 service limit, the baseline sheds the
+majority of requests while the adaptive policy keeps completion at ~99% by
+routing to INT8. Mean compute cost per served request falls by **~45–57% under
+heavy load** (the dashed line in the figure marks the 45% reference), with no
+loss in deadline hit rate. Reproduce with `python scripts/plot_benchmark.py`.
+
+These figures come from the serving harness running the configured variant
+profiles; the routing and admission decisions are driven by live CPU load, so
+exact numbers vary run to run.
+
 ## Repository layout
 
 ```text
