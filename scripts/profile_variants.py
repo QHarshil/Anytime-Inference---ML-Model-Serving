@@ -67,6 +67,11 @@ MEASURE_ITERATIONS = 200
 QUICK_WARMUP_ITERATIONS = 5
 QUICK_MEASURE_ITERATIONS = 40
 QUICK_ACCURACY_SAMPLES = 128
+# Independent measurement passes per variant. One pass is not enough: the same
+# 200-request p50 measured eight times ranged over 6.5% for DistilBERT and 3.6%
+# for MiniLM on this host, driven by thermal state rather than by anything the
+# code does.
+DEFAULT_REPEATS = 3
 # Matched versions measured within 0.4% on this host, and Stage 1 saw 8% across a
 # process boundary. 15% is loose enough not to fire on scheduler noise and tight
 # enough that anything structural, let alone a 7.6x version mismatch, trips it.
@@ -89,6 +94,11 @@ class VariantMeasurement:
     latency_mean_ms: float
     latency_stdev_ms: float
     iterations: int
+    passes: int
+    # Range of the per-pass p50s, as a percentage. This is the honest uncertainty
+    # on service_time_ms; the within-pass stdev above is much smaller and does not
+    # describe how far the number moves between runs.
+    service_time_spread_pct: float
     accuracy: float
     accuracy_samples: int
     # Time inside inference as the engine reports it, against the same graph run
@@ -160,6 +170,13 @@ def _percentiles(samples: list[float], key: str) -> dict[str, float]:
     }
 
 
+def _spread_pct(values: list[float]) -> float:
+    """Range of a set of measurements as a percentage of the smallest."""
+    if len(values) < 2 or min(values) <= 0.0:
+        return 0.0
+    return (max(values) - min(values)) / min(values) * 100.0
+
+
 def _measure_through_engine(
     client: RuntimeClient,
     variant: str,
@@ -167,22 +184,46 @@ def _measure_through_engine(
     *,
     warmup: int,
     iterations: int,
+    repeats: int,
 ) -> dict[str, float]:
-    """Latency as the server experiences it, through the runtime client."""
-    request = InferenceRequest(variant=variant, inputs=feeds)
-    for _ in range(warmup):
-        client.infer(request)
+    """Latency as the server experiences it, through the runtime client.
 
+    Repeated in independent passes, each with its own warm-up, and reported as the
+    median of the per-pass medians. One pass is not enough: the same 200-request
+    p50 measured eight times on this host ranged over 6.5% for DistilBERT, because
+    thermal state and scheduler placement drift with whatever ran before. The
+    within-pass standard deviation is around 0.45 ms and says nothing about that,
+    so quoting a single p50 with a within-pass spread overstates its precision.
+    """
+    request = InferenceRequest(variant=variant, inputs=feeds)
+    pass_wall_p50: list[float] = []
+    pass_inference_p50: list[float] = []
     wall: list[float] = []
     inference: list[float] = []
-    for _ in range(iterations):
-        response = client.infer(request)
-        wall.append(response.wall_latency_ms)
-        inference.append(response.runtime_latency_ms)
 
+    for _ in range(repeats):
+        for _ in range(warmup):
+            client.infer(request)
+        pass_wall: list[float] = []
+        pass_inference: list[float] = []
+        for _ in range(iterations):
+            response = client.infer(request)
+            pass_wall.append(response.wall_latency_ms)
+            pass_inference.append(response.runtime_latency_ms)
+        pass_wall_p50.append(float(np.percentile(pass_wall, 50)))
+        pass_inference_p50.append(float(np.percentile(pass_inference, 50)))
+        wall.extend(pass_wall)
+        inference.extend(pass_inference)
+
+    # Tails come from the pooled samples, so they reflect variation across passes
+    # as well as within them. The headline median does not, by construction.
     stats = _percentiles(wall, "wall")
     stats.update(_percentiles(inference, "inference"))
+    stats["wall_p50_ms"] = statistics.median(pass_wall_p50)
+    stats["inference_p50_ms"] = statistics.median(pass_inference_p50)
+    stats["wall_p50_spread_pct"] = _spread_pct(pass_wall_p50)
     stats["iterations"] = float(iterations)
+    stats["passes"] = float(repeats)
     return stats
 
 
@@ -192,18 +233,32 @@ def _measure_direct_session(
     *,
     warmup: int,
     iterations: int,
+    repeats: int,
 ) -> dict[str, float]:
-    """The same graph through a separate session, for the agreement check."""
-    fed = _declared(session, feeds)
-    for _ in range(warmup):
-        session.run(None, fed)
+    """The same graph through a separate session, for the agreement check.
 
+    Repeated the same number of times as the engine measurement, so the two are
+    compared like for like rather than one median against a noisier one.
+    """
+    fed = _declared(session, feeds)
+    pass_p50: list[float] = []
     samples: list[float] = []
-    for _ in range(iterations):
-        start = time.perf_counter()
-        session.run(None, fed)
-        samples.append((time.perf_counter() - start) * 1000.0)
-    return _percentiles(samples, "direct")
+
+    for _ in range(repeats):
+        for _ in range(warmup):
+            session.run(None, fed)
+        pass_samples: list[float] = []
+        for _ in range(iterations):
+            start = time.perf_counter()
+            session.run(None, fed)
+            pass_samples.append((time.perf_counter() - start) * 1000.0)
+        pass_p50.append(float(np.percentile(pass_samples, 50)))
+        samples.extend(pass_samples)
+
+    stats = _percentiles(samples, "direct")
+    stats["direct_p50_ms"] = statistics.median(pass_p50)
+    stats["direct_p50_spread_pct"] = _spread_pct(pass_p50)
+    return stats
 
 
 def _measure_accuracy(
@@ -269,7 +324,9 @@ def _discover(model_dir: Path) -> list[tuple[str, str, str, Path]]:
     return found
 
 
-def profile(model_dir: Path, quick: bool, tolerance: float) -> tuple[list[VariantMeasurement], str]:
+def profile(
+    model_dir: Path, quick: bool, tolerance: float, repeats: int
+) -> tuple[list[VariantMeasurement], str]:
     from transformers import AutoTokenizer
 
     warmup = QUICK_WARMUP_ITERATIONS if quick else WARMUP_ITERATIONS
@@ -290,10 +347,10 @@ def profile(model_dir: Path, quick: bool, tolerance: float) -> tuple[list[Varian
 
             LOGGER.info("Profiling %s (%s)", name, graph.name)
             engine = _measure_through_engine(
-                client, name, feeds, warmup=warmup, iterations=iterations
+                client, name, feeds, warmup=warmup, iterations=iterations, repeats=repeats
             )
             direct = _measure_direct_session(
-                _session(graph), feeds, warmup=warmup, iterations=iterations
+                _session(graph), feeds, warmup=warmup, iterations=iterations, repeats=repeats
             )
             accuracy, n_samples = _measure_accuracy(client, name, tokenizer, accuracy_samples)
 
@@ -321,6 +378,8 @@ def profile(model_dir: Path, quick: bool, tolerance: float) -> tuple[list[Varian
                     latency_mean_ms=round(engine["wall_mean_ms"], 3),
                     latency_stdev_ms=round(engine["wall_stdev_ms"], 3),
                     iterations=int(engine["iterations"]),
+                    passes=int(engine["passes"]),
+                    service_time_spread_pct=round(engine["wall_p50_spread_pct"], 2),
                     accuracy=round(accuracy, 4),
                     accuracy_samples=n_samples,
                     engine_inference_p50_ms=round(engine["inference_p50_ms"], 3),
@@ -329,8 +388,11 @@ def profile(model_dir: Path, quick: bool, tolerance: float) -> tuple[list[Varian
                 )
             )
             LOGGER.info(
-                "  p50=%.2fms p95=%.2fms accuracy=%.4f (n=%d) size=%.1fMB agreement=%.3fx",
+                "  p50=%.2fms (+/-%.1f%% over %d passes) p95=%.2fms accuracy=%.4f (n=%d) "
+                "size=%.1fMB agreement=%.3fx",
                 engine["wall_p50_ms"],
+                engine["wall_p50_spread_pct"],
+                repeats,
                 engine["wall_p95_ms"],
                 accuracy,
                 n_samples,
@@ -433,6 +495,15 @@ def main() -> int:
         help="Fewer iterations and a subset of the validation split",
     )
     parser.add_argument(
+        "--repeats",
+        type=int,
+        default=DEFAULT_REPEATS,
+        help=(
+            "Independent measurement passes per variant; the reported service time "
+            f"is the median of their medians (default {DEFAULT_REPEATS})"
+        ),
+    )
+    parser.add_argument(
         "--agreement-tolerance",
         type=float,
         default=DEFAULT_AGREEMENT_TOLERANCE,
@@ -463,7 +534,12 @@ def main() -> int:
             "or pass --allow-fallback-backend to record fallback numbers deliberately."
         )
 
-    measurements, backend = profile(args.model_dir, args.quick, args.agreement_tolerance)
+    if args.repeats < 1:
+        raise SystemExit("--repeats must be at least 1")
+
+    measurements, backend = profile(
+        args.model_dir, args.quick, args.agreement_tolerance, args.repeats
+    )
     frontier = [m for m in measurements if m.on_pareto_frontier]
 
     payload = {
@@ -472,6 +548,7 @@ def main() -> int:
         "task": "text",
         "accuracy_dataset": "glue/sst2 validation",
         "agreement_tolerance": args.agreement_tolerance,
+        "measurement_passes": args.repeats,
         "variants": [asdict(m) for m in measurements],
         "pareto_frontier": [m.name for m in frontier],
     }
@@ -484,9 +561,10 @@ def main() -> int:
 
     LOGGER.info("")
     LOGGER.info(
-        "%-18s %10s %10s %9s %10s  %s",
+        "%-18s %10s %8s %10s %9s %10s  %s",
         "variant",
         "p50 (ms)",
+        "spread",
         "accuracy",
         "size(MB)",
         "agreement",
@@ -495,9 +573,10 @@ def main() -> int:
     for m in sorted(measurements, key=lambda m: m.service_time_ms):
         verdict = "frontier" if m.on_pareto_frontier else f"dominated by {m.dominated_by}"
         LOGGER.info(
-            "%-18s %10.2f %10.4f %9.1f %9.3fx  %s",
+            "%-18s %10.2f %7.1f%% %10.4f %9.1f %9.3fx  %s",
             m.name,
             m.service_time_ms,
+            m.service_time_spread_pct,
             m.accuracy,
             m.size_mb,
             m.agreement_ratio,

@@ -11,10 +11,13 @@ little or no accuracy, but does not make either faster on Apple Silicon:
 
 | Variant | p50 | Accuracy | Size |
 | --- | --- | --- | --- |
-| `distilbert_fp32` | 12.79 ms | 91.06% | 268 MB |
-| `distilbert_int8` | 16.42 ms | 90.60% | 67 MB |
-| `minilm_fp32` | 5.21 ms | 90.14% | 91 MB |
-| `minilm_int8` | 6.93 ms | 90.14% | 23 MB |
+| `distilbert_fp32` | 12.89 ms | 91.06% | 268 MB |
+| `distilbert_int8` | 17.17 ms | 90.60% | 67 MB |
+| `minilm_fp32` | 5.19 ms | 90.14% | 91 MB |
+| `minilm_int8` | 7.16 ms | 90.14% | 23 MB |
+
+Median of three measurement passes through the serving path; see
+[`benchmarks.md`](benchmarks.md) for the spread and the method.
 
 Both INT8 variants are **strictly dominated**: slower than an alternative that is
 at least as accurate. A dominated variant is never the right choice for a planner
@@ -27,7 +30,7 @@ INT8 remains useful when memory, not latency, is the binding constraint:
 ## Consequence for the design
 
 The accuracy/latency axis on this host is **model capacity**, not precision.
-MiniLM-L6-H384 is 2.45x faster than DistilBERT-base for 0.92 accuracy points,
+MiniLM-L6-H384 is 2.48x faster than DistilBERT-base for 0.92 accuracy points,
 which is a genuine tradeoff the planner can exploit. The frontier is therefore
 computed from measurements:
 

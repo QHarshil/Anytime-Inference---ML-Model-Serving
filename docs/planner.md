@@ -43,7 +43,7 @@ the M/M/1 result `E[W_q] = rho / (mu * (1 - rho))` exactly.
 `decide` takes the service rate of a *single* worker and scales by the pool size
 internally. Passing an aggregate rate, or modelling a c-worker pool as one
 server, understates capacity by a factor of c. Concretely, with four workers at
-12.79 ms each the pool serves 313 rps; treated as one server it appears to
+12.89 ms each the pool serves 310 rps; treated as one server it appears to
 saturate at 78 rps.
 
 ## Why the stationary bound is not enough
