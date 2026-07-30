@@ -1,6 +1,14 @@
 """Online serving control plane: load monitor, admission control, runtime client."""
 
 from .admission import AdmissionDecision, MMcAdmissionController, erlang_b, erlang_c
+from .decoder import (
+    DecoderClient,
+    GenerationRecord,
+    GenerationRequest,
+    Occupancy,
+    StepRecord,
+)
+from .kv_admission import AdmissionPlan, BlockAdmission, CacheCost, SequenceState
 from .load_monitor import LoadMonitor, LoadSample
 from .onnx_runtime import (
     BACKENDS,
@@ -36,4 +44,13 @@ __all__ = [
     "ServerStats",
     "drive_workload",
     "poisson_arrivals",
+    "AdmissionPlan",
+    "BlockAdmission",
+    "CacheCost",
+    "SequenceState",
+    "DecoderClient",
+    "GenerationRecord",
+    "GenerationRequest",
+    "Occupancy",
+    "StepRecord",
 ]

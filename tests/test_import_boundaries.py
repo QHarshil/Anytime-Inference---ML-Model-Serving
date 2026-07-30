@@ -19,6 +19,8 @@ import textwrap
 SERVING_MODULES = (
     "anytime_serving.serving",
     "anytime_serving.serving.admission",
+    "anytime_serving.serving.decoder",
+    "anytime_serving.serving.kv_admission",
     "anytime_serving.serving.load_monitor",
     "anytime_serving.serving.onnx_runtime",
     "anytime_serving.serving.selector",
