@@ -100,10 +100,31 @@ and skipped when the binary is absent.
 pytest -q tests/test_runtime_subprocess.py
 ```
 
-## Planned replacement
+## Superseded by the in-process engine
+
+This worker is no longer the serving path. `anytime_runtime`, documented in
+[`../runtime/README.md`](../runtime/README.md), runs ONNX Runtime in the caller's
+process over borrowed numpy buffers and is selected automatically.
 
 The subprocess boundary costs a base64 encode, a JSON parse, and a copy in each
-direction. At 0.27 ms against 14 ms of inference that is acceptable, but it rules
-out batching across requests and sharing a KV cache between them. The intended
-replacement is a pybind11 extension linking the same ONNX Runtime as the Python
-wheel, exposing zero-copy numpy tensors and a C++ scheduler.
+direction. Measured on DistilBERT at batch size one, over 60 requests after
+warm-up:
+
+| Backend | Inference p50 | Wall p50 | Transport |
+| --- | --- | --- | --- |
+| `python` | 13.667 ms | 13.673 ms | 0.006 ms |
+| `extension` | 13.609 ms | 13.628 ms | 0.018 ms |
+| `subprocess` | 13.629 ms | 13.926 ms | 0.296 ms |
+
+All three agree bitwise on the logits, and their inference times agree within
+0.4%, which is what a matched ONNX Runtime version looks like. The transport cost
+falls from 0.296 ms to 0.018 ms.
+
+Against 14 ms of inference that saving is not the reason for the change. The
+reason is that a subprocess boundary rules out batching across requests and
+sharing a KV cache between them, which is what the rest of Stage 2 needs.
+
+The worker is kept for now because it is what the engine is validated against:
+`tests/test_runtime_engine.py` asserts all three backends agree, on the principle
+that a replacement should be checked against the thing it replaces before that
+thing is deleted.
