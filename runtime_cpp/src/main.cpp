@@ -407,55 +407,84 @@ int main(int argc, char** argv) {
         std::string line;
         while (std::getline(std::cin, line)) {
             if (line.empty()) continue;
-            JsonReader reader(line);
-            JsonReader::Value request = reader.parse();
 
-            const std::string request_id = request.find("request_id").string;
-            const std::string variant = request.find("variant").string;
-            const JsonReader::Value& inputs = request.find("inputs");
+            // Per-request failures must not take the worker down: a pool shares
+            // one process per worker, so exiting here would fail every in-flight
+            // and subsequent request on this worker. Anything recoverable is
+            // reported as an error response and the loop continues.
+            std::string request_id;
+            try {
+                JsonReader reader(line);
+                JsonReader::Value request = reader.parse();
 
-            const auto it = models.find(variant);
-            if (it == models.end()) {
-                std::cerr << "unknown variant: " << variant << std::endl;
+                request_id = request.find("request_id").string;
+                const std::string variant = request.find("variant").string;
+                const JsonReader::Value& inputs = request.find("inputs");
+
+                const auto it = models.find(variant);
+                if (it == models.end()) {
+                    std::cerr << "unknown variant: " << variant << std::endl;
+                    std::cout << "{\"request_id\":\"" << escape_json(request_id)
+                              << "\",\"error\":\"unknown variant\"}" << std::endl;
+                    continue;
+                }
+                LoadedModel& model = it->second;
+
+                std::vector<std::vector<uint8_t>> raw_storage(inputs.object.size());
+                std::vector<std::vector<int64_t>> shape_storage(inputs.object.size());
+                std::vector<std::vector<float>> float_storage(inputs.object.size());
+                std::vector<std::vector<int64_t>> int64_storage(inputs.object.size());
+                std::vector<Ort::Value> tensors;
+                tensors.reserve(inputs.object.size());
+                std::vector<const char*> input_name_ptrs;
+                input_name_ptrs.reserve(inputs.object.size());
+
+                // Variants of the same task can declare different inputs: a
+                // DistilBERT graph takes input_ids and attention_mask, a BERT
+                // graph additionally takes token_type_ids. The caller sends the
+                // union, so drop anything this graph does not declare rather than
+                // failing the request.
+                for (std::size_t i = 0; i < inputs.object.size(); ++i) {
+                    const auto& [name, payload] = inputs.object[i];
+                    const bool declared = std::find(model.input_names.begin(),
+                                                    model.input_names.end(),
+                                                    name) != model.input_names.end();
+                    if (!declared) continue;
+                    input_name_ptrs.push_back(name.c_str());
+                    tensors.push_back(make_tensor(payload, memory,
+                                                   raw_storage[i], shape_storage[i],
+                                                   float_storage[i], int64_storage[i]));
+                }
+                if (tensors.size() != model.input_names.size()) {
+                    throw std::runtime_error(
+                        "request supplies " + std::to_string(tensors.size()) +
+                        " of the " + std::to_string(model.input_names.size()) +
+                        " inputs this graph declares");
+                }
+
+                std::vector<const char*> output_name_ptrs;
+                output_name_ptrs.reserve(model.output_names.size());
+                for (const auto& n : model.output_names) output_name_ptrs.push_back(n.c_str());
+
+                const auto start = std::chrono::steady_clock::now();
+                auto outputs = model.session->Run(
+                    Ort::RunOptions{nullptr},
+                    input_name_ptrs.data(), tensors.data(), tensors.size(),
+                    output_name_ptrs.data(), output_name_ptrs.size());
+                const auto end = std::chrono::steady_clock::now();
+                const double latency_ms =
+                    std::chrono::duration<double, std::milli>(end - start).count();
+
+                std::string logits_json = serialise_output(outputs.front());
                 std::cout << "{\"request_id\":\"" << escape_json(request_id)
-                          << "\",\"error\":\"unknown variant\"}" << std::endl;
-                continue;
+                          << "\",\"logits\":" << logits_json
+                          << ",\"latency_ms\":" << latency_ms << "}" << std::endl;
+            } catch (const std::exception& exc) {
+                std::cerr << "request error: " << exc.what() << std::endl;
+                std::cout << "{\"request_id\":\"" << escape_json(request_id)
+                          << "\",\"error\":\"" << escape_json(exc.what()) << "\"}"
+                          << std::endl;
             }
-            LoadedModel& model = it->second;
-
-            std::vector<std::vector<uint8_t>> raw_storage(inputs.object.size());
-            std::vector<std::vector<int64_t>> shape_storage(inputs.object.size());
-            std::vector<std::vector<float>> float_storage(inputs.object.size());
-            std::vector<std::vector<int64_t>> int64_storage(inputs.object.size());
-            std::vector<Ort::Value> tensors;
-            tensors.reserve(inputs.object.size());
-            std::vector<const char*> input_name_ptrs;
-            input_name_ptrs.reserve(inputs.object.size());
-
-            for (std::size_t i = 0; i < inputs.object.size(); ++i) {
-                const auto& [name, payload] = inputs.object[i];
-                input_name_ptrs.push_back(name.c_str());
-                tensors.push_back(make_tensor(payload, memory,
-                                               raw_storage[i], shape_storage[i],
-                                               float_storage[i], int64_storage[i]));
-            }
-
-            std::vector<const char*> output_name_ptrs;
-            output_name_ptrs.reserve(model.output_names.size());
-            for (const auto& n : model.output_names) output_name_ptrs.push_back(n.c_str());
-
-            const auto start = std::chrono::steady_clock::now();
-            auto outputs = model.session->Run(
-                Ort::RunOptions{nullptr},
-                input_name_ptrs.data(), tensors.data(), tensors.size(),
-                output_name_ptrs.data(), output_name_ptrs.size());
-            const auto end = std::chrono::steady_clock::now();
-            const double latency_ms = std::chrono::duration<double, std::milli>(end - start).count();
-
-            std::string logits_json = serialise_output(outputs.front());
-            std::cout << "{\"request_id\":\"" << escape_json(request_id)
-                      << "\",\"logits\":" << logits_json
-                      << ",\"latency_ms\":" << latency_ms << "}" << std::endl;
         }
         return 0;
     } catch (const std::exception& exc) {

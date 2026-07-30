@@ -1,7 +1,7 @@
 #!/bin/bash
-# Bootstrap a Python venv, install dependencies, and create result directories.
+# Bootstrap a Python venv and install the package with its development extras.
 
-set -e
+set -euo pipefail
 
 if ! command -v python3 &> /dev/null; then
     echo "Error: python3 is required but was not found on PATH." >&2
@@ -15,11 +15,8 @@ if [ ! -d "venv" ]; then
 fi
 
 venv/bin/pip install --upgrade pip
-venv/bin/pip install -r requirements.txt
-
-mkdir -p results/ablation results/plots data
-
-venv/bin/python -c "import torch; print(f'cuda_available={torch.cuda.is_available()}')"
+venv/bin/pip install -e ".[dev]"
 
 echo
 echo "Setup complete. Activate the environment with:  source venv/bin/activate"
+echo "Next: python scripts/demo_serving.py"

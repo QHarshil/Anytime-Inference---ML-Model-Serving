@@ -1,4 +1,4 @@
-from src.profiler.profiler_utils import measure_latencies, compute_accuracy
+from anytime_serving.profiler.profiler_utils import compute_accuracy, measure_latencies
 
 
 def test_measure_latencies_runs():

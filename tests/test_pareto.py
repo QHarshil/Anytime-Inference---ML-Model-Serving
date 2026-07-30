@@ -1,13 +1,19 @@
 import pandas as pd
 
-from src.theory.pareto import compute_pareto_frontier, compute_hypervolume, dominance_ratio
+from anytime_serving.evaluation.pareto import (
+    compute_hypervolume,
+    compute_pareto_frontier,
+    dominance_ratio,
+)
 
 
 def test_compute_pareto_frontier_basic():
-    df = pd.DataFrame({
-        "lat_p95_ms": [50, 100, 200],
-        "accuracy": [0.85, 0.88, 0.91],
-    })
+    df = pd.DataFrame(
+        {
+            "lat_p95_ms": [50, 100, 200],
+            "accuracy": [0.85, 0.88, 0.91],
+        }
+    )
     frontier = compute_pareto_frontier(df)
     assert len(frontier) == 3
 

@@ -5,22 +5,12 @@ __pycache__/
 *.so
 .Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 .pytest_cache/
-
+.mypy_cache/
+.ruff_cache/
 
 # Virtual environments
 venv/
@@ -37,7 +27,7 @@ env/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# Data
+# Datasets, downloaded on demand by data/download_datasets.py
 data/cifar-10-batches-py/
 data/sst2/
 data/mnist/
@@ -47,13 +37,17 @@ data/cifar10/
 *.ckpt
 *.bin
 *.safetensors
-*.onnx
 training/checkpoints/
 
-# Results (keep structure, ignore data)
-results/*.csv
-results/plots/*.png
-results/ablation/*.csv
+# Exported models. Regenerate with scripts/export_onnx.py; the graphs are
+# hundreds of megabytes and the tokenizer files beside them are equally derived.
+models/
+*.onnx
+*.onnx.data
+
+# Experiment output. Regenerate with run_all.py, scripts/profile_variants.py, and
+# scripts/run_load_sweep.py. Figures committed for the docs live in docs/img/.
+results/
 
 # OS
 .DS_Store
@@ -65,4 +59,3 @@ logs/
 
 # C++ build artefacts
 runtime_cpp/build/
-

@@ -1,14 +1,10 @@
 """Unit tests for the statistical analysis module."""
 
-import sys
 import unittest
-from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.evaluation.statistical_analysis import (
+from anytime_serving.evaluation.statistical_analysis import (
     check_assumptions,
     cohens_d,
     compare_methods,
@@ -64,7 +60,13 @@ class TestAssumptionChecking(unittest.TestCase):
         rng = np.random.default_rng(2)
         data = rng.normal(0, 1, size=50)
         assumptions = check_assumptions(data, data)
-        for key in ("normality_a", "normality_b", "equal_variances", "normality_ok", "equal_variance_ok"):
+        for key in (
+            "normality_a",
+            "normality_b",
+            "equal_variances",
+            "normality_ok",
+            "equal_variance_ok",
+        ):
             self.assertIn(key, assumptions)
 
 

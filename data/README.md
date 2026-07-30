@@ -1,9 +1,14 @@
-# Data Assets
+# Datasets
 
-This directory stores cached datasets used by the anytime inference planner experiments. Datasets are not versioned directly; instead, run `download_datasets.py` to fetch them locally under this folder.
+Cached datasets for the offline experiment pipeline. Nothing here is versioned;
+fetch them locally instead:
 
-```
+```bash
 python data/download_datasets.py
 ```
 
-By default the script downloads the SST-2 text classification benchmark and the CIFAR-10 image dataset. You can request additional datasets with the `--datasets` flag.
+Downloads GLUE SST-2 and CIFAR-10 by default. Run with `--help` for the available
+options.
+
+The serving benchmarks in [`../docs/benchmarks.md`](../docs/benchmarks.md) use
+SST-2 validation, which this script fetches through the `datasets` library.

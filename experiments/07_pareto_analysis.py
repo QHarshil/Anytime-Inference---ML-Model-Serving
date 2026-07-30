@@ -1,20 +1,17 @@
 """Pareto frontier analysis: hypervolume, dominance ratio, Pareto efficiency."""
 
-import sys
+import argparse
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import argparse
 import pandas as pd
 
-from src.theory.pareto import (
-    compute_pareto_frontier,
+from anytime_serving.evaluation.pareto import (
     compute_hypervolume,
+    compute_pareto_frontier,
     dominance_ratio,
 )
-from src.utils.io import save_csv
-from src.utils.logger import get_logger
+from anytime_serving.utils.io import save_csv
+from anytime_serving.utils.logger import get_logger
 
 LOGGER = get_logger("experiments.pareto")
 
@@ -29,7 +26,7 @@ def load_results(results_dir: Path):
 
 
 def _points(df: pd.DataFrame):
-    return list(zip(df[LATENCY_COL].tolist(), df[ACCURACY_COL].tolist()))
+    return list(zip(df[LATENCY_COL].tolist(), df[ACCURACY_COL].tolist(), strict=True))
 
 
 def analyze_pareto(baseline_df, planner_df, task: str):
@@ -48,53 +45,71 @@ def analyze_pareto(baseline_df, planner_df, task: str):
         .reset_index()
     )
 
-    combined = pd.concat([baseline_agg[[LATENCY_COL, ACCURACY_COL]],
-                          planner_agg[[LATENCY_COL, ACCURACY_COL]]])
+    combined = pd.concat(
+        [baseline_agg[[LATENCY_COL, ACCURACY_COL]], planner_agg[[LATENCY_COL, ACCURACY_COL]]]
+    )
     reference_point = (float(combined[LATENCY_COL].max()), float(combined[ACCURACY_COL].min()))
     LOGGER.info("  reference latency=%.1fms accuracy=%.3f", *reference_point)
 
     rows = []
     for method in baseline_agg["method"].unique():
         method_df = baseline_agg[baseline_agg["method"] == method]
-        pareto_df = compute_pareto_frontier(method_df, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL)
+        pareto_df = compute_pareto_frontier(
+            method_df, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL
+        )
         hv = compute_hypervolume(_points(pareto_df), reference_point)
         eff = len(pareto_df) / len(method_df) if len(method_df) else 0.0
-        rows.append({
-            "method": method,
-            "task": task,
-            "hypervolume": hv,
-            "num_points": len(method_df),
-            "num_pareto_points": len(pareto_df),
-            "pareto_efficiency": eff,
-            "dominance_ratio": 0.0,
-        })
+        rows.append(
+            {
+                "method": method,
+                "task": task,
+                "hypervolume": hv,
+                "num_points": len(method_df),
+                "num_pareto_points": len(pareto_df),
+                "pareto_efficiency": eff,
+                "dominance_ratio": 0.0,
+            }
+        )
         LOGGER.info("  %s: HV=%.2f pareto=%d/%d", method, hv, len(pareto_df), len(method_df))
 
-    planner_pareto = compute_pareto_frontier(planner_agg, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL)
+    planner_pareto = compute_pareto_frontier(
+        planner_agg, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL
+    )
     hv_planner = compute_hypervolume(_points(planner_pareto), reference_point)
     eff_planner = len(planner_pareto) / len(planner_agg) if len(planner_agg) else 0.0
     dom_ratio = dominance_ratio(
         planner_agg, baseline_agg, latency_col=LATENCY_COL, accuracy_col=ACCURACY_COL
     )
-    rows.append({
-        "method": "CascadePlanner",
-        "task": task,
-        "hypervolume": hv_planner,
-        "num_points": len(planner_agg),
-        "num_pareto_points": len(planner_pareto),
-        "pareto_efficiency": eff_planner,
-        "dominance_ratio": dom_ratio,
-    })
-    LOGGER.info("  CascadePlanner: HV=%.2f pareto=%d/%d dom=%.2f",
-                hv_planner, len(planner_pareto), len(planner_agg), dom_ratio)
+    rows.append(
+        {
+            "method": "CascadePlanner",
+            "task": task,
+            "hypervolume": hv_planner,
+            "num_points": len(planner_agg),
+            "num_pareto_points": len(planner_pareto),
+            "pareto_efficiency": eff_planner,
+            "dominance_ratio": dom_ratio,
+        }
+    )
+    LOGGER.info(
+        "  CascadePlanner: HV=%.2f pareto=%d/%d dom=%.2f",
+        hv_planner,
+        len(planner_pareto),
+        len(planner_agg),
+        dom_ratio,
+    )
     return rows
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--quick", action="store_true")
-    args = parser.parse_args()
-    _ = args.quick
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Accepted for pipeline uniformity. This stage post-processes existing\n"
+        "results, so its cost already follows the upstream sample size.",
+    )
+    parser.parse_args()
 
     results_dir = Path("results")
     baseline_df, planner_df = load_results(results_dir)

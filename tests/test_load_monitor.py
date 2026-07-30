@@ -1,13 +1,9 @@
 """Unit tests for the background CPU load monitor."""
 
-import sys
 import time
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.serving.load_monitor import LoadMonitor
+from anytime_serving.serving.load_monitor import LoadMonitor
 
 
 class TestLoadMonitor(unittest.TestCase):

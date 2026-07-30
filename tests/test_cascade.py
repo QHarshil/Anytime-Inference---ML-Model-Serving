@@ -1,6 +1,6 @@
 import pytest
 
-from src.models.cascade import cascade_coverage
+from anytime_serving.models.cascade import cascade_coverage
 
 
 def test_cascade_coverage():

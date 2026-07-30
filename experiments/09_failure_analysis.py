@@ -1,4 +1,5 @@
 """Failure analysis leveraging recorded latency traces."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,8 +9,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.utils.io import save_csv
-from src.utils.logger import get_logger
+from anytime_serving.utils.io import save_csv
+from anytime_serving.utils.logger import get_logger
 
 LOGGER = get_logger("experiments.failure")
 
@@ -22,7 +23,9 @@ def load_cache(path: Path) -> dict:
     return {}
 
 
-def baseline_key(task: str, model: str, variant: str, device: str, batch_size: int, seed: int) -> str:
+def baseline_key(
+    task: str, model: str, variant: str, device: str, batch_size: int, seed: int
+) -> str:
     return f"{task}_{model}_{variant}_{device}_{batch_size}_seed{seed}"
 
 
@@ -33,7 +36,9 @@ def cascade_key(task: str, threshold: float, device: str, seed: int) -> str:
 def collect_samples(rows: pd.DataFrame, cache: dict) -> np.ndarray:
     samples = []
     for row in rows.itertuples():
-        key = baseline_key(row.task, row.model, row.variant, row.device, int(row.batch_size), int(row.seed))
+        key = baseline_key(
+            row.task, row.model, row.variant, row.device, int(row.batch_size), int(row.seed)
+        )
         entry = cache.get(key)
         if not entry:
             continue
@@ -73,8 +78,13 @@ def deadline_metrics(latencies: np.ndarray, deadline_ms: float) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--quick", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Accepted for pipeline uniformity. This stage post-processes existing\n"
+        "results, so its cost already follows the upstream sample size.",
+    )
+    parser.parse_args()
 
     results_dir = Path("results")
     baseline_df = pd.read_csv(results_dir / "baseline_results.csv")

@@ -4,18 +4,19 @@ The script relies on the Hugging Face `datasets` library so that data
 artifacts are stored in a consistent format across machines. Downloaded
 splits are cached under `data/<dataset_name>`.
 """
+
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
 
 from datasets import load_dataset
 
 # Mapping from logical dataset identifier to the tuple of arguments passed to
 # `datasets.load_dataset`. The second element of the tuple is optional and can
 # be `None` if the dataset has no configuration name.
-_DATASETS: Dict[str, Tuple[str, str | None]] = {
+_DATASETS: dict[str, tuple[str, str | None]] = {
     "sst2": ("glue", "sst2"),
     "cifar10": ("cifar10", None),
 }
@@ -55,7 +56,6 @@ def download_all(datasets: Iterable[str], root: Path) -> None:
 
     for dataset in datasets:
         download_dataset(dataset, root)
-
 
 
 def parse_args() -> argparse.Namespace:

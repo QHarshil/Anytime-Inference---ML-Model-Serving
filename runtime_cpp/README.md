@@ -1,44 +1,57 @@
 # anytime_runtime (C++)
 
-Minimal ONNX Runtime worker. Loads one or more ONNX models (FP32 and INT8
-variants of the same architecture) and answers line-delimited JSON requests on
-stdin. The Python control plane in `src/serving/onnx_runtime.py` spawns one or
-more instances and dispatches requests across them.
+Single-threaded ONNX Runtime worker. Loads one ONNX graph per variant and answers
+line-delimited JSON requests on stdin. `RuntimePool` in
+`src/anytime_serving/serving/onnx_runtime.py` spawns one process per pool slot and
+dispatches across them.
 
 ## Build
 
 ```bash
-# Download the ONNX Runtime release matching your platform from
-# https://github.com/microsoft/onnxruntime/releases and unpack it.
-export ONNXRUNTIME_ROOT_PATH=/path/to/onnxruntime-osx-arm64-1.16.0
-
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DONNXRUNTIME_ROOT_PATH=/path/to/onnxruntime
 cmake --build build -j
 ```
 
-The resulting binary is `build/anytime_runtime`. Point the Python client at it
-via the `ANYTIME_RUNTIME_BIN` environment variable, or rely on the default
-path lookup in `find_runtime_binary()`.
+Download the release matching your platform from
+<https://github.com/microsoft/onnxruntime/releases>. Point
+`ONNXRUNTIME_ROOT_PATH` at the directory containing `include/` and `lib/`.
+
+**The version must match the `onnxruntime` Python wheel.** A mismatch is a silent
+performance cliff, not a link error. See
+[`../docs/runtime.md`](../docs/runtime.md).
+
+The binary lands at `build/anytime_runtime`. The Python client finds it via
+`ANYTIME_RUNTIME_BIN` or by searching upward from the package and the working
+directory.
 
 ## Protocol
 
-Handshake: the worker prints `ready\n` once every model has loaded.
+Handshake: the worker prints `ready` once every model has loaded.
 
-Request (one JSON object per line):
 ```json
-{"request_id":"r-1","variant":"fp32",
+{"request_id":"r-1","variant":"distilbert_fp32",
  "inputs":{"input_ids":{"shape":[1,128],"dtype":"int64","data":"<base64>"},
            "attention_mask":{"shape":[1,128],"dtype":"int64","data":"<base64>"}}}
 ```
 
-Response:
 ```json
 {"request_id":"r-1",
  "logits":{"shape":[1,2],"dtype":"float32","data":"<base64>"},
- "latency_ms":12.3}
+ "latency_ms":14.05}
 ```
+
+Recoverable failures return `{"request_id":"r-1","error":"..."}` and the worker
+continues serving.
 
 ## Notes
 
-- Single inference per process. Run a pool from the Python side for parallelism.
-- Supported input dtypes: `float32`, `int64`. Output dtype: `float32`.
+- One inference per process. Run a pool from the Python side for concurrency.
+- Input dtypes `float32` and `int64`; output dtype `float32`.
+- Inputs a graph does not declare are dropped; a missing declared input is an
+  error.
+- No dependencies beyond ONNX Runtime. JSON and base64 are implemented in
+  `src/main.cpp`.
+
+Full details, including the version-matching rationale and the CMake cache
+pitfall: [`../docs/runtime.md`](../docs/runtime.md).

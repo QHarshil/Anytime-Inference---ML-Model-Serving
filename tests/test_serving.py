@@ -1,19 +1,15 @@
 """End-to-end tests for the serving stack using a tiny on-the-fly ONNX model."""
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Dict
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 
 try:
     import onnx
-    from onnx import TensorProto, helper
     import onnxruntime  # noqa: F401
+    from onnx import TensorProto, helper
 except ImportError:  # pragma: no cover - dependency check
     onnx = None
 
@@ -38,7 +34,7 @@ class TestRuntimeClient(unittest.TestCase):
         cls.int8_path = Path(cls._tmp.name) / "identity_int8.onnx"
         _build_identity_model(cls.fp32_path)
         _build_identity_model(cls.int8_path)
-        cls.model_paths: Dict[str, Path] = {
+        cls.model_paths: dict[str, Path] = {
             "fp32": cls.fp32_path,
             "int8": cls.int8_path,
         }
@@ -48,7 +44,7 @@ class TestRuntimeClient(unittest.TestCase):
         cls._tmp.cleanup()
 
     def test_python_backend_round_trip(self):
-        from src.serving.onnx_runtime import InferenceRequest, RuntimeClient
+        from anytime_serving.serving.onnx_runtime import InferenceRequest, RuntimeClient
 
         with RuntimeClient(self.model_paths) as client:
             data = np.arange(8, dtype=np.float32).reshape(2, 4)
@@ -60,7 +56,7 @@ class TestRuntimeClient(unittest.TestCase):
     def test_pool_dispatches_concurrent_requests(self):
         from concurrent.futures import ThreadPoolExecutor
 
-        from src.serving.onnx_runtime import InferenceRequest, RuntimePool
+        from anytime_serving.serving.onnx_runtime import InferenceRequest, RuntimePool
 
         with RuntimePool(size=3, model_paths=self.model_paths) as pool:
             rng = np.random.default_rng(0)
@@ -73,7 +69,7 @@ class TestRuntimeClient(unittest.TestCase):
             ]
             with ThreadPoolExecutor(max_workers=4) as executor:
                 responses = list(executor.map(pool.infer, requests))
-            for req, resp in zip(requests, responses):
+            for req, resp in zip(requests, responses, strict=True):
                 np.testing.assert_array_almost_equal(resp.logits, req.data)
 
 
@@ -90,17 +86,20 @@ class TestAdaptiveServer(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_concurrent_workload_admits_majority(self):
-        from src.serving.admission import MM1AdmissionController
-        from src.serving.load_monitor import LoadMonitor
-        from src.serving.onnx_runtime import InferenceRequest, RuntimePool
-        from src.serving.selector import AdaptiveSelector, VariantProfile
-        from src.serving.server import AdaptiveServer, drive_workload, poisson_arrivals
+        from anytime_serving.serving.load_monitor import LoadMonitor
+        from anytime_serving.serving.onnx_runtime import InferenceRequest, RuntimePool
+        from anytime_serving.serving.selector import AdaptiveSelector, VariantProfile
+        from anytime_serving.serving.server import AdaptiveServer, drive_workload, poisson_arrivals
 
         variants = [
-            VariantProfile("fp32", service_time_ms=5.0, accuracy=0.91, compute_cost_per_request=1.0),
-            VariantProfile("int8", service_time_ms=2.0, accuracy=0.89, compute_cost_per_request=0.4),
+            VariantProfile(
+                "fp32", service_time_ms=5.0, accuracy=0.91, compute_cost_per_request=1.0
+            ),
+            VariantProfile(
+                "int8", service_time_ms=2.0, accuracy=0.89, compute_cost_per_request=0.4
+            ),
         ]
-        selector = AdaptiveSelector(variants, admission_controller=MM1AdmissionController())
+        selector = AdaptiveSelector(variants, servers=2)
         monitor = LoadMonitor(interval_s=0.05)
         monitor.start()
         try:
@@ -115,10 +114,10 @@ class TestAdaptiveServer(unittest.TestCase):
                             data=rng.standard_normal((1, 4)).astype(np.float32),
                         )
 
-                    arrivals = poisson_arrivals(duration_s=0.5, rate_rps=20.0,
-                                                rng=np.random.default_rng(2))
-                    drive_workload(server, factory, arrival_times=arrivals,
-                                   deadline_ms=200.0)
+                    arrivals = poisson_arrivals(
+                        duration_s=0.5, rate_rps=20.0, rng=np.random.default_rng(2)
+                    )
+                    drive_workload(server, factory, arrival_times=arrivals, deadline_ms=200.0)
                 finally:
                     server.shutdown()
                 stats = server.stats
@@ -130,6 +129,34 @@ class TestAdaptiveServer(unittest.TestCase):
         # With identity models and a generous deadline, every accepted request
         # should complete in time.
         self.assertEqual(stats.deadline_misses, 0)
+
+    def test_rejects_selector_pool_size_mismatch(self):
+        """A selector modelling the wrong worker count must not be accepted.
+
+        Modelling a c-worker pool as a single server understates capacity by a
+        factor of c, so the server refuses the pairing outright rather than
+        silently shedding load the pool could serve.
+        """
+        from anytime_serving.serving.load_monitor import LoadMonitor
+        from anytime_serving.serving.onnx_runtime import RuntimePool
+        from anytime_serving.serving.selector import AdaptiveSelector, VariantProfile
+        from anytime_serving.serving.server import AdaptiveServer
+
+        variants = [
+            VariantProfile("fp32", service_time_ms=5.0, accuracy=0.91, compute_cost_per_request=1.0)
+        ]
+        selector = AdaptiveSelector(variants, servers=1)
+        monitor = LoadMonitor(interval_s=0.05)
+        with RuntimePool(4, {"fp32": self.fp32_path}) as pool:
+            with self.assertRaises(ValueError) as ctx:
+                AdaptiveServer(pool, selector, monitor)
+        self.assertIn("selector models 1 server", str(ctx.exception))
+
+    def test_pool_reports_its_size(self):
+        from anytime_serving.serving.onnx_runtime import RuntimePool
+
+        with RuntimePool(3, {"fp32": self.fp32_path}) as pool:
+            self.assertEqual(pool.size, 3)
 
 
 if __name__ == "__main__":

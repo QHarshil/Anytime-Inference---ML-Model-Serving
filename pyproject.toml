@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anytime-serving"
+version = "0.1.0"
+description = "Latency-bounded ML serving with load-adaptive precision selection"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+]
+
+# Runtime dependencies for the serving control plane. Deliberately narrow: the
+# control plane does not need torch, and the C++ runtime links its own copy of
+# ONNX Runtime.
+dependencies = [
+    "numpy>=1.24",
+    "onnx>=1.14",
+    "onnxruntime>=1.16",
+    "psutil>=5.9",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Benchmark drivers, result tables, and figures.
+bench = [
+    "matplotlib>=3.7",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "seaborn>=0.13",
+]
+# Model export, quantisation, and the offline profiling pipeline.
+research = [
+    "anytime-serving[bench]",
+    "datasets>=2.14",
+    "onnx-ir>=0.1",
+    "optimum>=1.20",
+    "pillow>=10.0",
+    "sympy>=1.12",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "tqdm>=4.65",
+    "transformers>=4.33",
+]
+dev = [
+    "anytime-serving[research]",
+    "mypy>=1.8",
+    "pytest>=7.0",
+    "ruff>=0.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anytime_serving"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["venv", "runtime_cpp/build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4"]
+ignore = [
+    # Assigning to a loop-shadowed name is idiomatic in the experiment scripts.
+    "B007",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Experiment and script entry points import after a sys.path adjustment.
+"experiments/*" = ["E402"]
+"scripts/*" = ["E402"]
+"training/*" = ["E402"]
+"tests/*" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/anytime_serving"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true

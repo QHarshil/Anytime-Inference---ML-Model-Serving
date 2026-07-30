@@ -1,12 +1,8 @@
 """Smoke tests for the real-inference evaluator dataclass and cache key."""
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.evaluation.real_inference import (
+from anytime_serving.evaluation.real_inference import (
     CascadeInferenceEvaluator,
     InferenceResult,
     RealInferenceEvaluator,

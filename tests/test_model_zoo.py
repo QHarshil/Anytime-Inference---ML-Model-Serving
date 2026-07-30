@@ -1,6 +1,6 @@
 import pytest
 
-from src.models.model_zoo import ModelZoo
+from anytime_serving.models.model_zoo import ModelZoo
 
 
 def test_unknown_model_raises():

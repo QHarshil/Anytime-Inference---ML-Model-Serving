@@ -1,4 +1,5 @@
 """Workload sensitivity analysis using recorded latency traces."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,8 +10,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.utils.io import save_csv
-from src.utils.logger import get_logger
+from anytime_serving.utils.io import save_csv
+from anytime_serving.utils.logger import get_logger
 
 LOGGER = get_logger("experiments.workload")
 
@@ -57,7 +58,7 @@ def simulate_queue(arrival_times: np.ndarray, latencies_ms: np.ndarray, deadline
     queue_depths = []
     clock = 0.0
 
-    for arrival, latency in zip(arrival_times, latencies_ms):
+    for arrival, latency in zip(arrival_times, latencies_ms, strict=True):
         clock = arrival
 
         while queue and queue[0]["completion_time"] <= clock:
@@ -89,7 +90,9 @@ def simulate_queue(arrival_times: np.ndarray, latencies_ms: np.ndarray, deadline
 
     completed_arrivals = np.array([req["arrival_time"] for req in completed])
     deadline_hits = np.mean([req["latency_ms"] <= req["deadline_ms"] for req in completed])
-    duration = completed_arrivals[-1] - completed_arrivals[0] if len(completed_arrivals) > 1 else 0.0
+    duration = (
+        completed_arrivals[-1] - completed_arrivals[0] if len(completed_arrivals) > 1 else 0.0
+    )
     throughput = len(completed) / duration if duration > 0 else 0.0
 
     return {
@@ -119,7 +122,9 @@ def load_cascade_cache(results_dir: Path) -> dict:
     return {}
 
 
-def get_latency_samples(cache: dict, task: str, model: str, variant: str, device: str, batch_size: int, seed: int) -> list:
+def get_latency_samples(
+    cache: dict, task: str, model: str, variant: str, device: str, batch_size: int, seed: int
+) -> list:
     key = f"{task}_{model}_{variant}_{device}_{batch_size}_seed{seed}"
     entry = cache.get(key)
     if not entry:
@@ -151,7 +156,9 @@ def evaluate_workload(
     if workload_type == "steady":
         arrivals = generate_steady_arrivals(duration_sec, arrival_rate)
     else:
-        arrivals = generate_bursty_arrivals(duration_sec, base_rate=arrival_rate * 0.5, burst_rate=arrival_rate * 2.0)
+        arrivals = generate_bursty_arrivals(
+            duration_sec, base_rate=arrival_rate * 0.5, burst_rate=arrival_rate * 2.0
+        )
 
     if arrivals.size == 0:
         arrivals = np.array([0.0])
@@ -199,7 +206,9 @@ def collect_latency_samples(rows: pd.DataFrame, cache: dict) -> list:
 def collect_cascade_samples(rows: pd.DataFrame, cache: dict) -> list:
     samples = []
     for row in rows.itertuples():
-        sample_values = get_cascade_samples(cache, row.task, float(row.threshold), row.small_device, int(row.seed))
+        sample_values = get_cascade_samples(
+            cache, row.task, float(row.threshold), row.small_device, int(row.seed)
+        )
         if sample_values:
             samples.extend(sample_values)
     return samples

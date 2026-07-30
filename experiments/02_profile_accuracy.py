@@ -1,10 +1,7 @@
 """Accuracy profiling for text and image models on SST-2 and CIFAR-10."""
 
-import sys
 import argparse
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
 import torch
@@ -13,10 +10,10 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-from src.models.model_zoo import ModelZoo
-from src.models.cascade import CascadeEvaluator
-from src.utils.io import save_csv
-from src.utils.logger import get_logger
+from anytime_serving.models.cascade import CascadeEvaluator
+from anytime_serving.models.model_zoo import ModelZoo
+from anytime_serving.utils.io import save_csv
+from anytime_serving.utils.logger import get_logger
 
 LOGGER = get_logger("experiments.profile_accuracy")
 
@@ -40,10 +37,12 @@ def load_sst2_validation():
 
 def load_cifar10_test():
     LOGGER.info("Loading CIFAR-10 test set")
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
+    transform = transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ]
+    )
     return datasets.CIFAR10(root="./data", train=False, download=True, transform=transform)
 
 
@@ -59,8 +58,8 @@ def evaluate_text_model(model_name, variant, device, texts, labels):
     total = 0
     with torch.no_grad():
         for i in tqdm(range(0, len(texts), BATCH_SIZE), desc=f"{model_name}-{variant}-{device}"):
-            batch_texts = texts[i:i + BATCH_SIZE]
-            batch_labels = labels[i:i + BATCH_SIZE]
+            batch_texts = texts[i : i + BATCH_SIZE]
+            batch_labels = labels[i : i + BATCH_SIZE]
             inputs = tokenizer(
                 batch_texts, padding=True, truncation=True, max_length=128, return_tensors="pt"
             )
@@ -88,7 +87,11 @@ def evaluate_text_model(model_name, variant, device, texts, labels):
 def evaluate_text_cascade(model_small, model_large, variant, device, threshold, texts, labels):
     LOGGER.info(
         "Evaluating cascade %s->%s (threshold=%.2f, %s, %s)",
-        model_small, model_large, threshold, variant, device,
+        model_small,
+        model_large,
+        threshold,
+        variant,
+        device,
     )
     zoo = ModelZoo()
     loaded_small = zoo.load_text_model(model_small, variant, device)
@@ -106,8 +109,8 @@ def evaluate_text_cascade(model_small, model_large, variant, device, threshold, 
     total = 0
     stage1_exits = 0
     for i in tqdm(range(0, len(texts), BATCH_SIZE), desc=f"cascade-t{threshold}"):
-        batch_texts = texts[i:i + BATCH_SIZE]
-        batch_labels = labels[i:i + BATCH_SIZE]
+        batch_texts = texts[i : i + BATCH_SIZE]
+        batch_labels = labels[i : i + BATCH_SIZE]
         result = evaluator.evaluate(batch_texts, batch_labels, threshold=threshold)
         preds = result["predictions"]
         correct += int((preds == pd.Series(batch_labels).values).sum())
@@ -116,8 +119,9 @@ def evaluate_text_cascade(model_small, model_large, variant, device, threshold, 
 
     accuracy = correct / total if total else 0.0
     coverage = stage1_exits / total if total else 0.0
-    LOGGER.info("  accuracy=%.4f coverage=%.4f (%d/%d early exits)",
-                accuracy, coverage, stage1_exits, total)
+    LOGGER.info(
+        "  accuracy=%.4f coverage=%.4f (%d/%d early exits)", accuracy, coverage, stage1_exits, total
+    )
     return {
         "task": "text",
         "model": f"{model_small}->{model_large}",
@@ -206,7 +210,9 @@ def main():
             for threshold in CASCADE_THRESHOLDS:
                 try:
                     results.append(
-                        evaluate_text_cascade("minilm", "distilbert", variant, device, threshold, texts, labels)
+                        evaluate_text_cascade(
+                            "minilm", "distilbert", variant, device, threshold, texts, labels
+                        )
                     )
                 except Exception as exc:
                     LOGGER.error("Failed cascade t=%.2f %s %s: %s", threshold, variant, device, exc)

@@ -2,7 +2,7 @@
 
 Fine-tuning entry points for the models used by the planner. Skip unless you need
 custom checkpoints — the rest of the pipeline uses public pre-trained models from
-HuggingFace and torchvision.
+Hugging Face and torchvision.
 
 ## Scripts
 
@@ -17,11 +17,11 @@ python training/finetune_vision_models.py
 ```
 
 Checkpoints are written under `training/checkpoints/`. To consume them, point
-`src/models/model_zoo.py` at the checkpoint directories instead of the public
-HuggingFace IDs.
+`src/anytime_serving/models/model_zoo.py` at the checkpoint directories instead of the public
+Hugging Face IDs.
 
 ## Hyperparameters
 
 Edit the constants at the top of each script (`BATCH_SIZE`, `LEARNING_RATE`,
-`NUM_EPOCHS`, etc.). Defaults reproduce the validation numbers reported by the
-original papers within a percent.
+`NUM_EPOCHS`). The defaults are starting points and are not tuned; measure any
+resulting checkpoint with `scripts/profile_variants.py` before serving it.

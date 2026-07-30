@@ -8,6 +8,7 @@ per-served-request cost reduction.
 Usage:
     python scripts/demo_serving.py
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,21 +16,16 @@ import json
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT))
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
 
-from src.serving.admission import MM1AdmissionController
-from src.serving.load_monitor import LoadMonitor
-from src.serving.onnx_runtime import InferenceRequest, RuntimePool, find_runtime_binary
-from src.serving.selector import AdaptiveSelector, VariantProfile
-from src.serving.server import AdaptiveServer, drive_workload, poisson_arrivals
-from src.utils.logger import get_logger
+from anytime_serving.serving.load_monitor import LoadMonitor
+from anytime_serving.serving.onnx_runtime import InferenceRequest, RuntimePool, find_runtime_binary
+from anytime_serving.serving.selector import AdaptiveSelector, VariantProfile
+from anytime_serving.serving.server import AdaptiveServer, drive_workload, poisson_arrivals
+from anytime_serving.utils.logger import get_logger
 
 LOGGER = get_logger("scripts.demo_serving")
 
@@ -48,24 +44,28 @@ def _run_policy(
     *,
     label: str,
     adaptive: bool,
-    model_paths: Dict[str, Path],
-    arrivals: List[float],
+    model_paths: dict[str, Path],
+    arrivals: list[float],
     deadline_ms: float,
     workers: int,
     seed: int,
 ):
     if adaptive:
         variants = [
-            VariantProfile("fp32", service_time_ms=12.0, accuracy=0.91, compute_cost_per_request=1.0),
-            VariantProfile("int8", service_time_ms=5.0, accuracy=0.89, compute_cost_per_request=0.42),
+            VariantProfile(
+                "fp32", service_time_ms=12.0, accuracy=0.91, compute_cost_per_request=1.0
+            ),
+            VariantProfile(
+                "int8", service_time_ms=5.0, accuracy=0.89, compute_cost_per_request=0.42
+            ),
         ]
     else:
         variants = [VariantProfile("fp32", 12.0, 0.91, 1.0)]
     selector = AdaptiveSelector(
         variants,
+        servers=workers,
         load_knee_percent=40.0,
         load_slope=0.015,
-        admission_controller=MM1AdmissionController(),
     )
     monitor = LoadMonitor(interval_s=0.05)
     monitor.start()
@@ -74,6 +74,7 @@ def _run_policy(
         with RuntimePool(workers, model_paths, binary=find_runtime_binary()) as pool:
             server = AdaptiveServer(pool, selector, monitor)
             try:
+
                 def factory(_i: int) -> InferenceRequest:
                     return InferenceRequest(
                         variant="fp32",
@@ -89,9 +90,7 @@ def _run_policy(
 
     served = [r for r in stats.requests if r.admitted]
     mean_cost = sum(r.compute_cost for r in served) / len(served) if served else 0.0
-    int8_frac = (
-        sum(1 for r in served if r.variant == "int8") / len(served) if served else 0.0
-    )
+    int8_frac = sum(1 for r in served if r.variant == "int8") / len(served) if served else 0.0
     return {
         "label": label,
         "attempted": stats.total,
@@ -125,7 +124,10 @@ def main() -> int:
         )
         LOGGER.info(
             "Driving %d Poisson arrivals over %.1fs (%.1f rps, deadline=%.1fms)",
-            len(arrivals), args.duration, args.arrival_rate, args.deadline_ms,
+            len(arrivals),
+            args.duration,
+            args.arrival_rate,
+            args.deadline_ms,
         )
 
         fp32_result = _run_policy(

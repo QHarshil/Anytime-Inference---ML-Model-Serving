@@ -27,11 +27,22 @@ add_executable(anytime_runtime src/main.cpp)
 
 target_include_directories(anytime_runtime PRIVATE ${ONNXRUNTIME_ROOT_PATH}/include)
 
+# find_library caches its result, so reconfiguring with a different
+# ONNXRUNTIME_ROOT_PATH would otherwise keep linking the previously found
+# library while compiling against the new headers. That mismatch surfaces only at
+# runtime, as "The requested API version [N] is not available".
+if(DEFINED CACHE{ONNXRUNTIME_LIB} AND NOT ONNXRUNTIME_LIB MATCHES "^${ONNXRUNTIME_ROOT_PATH}/")
+    message(STATUS "ONNXRUNTIME_ROOT_PATH changed; re-resolving ONNXRUNTIME_LIB")
+    unset(ONNXRUNTIME_LIB CACHE)
+endif()
+
 find_library(ONNXRUNTIME_LIB
     NAMES onnxruntime
     PATHS ${ONNXRUNTIME_ROOT_PATH}/lib
     NO_DEFAULT_PATH
     REQUIRED)
+
+message(STATUS "Linking ONNX Runtime: ${ONNXRUNTIME_LIB}")
 
 target_link_libraries(anytime_runtime PRIVATE ${ONNXRUNTIME_LIB})
 

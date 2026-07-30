@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format
+        run: ruff format --check .
+      - name: mypy
+        run: mypy
+
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install -e ".[bench]" pytest
+      - name: Run tests
+        run: pytest -q
+
+  test-minimal:
+    name: Tests without torch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # The serving control plane must run without the research stack. Installing
+      # only the base dependencies enforces that: a module-scope torch or pandas
+      # import anywhere on the serving path fails this job.
+      - name: Install base dependencies only
+        run: pip install -e . pytest
+      - name: Assert torch and pandas are absent
+        run: |
+          for dep in torch pandas; do
+            if python -c "import $dep" 2>/dev/null; then
+              echo "$dep must not be installed in this job"; exit 1
+            fi
+          done
+      - name: Import the serving plane
+        run: python -c "import anytime_serving.serving, anytime_serving.models.cascade"
+      # The remaining suites need pandas/scipy and are covered by the `test` job.
+      - name: Run serving tests and import-boundary guards
+        run: |
+          pytest -q \
+            tests/test_admission.py \
+            tests/test_selector.py \
+            tests/test_serving.py \
+            tests/test_load_monitor.py \
+            tests/test_import_boundaries.py
+
+  runtime:
+    name: C++ runtime build
+    runs-on: ubuntu-latest
+    env:
+      # Must match the onnxruntime wheel the Python side installs. The version is
+      # not cosmetic: building the worker against 1.20.1 while profiling with the
+      # 1.26.0 wheel measured DistilBERT at 98.9 ms in the worker versus 13.0 ms
+      # in the profiler, a 7.6x gap that made every admission decision wrong.
+      ONNXRUNTIME_VERSION: 1.26.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch ONNX Runtime
+        run: |
+          curl -fsSL -o onnxruntime.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
+          mkdir -p "$RUNNER_TEMP/onnxruntime"
+          # Release tarball layouts differ between versions: some nest a
+          # versioned directory, some do not. Locate the one holding include/.
+          tar -xzf onnxruntime.tgz -C "$RUNNER_TEMP/onnxruntime" --strip-components=1
+          root="$RUNNER_TEMP/onnxruntime"
+          if [ ! -d "$root/include" ]; then
+            root=$(find "$RUNNER_TEMP/onnxruntime" -maxdepth 2 -type d -name include \
+              -exec dirname {} \; | head -1)
+          fi
+          echo "ONNXRUNTIME_ROOT_PATH=$root" >> "$GITHUB_ENV"
+      - name: Configure
+        run: |
+          cmake -S runtime_cpp -B runtime_cpp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DONNXRUNTIME_ROOT_PATH="$ONNXRUNTIME_ROOT_PATH"
+      - name: Build
+        run: cmake --build runtime_cpp/build -j"$(nproc)"
+      - name: Verify the binary starts and reports its usage
+        run: |
+          # No --model argument is an error; the binary must exit non-zero with a
+          # message rather than hang waiting on stdin.
+          if runtime_cpp/build/anytime_runtime </dev/null; then
+            echo "expected a non-zero exit without --model"; exit 1
+          fi
