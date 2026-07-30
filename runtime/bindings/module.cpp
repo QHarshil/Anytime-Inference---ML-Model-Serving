@@ -21,7 +21,9 @@
 #include <utility>
 #include <vector>
 
+#include "anytime/decoder.hpp"
 #include "anytime/engine.hpp"
+#include "anytime/kv_cache.hpp"
 #include "anytime/tensor.hpp"
 
 namespace py = pybind11;
@@ -85,6 +87,40 @@ py::array wrap_output(Ort::Value&& value) {
         delete static_cast<Ort::Value*>(pointer);
     });
     return py::array(dtype, shape, strides, owned->GetTensorMutableRawData(), owner);
+}
+
+// Hands a vector's buffer to numpy without a second copy. The logits in a
+// StepResult are already the one deliberate copy the decoder makes -- the last row
+// of a much larger output -- so copying them again into a numpy array would be
+// gratuitous.
+py::array wrap_logits(std::vector<float>&& logits) {
+    auto* owned = new std::vector<float>(std::move(logits));
+    py::capsule owner(owned, [](void* pointer) {
+        delete static_cast<std::vector<float>*>(pointer);
+    });
+    return py::array(py::dtype::of<float>(),
+                     {static_cast<py::ssize_t>(owned->size())},
+                     {static_cast<py::ssize_t>(sizeof(float))},
+                     owned->data(), owner);
+}
+
+// What a prefill or decode step returns to Python. Separate from
+// anytime::StepResult so the logits cross as a numpy view rather than being copied
+// again by the stl caster.
+struct PyStepResult {
+    py::array logits;
+    anytime::StepTimings timings;
+    int length = 0;
+    int runs = 0;
+};
+
+PyStepResult make_step_result(anytime::StepResult&& result) {
+    PyStepResult wrapped;
+    wrapped.logits = wrap_logits(std::move(result.logits));
+    wrapped.timings = result.timings;
+    wrapped.length = result.length;
+    wrapped.runs = result.runs;
+    return wrapped;
 }
 
 py::tuple run_engine(anytime::Engine& engine, const std::string& variant,
@@ -176,4 +212,133 @@ PYBIND11_MODULE(anytime_runtime, module) {
              "Input names the variant's graph declares.")
         .def("output_names", &anytime::Engine::output_names, py::arg("variant"),
              "Output names the variant's graph declares, in run order.");
+
+    // --- decoder path -------------------------------------------------------
+
+    module.attr("DEFAULT_BLOCK_TOKENS") = anytime::kDefaultBlockTokens;
+    module.attr("DEFAULT_PREFILL_CHUNK_TOKENS") = anytime::kDefaultPrefillChunkTokens;
+
+    // Derives from RuntimeError, so the error contract in serving/onnx_runtime.py
+    // still holds: this means "the runtime could not serve this request". It is a
+    // distinct type because it is the one such error the admission policy is meant
+    // to handle -- by evicting or refusing -- rather than propagate.
+    py::register_exception<anytime::CacheExhausted>(module, "CacheExhausted",
+                                                   PyExc_RuntimeError);
+
+    py::class_<anytime::KvGeometry>(module, "KvGeometry",
+        "Shape of a decoder's KV cache, read off the graph rather than a config.")
+        .def_readonly("layers", &anytime::KvGeometry::layers)
+        .def_readonly("kv_heads", &anytime::KvGeometry::kv_heads)
+        .def_readonly("head_dim", &anytime::KvGeometry::head_dim)
+        .def_readonly("block_tokens", &anytime::KvGeometry::block_tokens)
+        .def_property_readonly("bytes_per_token", &anytime::KvGeometry::bytes_per_token,
+                               "Cache bytes one token position costs across every layer.")
+        .def_property_readonly("bytes_per_block", &anytime::KvGeometry::bytes_per_block,
+                               "Cache bytes one block holds.")
+        .def("blocks_for", &anytime::KvGeometry::blocks_for, py::arg("tokens"),
+             "Blocks a sequence of this many tokens occupies, rounded up.")
+        .def("__repr__", [](const anytime::KvGeometry& geometry) {
+            return "KvGeometry(layers=" + std::to_string(geometry.layers) +
+                   ", kv_heads=" + std::to_string(geometry.kv_heads) +
+                   ", head_dim=" + std::to_string(geometry.head_dim) +
+                   ", block_tokens=" + std::to_string(geometry.block_tokens) + ")";
+        });
+
+    py::class_<anytime::StepTimings>(module, "StepTimings",
+        "Where one step's time went.\n\n"
+        "gather_ms is the price of block accounting and is reported separately "
+        "because the point is not to assume it is free. run_ms is time inside "
+        "Session::Run, matching what Engine.run reports, so the two are "
+        "comparable. verify_ms is non-zero only on the step that checks the "
+        "present-prefix invariant, once per sequence.")
+        .def_readonly("gather_ms", &anytime::StepTimings::gather_ms)
+        .def_readonly("run_ms", &anytime::StepTimings::run_ms)
+        .def_readonly("scatter_ms", &anytime::StepTimings::scatter_ms)
+        .def_readonly("verify_ms", &anytime::StepTimings::verify_ms)
+        .def_readonly("total_ms", &anytime::StepTimings::total_ms);
+
+    py::class_<PyStepResult>(module, "StepResult",
+        "Result of one prefill or one decode step.\n\n"
+        "logits holds the distribution for the next token only. The graph returns "
+        "one row per position it was given -- 206 MB for a 1024-token prefill -- "
+        "when sampling reads one row of 50257, so the last row is copied out and "
+        "the rest is dropped.")
+        .def_readonly("logits", &PyStepResult::logits)
+        .def_readonly("timings", &PyStepResult::timings)
+        .def_readonly("length", &PyStepResult::length,
+                      "Tokens in the cache after this step.")
+        .def_readonly("runs", &PyStepResult::runs,
+                      "Graph invocations. Greater than one for a chunked prefill.");
+
+    py::class_<anytime::DecoderSession>(module, "DecoderSession",
+        "Decoder-only inference over a block-allocated KV cache.\n\n"
+        "The cache is a host-side block allocator, not paged attention: an "
+        "exported decoder takes past_key_values as graph inputs and ONNX Runtime "
+        "allocates the present tensors itself, so a sequence's blocks are gathered "
+        "into the batch-shaped tensor before each run and the new tail is copied "
+        "back afterwards.\n\n"
+        "The arena is fixed at construction. That is what makes admission a "
+        "decision: open() returns False when there is no room, and a sequence that "
+        "outgrows its reservation mid-decode raises CacheExhausted.")
+        .def(py::init([](const std::string& path, int block_tokens, std::size_t num_blocks,
+                         int intra_op_threads, int inter_op_threads) {
+                 return std::make_unique<anytime::DecoderSession>(
+                     path, block_tokens, num_blocks, intra_op_threads, inter_op_threads);
+             }),
+             py::arg("path"), py::arg("block_tokens") = anytime::kDefaultBlockTokens,
+             py::arg("num_blocks") = 256, py::arg("intra_op_threads") = 1,
+             py::arg("inter_op_threads") = 1)
+        .def_property_readonly("geometry", &anytime::DecoderSession::geometry,
+                               py::return_value_policy::copy)
+        .def_property_readonly("capacity_blocks", &anytime::DecoderSession::capacity_blocks)
+        .def_property_readonly("free_blocks", &anytime::DecoderSession::free_blocks)
+        .def_property_readonly("arena_bytes", &anytime::DecoderSession::arena_bytes)
+        .def_property_readonly("declares_attention_mask",
+                               &anytime::DecoderSession::declares_attention_mask)
+        .def_property_readonly("declares_position_ids",
+                               &anytime::DecoderSession::declares_position_ids)
+        .def("blocks_for", &anytime::DecoderSession::blocks_for, py::arg("tokens"))
+        .def("open", &anytime::DecoderSession::open, py::arg("sequence_id"),
+             py::arg("reserve_tokens"),
+             "Reserve blocks for a sequence.\n\n"
+             "Returns False when the arena cannot supply them, leaving the pool and "
+             "every other sequence untouched. Refusing is the admission "
+             "controller's answer, not an exception.")
+        .def("release", &anytime::DecoderSession::release, py::arg("sequence_id"),
+             "Free a sequence's blocks, returning how many. Idempotent.")
+        .def("contains", &anytime::DecoderSession::contains, py::arg("sequence_id"))
+        .def("length", &anytime::DecoderSession::length, py::arg("sequence_id"),
+             "Tokens cached for this sequence.")
+        .def("blocks_held", &anytime::DecoderSession::blocks_held, py::arg("sequence_id"))
+        .def_property_readonly("sequences", &anytime::DecoderSession::sequences,
+                               "Open sequence ids.")
+        .def("prefill",
+             [](anytime::DecoderSession& self, const std::string& sequence_id,
+                const std::vector<std::int64_t>& tokens, int chunk_tokens) {
+                 anytime::StepResult result;
+                 {
+                     py::gil_scoped_release release;
+                     result = self.prefill(sequence_id, tokens, chunk_tokens);
+                 }
+                 return make_step_result(std::move(result));
+             },
+             py::arg("sequence_id"), py::arg("tokens"),
+             py::arg("chunk_tokens") = anytime::kDefaultPrefillChunkTokens,
+             "Run a prompt through the graph, filling the cache.\n\n"
+             "Chunked by default: one pass over 1024 GPT-2 tokens measured 444.9 ms "
+             "and allocated 206 MB of logits the sampler never reads, while four "
+             "passes of 256 measured 372.7 ms with a 51 MB peak. Pass "
+             "chunk_tokens=0 for a single pass.")
+        .def("decode",
+             [](anytime::DecoderSession& self, const std::string& sequence_id,
+                std::int64_t token) {
+                 anytime::StepResult result;
+                 {
+                     py::gil_scoped_release release;
+                     result = self.decode(sequence_id, token);
+                 }
+                 return make_step_result(std::move(result));
+             },
+             py::arg("sequence_id"), py::arg("token"),
+             "Extend a sequence by one token, reading the cache for the rest.");
 }

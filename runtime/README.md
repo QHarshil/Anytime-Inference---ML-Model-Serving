@@ -51,15 +51,17 @@ build system.
 ## Layout
 
 ```text
-include/anytime/tensor.hpp   element types, borrowed tensor views
-include/anytime/engine.hpp   sessions, input filtering, one run
-src/                         implementations
-bindings/module.cpp          the pybind11 module
-cmake/                       ONNX Runtime resolution
+include/anytime/tensor.hpp     element types, borrowed tensor views
+include/anytime/engine.hpp     sessions, input filtering, one run
+include/anytime/kv_cache.hpp   the block arena, gather and scatter
+include/anytime/decoder.hpp    prefill/decode over that arena
+src/                           implementations
+bindings/module.cpp            the pybind11 module
+cmake/                         ONNX Runtime resolution
 ```
 
 Headers arrive as the work that needs them lands, rather than as empty
-placeholders: the scheduler, batch assembly, and KV cache are not here yet.
+placeholders: the scheduler and batch assembly are not here yet.
 
 ## Behaviour
 
@@ -88,12 +90,16 @@ placeholders: the scheduler, batch assembly, and KV cache are not here yet.
 
 ## Tests
 
-`tests/test_runtime_engine.py` compares the extension against the two backends it
+`tests/test_runtime_engine.py` compares the extension against the backend it
 replaces on a graph with real arithmetic in it, and asserts they agree bitwise.
 `ANYTIME_REQUIRE_BACKENDS` turns a missing backend from a skip into a failure, so
 the comparison cannot decay into a backend checked against itself.
 
+`tests/test_kv_cache.py` and `tests/test_decoder_session.py` cover the decoder path
+against the contiguous cache it replaces, on the synthetic graph in
+`tests/conftest.py` and on the exported GPT-2 graph when that is on disk.
+
 ```bash
-pytest -q tests/test_runtime_engine.py
-ANYTIME_REQUIRE_BACKENDS=extension,python,subprocess pytest -q tests/test_runtime_engine.py
+pytest -q tests/test_runtime_engine.py tests/test_kv_cache.py tests/test_decoder_session.py
+ANYTIME_REQUIRE_BACKENDS=extension,python pytest -q tests/test_runtime_engine.py
 ```

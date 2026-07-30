@@ -21,7 +21,9 @@ anytime_resolve_onnxruntime()
 
 add_library(anytime_core STATIC
     src/tensor.cpp
-    src/engine.cpp)
+    src/engine.cpp
+    src/kv_cache.cpp
+    src/decoder.cpp)
 
 target_include_directories(anytime_core
     PUBLIC
