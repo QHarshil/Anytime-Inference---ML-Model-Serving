@@ -62,13 +62,35 @@ def test_utils_package_import_stays_light():
     assert not leaked, f"anytime_serving.utils pulled in {sorted(leaked)}"
 
 
-def test_lazy_utils_exports_still_resolve():
-    """The pandas-backed helpers remain reachable from the package namespace."""
+def test_lazy_utils_exports_stay_advertised():
+    """The pandas-backed names remain visible in the package namespace.
+
+    Checked without resolving them, so the base install exercises this too. What
+    the ``__getattr__`` hook has to preserve is that the namespace looks
+    unchanged, and ``dir()`` plus ``__all__`` show that without importing pandas.
+    """
+    from anytime_serving import utils
+
+    for name in ("save_csv", "compute_hit_rate"):
+        assert name in dir(utils)
+        assert name in utils.__all__
+
+
+def test_lazy_utils_exports_resolve_to_callables():
+    """Resolving a lazy name yields the helper itself, not just the name.
+
+    Every lazy export is pandas-backed, so this cannot run in the base install
+    the ``test-minimal`` CI job builds: that job asserts pandas is absent. The
+    advertised-names test above is what covers the hook there.
+    """
+    import pytest
+
+    pytest.importorskip("pandas")
+
     from anytime_serving import utils
 
     assert callable(utils.save_csv)
     assert callable(utils.compute_hit_rate)
-    assert "save_csv" in dir(utils)
 
 
 def test_unknown_utils_attribute_raises_attribute_error():

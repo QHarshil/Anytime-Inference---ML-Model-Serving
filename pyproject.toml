@@ -78,7 +78,12 @@ ignore = [
 "tests/*" = ["E402"]
 
 [tool.mypy]
-python_version = "3.10"
+# numpy 2.5 onward writes PEP 695 `type` statements into its stubs, which mypy
+# refuses to parse when told to target an older version -- it fails inside
+# numpy/__init__.pyi before reaching any of this project's code. Support for
+# Python 3.10 is unaffected and still enforced elsewhere: ruff's target-version
+# rejects newer syntax, and the test matrix runs 3.10 directly.
+python_version = "3.12"
 files = ["src/anytime_serving"]
 warn_unused_configs = true
 warn_redundant_casts = true
