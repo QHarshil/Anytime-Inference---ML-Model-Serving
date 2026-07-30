@@ -1,6 +1,19 @@
 [build-system]
-requires = ["hatchling>=1.21"]
-build-backend = "hatchling.build"
+# The runtime is a compiled extension rather than a subprocess, so building the
+# package means running CMake.
+#
+# onnxruntime appears here as a fallback, not as the authority. The extension has
+# to link the version the *target* environment imports at runtime, so
+# runtime/cmake/ResolveOnnxRuntime.cmake reads that environment first and only
+# falls back to this copy when installing into a clean environment, where no wheel
+# exists yet at build time. The specifier matches the runtime dependency so the two
+# resolve alike, and the equality is re-checked when the extension is imported.
+requires = [
+    "scikit-build-core>=0.10",
+    "pybind11>=3.0",
+    "onnxruntime>=1.16",
+]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "anytime-serving"
@@ -55,8 +68,15 @@ dev = [
     "ruff>=0.4",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/anytime_serving"]
+[tool.scikit-build]
+cmake.source-dir = "runtime"
+cmake.version = ">=3.20"
+wheel.packages = ["src/anytime_serving"]
+# Keep the configure and build output visible. A version mismatch against the
+# onnxruntime wheel is reported as a configure-time error, and that message is
+# worth reading rather than burying.
+build.verbose = true
+logging.level = "INFO"
 
 [tool.ruff]
 line-length = 100

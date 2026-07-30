@@ -59,3 +59,7 @@ logs/
 
 # C++ build artefacts
 runtime_cpp/build/
+runtime/build/
+# The compiled extension, built into the source tree by an editable install.
+anytime_runtime*.so
+anytime_runtime*.pyd

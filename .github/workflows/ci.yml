@@ -23,6 +23,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      # Installing the package compiles the extension, which needs an ONNX
+      # Runtime SDK matching the wheel. CMake downloads it here and reuses it on
+      # later runs.
+      - name: Cache the ONNX Runtime SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/anytime-inference-planner
+          key: ort-sdk-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ort-sdk-${{ runner.os }}-
       - name: Install
         run: pip install -e ".[dev]"
       - name: ruff check
@@ -45,9 +54,28 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - name: Cache the ONNX Runtime SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/anytime-inference-planner
+          key: ort-sdk-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ort-sdk-${{ runner.os }}-
       - name: Install
         run: pip install -e ".[bench]" pytest
+      # The extension is the runtime, so an install that silently fell back to
+      # the Python backend would hide a broken build behind passing tests.
+      - name: Assert the extension was built
+        run: |
+          python -c "
+          from anytime_serving.serving import extension_available, load_extension
+          import onnxruntime
+          assert extension_available(), 'anytime_runtime did not build or import'
+          print('anytime_runtime links ONNX Runtime', load_extension().onnxruntime_version())
+          print('onnxruntime wheel reports         ', onnxruntime.__version__)
+          "
       - name: Run tests
+        env:
+          ANYTIME_REQUIRE_BACKENDS: extension,python
         run: pytest -q
 
   test-minimal:
@@ -59,6 +87,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Cache the ONNX Runtime SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/anytime-inference-planner
+          key: ort-sdk-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ort-sdk-${{ runner.os }}-
       # The serving control plane must run without the research stack. Installing
       # only the base dependencies enforces that: a module-scope torch or pandas
       # import anywhere on the serving path fails this job.
@@ -75,50 +109,47 @@ jobs:
         run: python -c "import anytime_serving.serving, anytime_serving.models.cascade"
       # The remaining suites need pandas/scipy and are covered by the `test` job.
       - name: Run serving tests and import-boundary guards
+        env:
+          ANYTIME_REQUIRE_BACKENDS: extension,python
         run: |
           pytest -q \
             tests/test_admission.py \
             tests/test_selector.py \
             tests/test_serving.py \
             tests/test_load_monitor.py \
+            tests/test_runtime_engine.py \
             tests/test_import_boundaries.py
 
-  runtime:
-    name: C++ runtime build
+  engine:
+    name: Engine parity against the reference backend
     runs-on: ubuntu-latest
-    env:
-      # Must match the onnxruntime wheel the Python side installs. The version is
-      # not cosmetic: building the worker against 1.20.1 while profiling with the
-      # 1.26.0 wheel measured DistilBERT at 98.9 ms in the worker versus 13.0 ms
-      # in the profiler, a 7.6x gap that made every admission decision wrong.
-      ONNXRUNTIME_VERSION: 1.26.0
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch ONNX Runtime
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Cache the ONNX Runtime SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/anytime-inference-planner
+          key: ort-sdk-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: ort-sdk-${{ runner.os }}-
+      - name: Install
+        run: pip install -e . pytest
+      # Both copies of ONNX Runtime in this process must be the same version. The
+      # extension reports what it linked; the wheel reports what it will import.
+      - name: Report the resolved ONNX Runtime versions
         run: |
-          curl -fsSL -o onnxruntime.tgz \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-${ONNXRUNTIME_VERSION}.tgz"
-          mkdir -p "$RUNNER_TEMP/onnxruntime"
-          # Release tarball layouts differ between versions: some nest a
-          # versioned directory, some do not. Locate the one holding include/.
-          tar -xzf onnxruntime.tgz -C "$RUNNER_TEMP/onnxruntime" --strip-components=1
-          root="$RUNNER_TEMP/onnxruntime"
-          if [ ! -d "$root/include" ]; then
-            root=$(find "$RUNNER_TEMP/onnxruntime" -maxdepth 2 -type d -name include \
-              -exec dirname {} \; | head -1)
-          fi
-          echo "ONNXRUNTIME_ROOT_PATH=$root" >> "$GITHUB_ENV"
-      - name: Configure
-        run: |
-          cmake -S runtime_cpp -B runtime_cpp/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DONNXRUNTIME_ROOT_PATH="$ONNXRUNTIME_ROOT_PATH"
-      - name: Build
-        run: cmake --build runtime_cpp/build -j"$(nproc)"
-      - name: Verify the binary starts and reports its usage
-        run: |
-          # No --model argument is an error; the binary must exit non-zero with a
-          # message rather than hang waiting on stdin.
-          if runtime_cpp/build/anytime_runtime </dev/null; then
-            echo "expected a non-zero exit without --model"; exit 1
-          fi
+          python -c "
+          from anytime_serving.serving import load_extension
+          import onnxruntime
+          linked = load_extension().onnxruntime_version()
+          print('anytime_runtime links ONNX Runtime', linked)
+          print('onnxruntime wheel reports         ', onnxruntime.__version__)
+          assert linked == onnxruntime.__version__
+          "
+      - name: Compare the extension against the reference backend
+        env:
+          ANYTIME_REQUIRE_BACKENDS: extension,python
+        run: pytest -q tests/test_runtime_engine.py

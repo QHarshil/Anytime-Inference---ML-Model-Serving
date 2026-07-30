@@ -3,11 +3,13 @@
 from .admission import AdmissionDecision, MMcAdmissionController, erlang_b, erlang_c
 from .load_monitor import LoadMonitor, LoadSample
 from .onnx_runtime import (
+    BACKENDS,
     InferenceRequest,
     InferenceResponse,
     RuntimeClient,
     RuntimePool,
-    find_runtime_binary,
+    extension_available,
+    load_extension,
 )
 from .selector import AdaptiveSelector, SelectionDecision, VariantProfile
 from .server import AdaptiveServer, ServedRequest, ServerStats, drive_workload, poisson_arrivals
@@ -22,11 +24,13 @@ __all__ = [
     "AdaptiveSelector",
     "SelectionDecision",
     "VariantProfile",
+    "BACKENDS",
     "RuntimeClient",
     "RuntimePool",
     "InferenceRequest",
     "InferenceResponse",
-    "find_runtime_binary",
+    "extension_available",
+    "load_extension",
     "AdaptiveServer",
     "ServedRequest",
     "ServerStats",

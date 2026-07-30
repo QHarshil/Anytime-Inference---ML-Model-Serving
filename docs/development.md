@@ -9,6 +9,12 @@ pip install -e ".[dev]"
 
 Or run `./setup.sh`, which does the same.
 
+Installing compiles the `anytime_runtime` extension, so a C++17 compiler and CMake
+3.20 or newer are needed. An ONNX Runtime SDK matching the `onnxruntime` wheel is
+downloaded once into `~/.cache/anytime-inference-planner/`; nothing needs to be
+fetched by hand. See [`../runtime/README.md`](../runtime/README.md) for why the
+version is derived rather than pinned.
+
 ### Dependency groups
 
 The serving control plane deliberately depends on very little. Extras add the
@@ -41,11 +47,20 @@ Markers, declared in `pytest.ini` with `--strict-markers`:
 | --- | --- |
 | `slow` | takes more than a few seconds |
 | `needs_torch` | requires torch, torchvision, or transformers |
-| `needs_runtime` | requires the compiled C++ worker |
+| `needs_runtime` | requires the compiled `anytime_runtime` extension |
 
 Tests skip cleanly rather than failing when an optional dependency is absent. The
-serving tests build a tiny ONNX model on the fly, so they need neither torch nor
-the C++ binary.
+serving tests build a tiny ONNX graph on the fly, so they need neither torch nor a
+compiled runtime.
+
+Skipping is the wrong default for the cross-backend comparison in
+`tests/test_runtime_engine.py`, which would silently pass by checking one backend
+against itself. Set `ANYTIME_REQUIRE_BACKENDS` to the backends an environment is
+supposed to provide and a missing one fails instead:
+
+```bash
+ANYTIME_REQUIRE_BACKENDS=extension,python pytest -q tests/test_runtime_engine.py
+```
 
 ## Lint and types
 
@@ -60,20 +75,25 @@ Configuration lives in `pyproject.toml`. `mypy` runs over
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs four jobs:
+`.github/workflows/ci.yml` runs four jobs. Every one of them compiles the
+extension, because installing the package is what builds it.
 
 | Job | What it does |
 | --- | --- |
 | `lint` | ruff check, ruff format, mypy |
-| `test` | full suite on Python 3.10 through 3.13 with `[bench]` |
+| `test` | full suite on Python 3.10 through 3.13 with `[bench]`; asserts the extension built |
 | `test-minimal` | base dependencies only; asserts torch and pandas are absent, then runs the serving tests and boundary guards |
-| `runtime` | builds the C++ worker against a pinned ONNX Runtime and checks the CLI contract |
+| `engine` | asserts the extension links the installed wheel, and compares it against the reference backend |
 
 `test-minimal` exists because the boundary it protects is easy to break by
 accident and impossible to notice locally, where the research stack is installed.
 
-The `runtime` job pins `ONNXRUNTIME_VERSION` to match the wheel. See
-[`runtime.md`](runtime.md) for why that pin matters.
+`engine` exists for the same reason in the other direction. The backend comparison
+skips a backend that is not built, so a job that failed to build one would report
+success having compared nothing; `ANYTIME_REQUIRE_BACKENDS` makes that a failure.
+No job pins an ONNX Runtime version any more: the version is read from the
+installed wheel at configure time, so the two copies in the process cannot drift
+apart. See [`../runtime/README.md`](../runtime/README.md).
 
 ## Layout
 
@@ -86,12 +106,12 @@ src/anytime_serving/
   profiler/       offline latency and accuracy profilers
   utils/          io, logging, metrics, visualisation
   workloads/      synthetic Poisson and bursty trace generators
-runtime_cpp/      C++ ONNX Runtime worker (CMake project)
+runtime/          C++ engine and pybind11 bindings (built by pip install)
 scripts/          export, profiling, load sweep, demo
 experiments/      offline profiling and statistical evaluation pipeline
 configs/          deadlines, model zoo, measured serving profiles
 docs/             architecture, planner, runtime, quantisation, benchmarks
-tests/            unit, integration, protocol, and import-boundary tests
+tests/            unit, integration, engine-parity, and import-boundary tests
 ```
 
 ## Generated files

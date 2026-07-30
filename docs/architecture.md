@@ -18,12 +18,13 @@ decides, and a C++ worker pool that computes.
                 | RuntimePool                       |
                 |   N RuntimeClients, one per worker|
                 +----------------+------------------+
-                                 |  line-delimited JSON on stdin/stdout
+                                 |  in-process call, borrowed tensors
                                  v
                 +-----------------------------------+
-                | anytime_runtime (C++)             |
+                | anytime_runtime (C++ extension)   |
                 |   one ONNX Runtime session per    |
-                |   variant, 1 intra-op thread      |
+                |   variant, 1 intra-op thread,     |
+                |   GIL released during inference   |
                 +-----------------------------------+
 ```
 

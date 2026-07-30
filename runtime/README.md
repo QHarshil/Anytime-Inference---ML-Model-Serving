@@ -1,0 +1,99 @@
+# anytime_runtime (C++ extension)
+
+In-process ONNX Runtime engine, exposed to Python through pybind11. Replaces the
+Stage 1 subprocess worker: the transport is a function call, so there is no JSON
+framing, no base64, and no copy in either direction.
+
+## Build
+
+The extension is built by installing the package. `scikit-build-core` drives
+CMake, so there is no separate build step:
+
+```bash
+pip install -e .
+```
+
+`onnxruntime` must already be installed in the target environment, because the
+extension is linked against the version that environment will import.
+
+## The version is derived, never written down twice
+
+`cmake/ResolveOnnxRuntime.cmake` reads `onnxruntime.__version__` from the target
+interpreter and resolves an SDK to match:
+
+- `ONNXRUNTIME_ROOT_PATH`, if set, must contain a `VERSION_NUMBER` equal to the
+  wheel version. Configuration fails otherwise.
+- Otherwise the matching release archive is downloaded once into
+  `~/.cache/anytime-inference-planner/` and reused. `ANYTIME_ORT_CACHE` overrides
+  the location.
+
+This matters more than it looks. Stage 1 built the worker against 1.20.1 while the
+Python side used the 1.26.0 wheel and measured DistilBERT at **98.9 ms against
+13.0 ms** inside `session->Run()`, a 7.6x gap that made every admission decision
+wrong. Nothing failed; the numbers were just false. With the extension both copies
+of the library are loaded into one process, so the equality is enforced in three
+places:
+
+1. **Configure time.** The SDK version must equal the wheel version.
+2. **Compile time.** `ORT_API_VERSION` is read out of the resolved headers and
+   asserted in `src/tensor.cpp`, so a header from another include path fails the
+   build rather than the run.
+3. **Import time.** `load_extension()` in `serving/onnx_runtime.py` compares
+   `anytime_runtime.onnxruntime_version()` against `onnxruntime.__version__` and
+   raises on a mismatch, which covers an extension carried into a different
+   environment.
+
+The probe deliberately clears `PYTHONPATH`. pip builds in an isolated environment
+layered onto the target interpreter through that variable, and reading its
+onnxruntime instead of the target's would reintroduce the mismatch through the
+build system.
+
+## Layout
+
+```text
+include/anytime/tensor.hpp   element types, borrowed tensor views
+include/anytime/engine.hpp   sessions, input filtering, one run
+src/                         implementations
+bindings/module.cpp          the pybind11 module
+cmake/                       ONNX Runtime resolution
+```
+
+Headers arrive as the work that needs them lands, rather than as empty
+placeholders: the scheduler, batch assembly, and KV cache are not here yet.
+
+## Behaviour
+
+- **Tensors are borrowed, not copied.** Inputs point into the numpy buffer, whose
+  references the bindings hold for the whole call. Outputs are numpy views over
+  ONNX Runtime's own buffers, kept alive by a capsule owning the `Ort::Value`. A
+  response therefore holds runtime memory until it is dropped.
+- **A non-contiguous input is made contiguous.** ONNX Runtime reads the buffer
+  directly, so a strided array would otherwise be misread.
+- **The GIL is released around inference.** Without that a pool would serialise on
+  the interpreter lock, and the M/M/c model the admission controller uses would
+  describe a machine that does not exist.
+- **One session set per engine.** The Python pool holds one engine per slot, so N
+  workers stay N independent single-threaded servers. Intra-op and inter-op
+  threads default to one each, matching how the service times in
+  `configs/serving.yaml` were measured.
+- **Input filtering.** Variants of one task can declare different inputs, so
+  callers pass the union and each graph takes the subset it declares. A declared
+  input that is missing raises instead, since running on a partial feed would
+  silently produce wrong output.
+- **Error contract.** Anything meaning "the runtime could not serve this request"
+  (an unknown variant, a missing input) raises `RuntimeError`. A malformed
+  argument (a dtype the engine does not accept) raises `ValueError`.
+- **Supported input dtypes.** float32, float64, int32, int64, bool. Outputs are
+  mapped back from the same set.
+
+## Tests
+
+`tests/test_runtime_engine.py` compares the extension against the two backends it
+replaces on a graph with real arithmetic in it, and asserts they agree bitwise.
+`ANYTIME_REQUIRE_BACKENDS` turns a missing backend from a skip into a failure, so
+the comparison cannot decay into a backend checked against itself.
+
+```bash
+pytest -q tests/test_runtime_engine.py
+ANYTIME_REQUIRE_BACKENDS=extension,python,subprocess pytest -q tests/test_runtime_engine.py
+```
