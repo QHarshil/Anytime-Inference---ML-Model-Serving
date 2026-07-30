@@ -97,9 +97,19 @@ percentiles over hundreds of samples rather than as single figures.
 ## Known limitations
 
 - Single host, single task. No GPU, no multi-node.
-- The C++ worker and the Python fallback are compared on latency but the sweep
-  runs whichever is present; the figure above used the C++ worker.
-- Service profiles are measured through a Python ONNX Runtime session rather
-  than through the serving path itself. Those agreed to within 8% once ONNX
-  Runtime versions matched, but profiling through `RuntimePool` directly would
-  remove the possibility of divergence.
+- The figure above was produced with the Stage 1 subprocess worker, which has since
+  been replaced by the in-process engine. The two agreed bitwise on logits and
+  within 0.4% on inference time, so the shape of the result stands, but the sweep
+  has not been re-run through the engine.
+- `configs/serving.yaml` still holds the service times measured through a separate
+  ONNX Runtime session. Re-running `scripts/profile_variants.py` now measures
+  through the engine and reports wall time per request rather than time inside a
+  bare session, which moves the numbers by roughly 4%. The config, the sweep, and
+  this page should be regenerated together so they continue to describe one
+  measurement.
+
+Closed since Stage 1: service profiles are no longer measured beside the serving
+path. `scripts/profile_variants.py` measures through the same `RuntimeClient` the
+server dispatches to, and cross-checks every variant against a separate ONNX
+Runtime session, failing the run rather than writing numbers to disk when the two
+diverge by more than 15%. Measured agreement on this host is within 1.6%.

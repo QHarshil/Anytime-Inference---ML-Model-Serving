@@ -5,11 +5,22 @@ anything. Those numbers must be measured on the machine that will serve traffic:
 carrying a number over from a different host, thread count, or batch size makes
 every downstream admission decision wrong.
 
-This script measures every exported candidate under the same ONNX Runtime
-configuration the serving worker uses (one intra-op thread per worker, batch size
-one), computes the Pareto frontier over (service time, accuracy), and writes:
+Measurement goes **through the serving path**, not beside it. Every latency and
+every logit here comes from the same `RuntimeClient` the server dispatches to.
+Stage 1 profiled through a separate ONNX Runtime session instead, and that is what
+let a 7.6x discrepancy hide: the C++ worker was built against ONNX Runtime 1.20.1
+while the profiler used the 1.26.0 wheel, so DistilBERT measured 98.9 ms in the
+worker against 13.0 ms in the profiler. Nothing failed. Every service time the
+planner used was simply false.
 
-  results/variant_profiles.json   all measurements plus host metadata
+To keep that from recurring in a form the engine cannot see, each variant is also
+measured through a separate ONNX Runtime session and the two are required to agree.
+A divergence beyond --agreement-tolerance fails the run rather than being written
+to disk. This is the check whose absence made Stage 1's numbers wrong.
+
+Writes:
+
+  results/variant_profiles.json   all measurements, agreement, host metadata
   configs/serving.yaml            the frontier, as the serving harness reads it
 
 Which variants end up on the frontier is a property of the hardware, not an
@@ -40,6 +51,12 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
+from anytime_serving.serving.onnx_runtime import (
+    InferenceRequest,
+    RuntimeClient,
+    extension_available,
+    load_extension,
+)
 from anytime_serving.utils.logger import get_logger
 
 LOGGER = get_logger("scripts.profile_variants")
@@ -50,11 +67,15 @@ MEASURE_ITERATIONS = 200
 QUICK_WARMUP_ITERATIONS = 5
 QUICK_MEASURE_ITERATIONS = 40
 QUICK_ACCURACY_SAMPLES = 128
+# Matched versions measured within 0.4% on this host, and Stage 1 saw 8% across a
+# process boundary. 15% is loose enough not to fire on scheduler noise and tight
+# enough that anything structural, let alone a 7.6x version mismatch, trips it.
+DEFAULT_AGREEMENT_TOLERANCE = 0.15
 
 
 @dataclass
 class VariantMeasurement:
-    """Measured cost and quality for one variant."""
+    """Measured cost and quality for one variant, as served."""
 
     name: str
     model: str
@@ -70,17 +91,23 @@ class VariantMeasurement:
     iterations: int
     accuracy: float
     accuracy_samples: int
+    # Time inside inference as the engine reports it, against the same graph run
+    # through a separate session. Agreement is what says the number is real.
+    engine_inference_p50_ms: float
+    direct_session_p50_ms: float
+    agreement_ratio: float
     compute_cost_per_request: float = 1.0
     on_pareto_frontier: bool = False
     dominated_by: str | None = None
 
 
 def _session(graph: Path) -> ort.InferenceSession:
-    """Build a session matching the serving worker's configuration.
+    """Build a cross-check session matching the engine's configuration.
 
-    runtime/src/engine.cpp sets intra-op threads to one so that N pooled workers
-    behave as N independent single-threaded servers. Profiling with a different
-    thread count would measure a machine the planner never runs on.
+    runtime/src/engine.cpp sets intra-op and inter-op threads to one so that N
+    pooled workers behave as N independent single-threaded servers. This session
+    exists only to be compared against the engine, so it has to be configured the
+    same way or the comparison measures the configuration difference instead.
     """
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
@@ -101,7 +128,12 @@ def _find_graph(directory: Path) -> Path:
     return graphs[0]
 
 
-def _feeds(tokenizer, session: ort.InferenceSession, text: str) -> dict[str, np.ndarray]:
+def _tokenize(tokenizer, text: str) -> dict[str, np.ndarray]:
+    """Encode one string. Not filtered to any graph's declared inputs.
+
+    The engine drops inputs a graph does not declare, so the union is what the
+    server sends and therefore what should be measured.
+    """
     encoded = tokenizer(
         text,
         return_tensors="np",
@@ -109,41 +141,75 @@ def _feeds(tokenizer, session: ort.InferenceSession, text: str) -> dict[str, np.
         truncation=True,
         max_length=SEQUENCE_LENGTH,
     )
-    expected = {i.name for i in session.get_inputs()}
-    return {name: value.astype(np.int64) for name, value in encoded.items() if name in expected}
+    return {name: value.astype(np.int64) for name, value in encoded.items()}
 
 
-def _measure_latency(
+def _declared(session: ort.InferenceSession, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    expected = {spec.name for spec in session.get_inputs()}
+    return {name: value for name, value in feeds.items() if name in expected}
+
+
+def _percentiles(samples: list[float], key: str) -> dict[str, float]:
+    array = np.asarray(samples)
+    return {
+        f"{key}_p50_ms": float(np.percentile(array, 50)),
+        f"{key}_p95_ms": float(np.percentile(array, 95)),
+        f"{key}_p99_ms": float(np.percentile(array, 99)),
+        f"{key}_mean_ms": statistics.fmean(samples),
+        f"{key}_stdev_ms": statistics.stdev(samples) if len(samples) > 1 else 0.0,
+    }
+
+
+def _measure_through_engine(
+    client: RuntimeClient,
+    variant: str,
+    feeds: dict[str, np.ndarray],
+    *,
+    warmup: int,
+    iterations: int,
+) -> dict[str, float]:
+    """Latency as the server experiences it, through the runtime client."""
+    request = InferenceRequest(variant=variant, inputs=feeds)
+    for _ in range(warmup):
+        client.infer(request)
+
+    wall: list[float] = []
+    inference: list[float] = []
+    for _ in range(iterations):
+        response = client.infer(request)
+        wall.append(response.wall_latency_ms)
+        inference.append(response.runtime_latency_ms)
+
+    stats = _percentiles(wall, "wall")
+    stats.update(_percentiles(inference, "inference"))
+    stats["iterations"] = float(iterations)
+    return stats
+
+
+def _measure_direct_session(
     session: ort.InferenceSession,
     feeds: dict[str, np.ndarray],
     *,
     warmup: int,
     iterations: int,
 ) -> dict[str, float]:
+    """The same graph through a separate session, for the agreement check."""
+    fed = _declared(session, feeds)
     for _ in range(warmup):
-        session.run(None, feeds)
+        session.run(None, fed)
 
     samples: list[float] = []
     for _ in range(iterations):
         start = time.perf_counter()
-        session.run(None, feeds)
+        session.run(None, fed)
         samples.append((time.perf_counter() - start) * 1000.0)
-
-    array = np.asarray(samples)
-    return {
-        "latency_p50_ms": float(np.percentile(array, 50)),
-        "latency_p95_ms": float(np.percentile(array, 95)),
-        "latency_p99_ms": float(np.percentile(array, 99)),
-        "latency_mean_ms": statistics.fmean(samples),
-        "latency_stdev_ms": statistics.stdev(samples) if len(samples) > 1 else 0.0,
-        "iterations": float(len(samples)),
-    }
+    return _percentiles(samples, "direct")
 
 
 def _measure_accuracy(
-    session: ort.InferenceSession, tokenizer, samples: int | None
+    client: RuntimeClient, variant: str, tokenizer, samples: int | None
 ) -> tuple[float, int]:
-    """Accuracy on the SST-2 validation split."""
+    """Accuracy on the SST-2 validation split, scored through the engine."""
     from datasets import load_dataset
 
     dataset = load_dataset("glue", "sst2", split="validation")
@@ -152,7 +218,8 @@ def _measure_accuracy(
 
     correct = 0
     for row in dataset:
-        logits = session.run(None, _feeds(tokenizer, session, row["sentence"]))[0]
+        feeds = _tokenize(tokenizer, row["sentence"])
+        logits = client.infer(InferenceRequest(variant=variant, inputs=feeds)).logits
         if int(np.argmax(logits, axis=-1)[0]) == int(row["label"]):
             correct += 1
     return correct / len(dataset), len(dataset)
@@ -184,68 +251,107 @@ def _mark_pareto_frontier(measurements: list[VariantMeasurement]) -> None:
         candidate.dominated_by = dominator.name if dominator else None
 
 
-def profile(model_dir: Path, quick: bool) -> list[VariantMeasurement]:
-    from transformers import AutoTokenizer
-
-    warmup = QUICK_WARMUP_ITERATIONS if quick else WARMUP_ITERATIONS
-    iterations = QUICK_MEASURE_ITERATIONS if quick else MEASURE_ITERATIONS
-    accuracy_samples = QUICK_ACCURACY_SAMPLES if quick else None
-
+def _discover(model_dir: Path) -> list[tuple[str, str, str, Path]]:
+    """Find exported variants as (name, model, precision, graph)."""
     directories = sorted(model_dir.glob("text_*_*"))
     if not directories:
         raise SystemExit(
             f"no exported variants under {model_dir}. Run: "
             f"python scripts/export_onnx.py --task text --output-dir {model_dir}"
         )
-
-    measurements: list[VariantMeasurement] = []
+    found = []
     for directory in directories:
         if not directory.is_dir():
             continue
         # Directory names are text_<model>_<precision>.
         _, model_name, precision = directory.name.split("_", 2)
-        graph = _find_graph(directory)
-        tokenizer = AutoTokenizer.from_pretrained(directory)
-        session = _session(graph)
+        found.append((f"{model_name}_{precision}", model_name, precision, _find_graph(directory)))
+    return found
 
-        name = f"{model_name}_{precision}"
-        LOGGER.info("Profiling %s (%s)", name, graph.name)
-        latency = _measure_latency(
-            session,
-            _feeds(tokenizer, session, "a genuinely measured service time"),
-            warmup=warmup,
-            iterations=iterations,
-        )
-        accuracy, n_samples = _measure_accuracy(session, tokenizer, accuracy_samples)
 
-        measurements.append(
-            VariantMeasurement(
-                name=name,
-                model=model_name,
-                precision=precision,
-                graph=graph.name,
-                size_mb=round(graph.stat().st_size / 1e6, 1),
-                # The planner admits on expected service time, so use the median:
-                # it is not skewed by occasional scheduler noise.
-                service_time_ms=round(latency["latency_p50_ms"], 3),
-                latency_p50_ms=round(latency["latency_p50_ms"], 3),
-                latency_p95_ms=round(latency["latency_p95_ms"], 3),
-                latency_p99_ms=round(latency["latency_p99_ms"], 3),
-                latency_mean_ms=round(latency["latency_mean_ms"], 3),
-                latency_stdev_ms=round(latency["latency_stdev_ms"], 3),
-                iterations=int(latency["iterations"]),
-                accuracy=round(accuracy, 4),
-                accuracy_samples=n_samples,
+def profile(model_dir: Path, quick: bool, tolerance: float) -> tuple[list[VariantMeasurement], str]:
+    from transformers import AutoTokenizer
+
+    warmup = QUICK_WARMUP_ITERATIONS if quick else WARMUP_ITERATIONS
+    iterations = QUICK_MEASURE_ITERATIONS if quick else MEASURE_ITERATIONS
+    accuracy_samples = QUICK_ACCURACY_SAMPLES if quick else None
+
+    variants = _discover(model_dir)
+    # One client holding every variant, which is how the server loads them.
+    client = RuntimeClient({name: graph for name, _, _, graph in variants})
+    LOGGER.info("Profiling through the %s backend", client.backend_name)
+
+    measurements: list[VariantMeasurement] = []
+    disagreements: list[str] = []
+    try:
+        for name, model_name, precision, graph in variants:
+            tokenizer = AutoTokenizer.from_pretrained(graph.parent)
+            feeds = _tokenize(tokenizer, "a genuinely measured service time")
+
+            LOGGER.info("Profiling %s (%s)", name, graph.name)
+            engine = _measure_through_engine(
+                client, name, feeds, warmup=warmup, iterations=iterations
             )
-        )
-        LOGGER.info(
-            "  p50=%.2fms p95=%.2fms p99=%.2fms accuracy=%.4f (n=%d) size=%.1fMB",
-            latency["latency_p50_ms"],
-            latency["latency_p95_ms"],
-            latency["latency_p99_ms"],
-            accuracy,
-            n_samples,
-            graph.stat().st_size / 1e6,
+            direct = _measure_direct_session(
+                _session(graph), feeds, warmup=warmup, iterations=iterations
+            )
+            accuracy, n_samples = _measure_accuracy(client, name, tokenizer, accuracy_samples)
+
+            ratio = engine["inference_p50_ms"] / direct["direct_p50_ms"]
+            if abs(ratio - 1.0) > tolerance:
+                disagreements.append(
+                    f"  {name}: engine {engine['inference_p50_ms']:.3f} ms vs separate "
+                    f"session {direct['direct_p50_ms']:.3f} ms ({ratio:.3f}x)"
+                )
+
+            measurements.append(
+                VariantMeasurement(
+                    name=name,
+                    model=model_name,
+                    precision=precision,
+                    graph=graph.name,
+                    size_mb=round(graph.stat().st_size / 1e6, 1),
+                    # The planner admits on expected service time, so use the
+                    # median of what a request actually costs the pool: the wall
+                    # time through the client, not just time inside inference.
+                    service_time_ms=round(engine["wall_p50_ms"], 3),
+                    latency_p50_ms=round(engine["wall_p50_ms"], 3),
+                    latency_p95_ms=round(engine["wall_p95_ms"], 3),
+                    latency_p99_ms=round(engine["wall_p99_ms"], 3),
+                    latency_mean_ms=round(engine["wall_mean_ms"], 3),
+                    latency_stdev_ms=round(engine["wall_stdev_ms"], 3),
+                    iterations=int(engine["iterations"]),
+                    accuracy=round(accuracy, 4),
+                    accuracy_samples=n_samples,
+                    engine_inference_p50_ms=round(engine["inference_p50_ms"], 3),
+                    direct_session_p50_ms=round(direct["direct_p50_ms"], 3),
+                    agreement_ratio=round(ratio, 4),
+                )
+            )
+            LOGGER.info(
+                "  p50=%.2fms p95=%.2fms accuracy=%.4f (n=%d) size=%.1fMB agreement=%.3fx",
+                engine["wall_p50_ms"],
+                engine["wall_p95_ms"],
+                accuracy,
+                n_samples,
+                graph.stat().st_size / 1e6,
+                ratio,
+            )
+    finally:
+        client.close()
+
+    if disagreements:
+        raise SystemExit(
+            "The engine and a separate ONNX Runtime session disagree by more than "
+            f"the {tolerance} relative bound:\n"
+            + "\n".join(disagreements)
+            + "\n\nThis is the check that Stage 1 lacked. A 7.6x version mismatch "
+            "between the C++ worker and the onnxruntime wheel went unnoticed for "
+            "exactly this reason, and every service time the planner used was wrong. "
+            "Do not write these numbers to disk: confirm the extension and the wheel "
+            "report the same ONNX Runtime version, then re-run. Pass "
+            "--agreement-tolerance to widen the bound only if the difference is "
+            "understood."
         )
 
     _mark_pareto_frontier(measurements)
@@ -257,21 +363,25 @@ def profile(model_dir: Path, quick: bool) -> list[VariantMeasurement]:
         measurement.compute_cost_per_request = round(
             measurement.service_time_ms / reference.service_time_ms, 4
         )
-    return measurements
+    return measurements, client.backend_name
 
 
-def _host_metadata() -> dict[str, object]:
-    return {
+def _host_metadata(backend: str) -> dict[str, object]:
+    metadata: dict[str, object] = {
         "platform": platform.platform(),
         "processor": platform.processor() or platform.machine(),
         "machine": platform.machine(),
         "python": platform.python_version(),
         "onnxruntime": ort.__version__,
         "providers": ort.get_available_providers(),
+        "backend": backend,
         "intra_op_num_threads": 1,
         "batch_size": 1,
         "sequence_length": SEQUENCE_LENGTH,
     }
+    if extension_available():
+        metadata["extension_onnxruntime"] = load_extension().onnxruntime_version()
+    return metadata
 
 
 def _write_serving_config(path: Path, frontier: list[VariantMeasurement], workers: int) -> None:
@@ -306,9 +416,10 @@ def _write_serving_config(path: Path, frontier: list[VariantMeasurement], worker
     existing.setdefault("admission", {"safety_factor": 1.0})
 
     path.write_text(
-        "# Generated by scripts/profile_variants.py. Values are measured on the\n"
-        "# host recorded in results/variant_profiles.json; re-run after changing\n"
-        "# hardware, thread count, or model variants.\n" + yaml.safe_dump(existing, sort_keys=False)
+        "# Generated by scripts/profile_variants.py. Values are measured through the\n"
+        "# serving path on the host recorded in results/variant_profiles.json;\n"
+        "# re-run after changing hardware, thread count, or model variants.\n"
+        + yaml.safe_dump(existing, sort_keys=False)
     )
 
 
@@ -321,18 +432,46 @@ def main() -> int:
         action="store_true",
         help="Fewer iterations and a subset of the validation split",
     )
+    parser.add_argument(
+        "--agreement-tolerance",
+        type=float,
+        default=DEFAULT_AGREEMENT_TOLERANCE,
+        help=(
+            "Maximum relative difference between inference time through the engine "
+            "and through a separate session before the run fails, as a fraction "
+            f"(default {DEFAULT_AGREEMENT_TOLERANCE})"
+        ),
+    )
+    parser.add_argument(
+        "--allow-fallback-backend",
+        action="store_true",
+        help=(
+            "Profile even when the anytime_runtime extension is unavailable. The "
+            "numbers then describe the Python fallback rather than the serving path"
+        ),
+    )
     parser.add_argument("--output", type=Path, default=Path("results/variant_profiles.json"))
     parser.add_argument("--serving-config", type=Path, default=Path("configs/serving.yaml"))
     args = parser.parse_args()
 
-    measurements = profile(args.model_dir, args.quick)
+    if not extension_available() and not args.allow_fallback_backend:
+        raise SystemExit(
+            "anytime_runtime is not available, so profiling would measure the Python "
+            "fallback rather than the path that serves traffic. That divergence is "
+            "what made Stage 1's service times wrong. Build the extension with:\n"
+            "    pip install -e .\n"
+            "or pass --allow-fallback-backend to record fallback numbers deliberately."
+        )
+
+    measurements, backend = profile(args.model_dir, args.quick, args.agreement_tolerance)
     frontier = [m for m in measurements if m.on_pareto_frontier]
 
     payload = {
-        "host": _host_metadata(),
+        "host": _host_metadata(backend),
         "quick": args.quick,
         "task": "text",
         "accuracy_dataset": "glue/sst2 validation",
+        "agreement_tolerance": args.agreement_tolerance,
         "variants": [asdict(m) for m in measurements],
         "pareto_frontier": [m.name for m in frontier],
     }
@@ -344,15 +483,24 @@ def main() -> int:
     LOGGER.info("Wrote %s", args.serving_config)
 
     LOGGER.info("")
-    LOGGER.info("%-18s %10s %10s %9s  %s", "variant", "p50 (ms)", "accuracy", "size(MB)", "verdict")
+    LOGGER.info(
+        "%-18s %10s %10s %9s %10s  %s",
+        "variant",
+        "p50 (ms)",
+        "accuracy",
+        "size(MB)",
+        "agreement",
+        "verdict",
+    )
     for m in sorted(measurements, key=lambda m: m.service_time_ms):
         verdict = "frontier" if m.on_pareto_frontier else f"dominated by {m.dominated_by}"
         LOGGER.info(
-            "%-18s %10.2f %10.4f %9.1f  %s",
+            "%-18s %10.2f %10.4f %9.1f %9.3fx  %s",
             m.name,
             m.service_time_ms,
             m.accuracy,
             m.size_mb,
+            m.agreement_ratio,
             verdict,
         )
 
