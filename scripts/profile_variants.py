@@ -78,9 +78,9 @@ class VariantMeasurement:
 def _session(graph: Path) -> ort.InferenceSession:
     """Build a session matching the serving worker's configuration.
 
-    runtime_cpp/src/main.cpp sets intra-op threads to one so that N pooled
-    workers behave as N independent single-threaded servers. Profiling with a
-    different thread count would measure a machine the planner never runs on.
+    runtime/src/engine.cpp sets intra-op threads to one so that N pooled workers
+    behave as N independent single-threaded servers. Profiling with a different
+    thread count would measure a machine the planner never runs on.
     """
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1

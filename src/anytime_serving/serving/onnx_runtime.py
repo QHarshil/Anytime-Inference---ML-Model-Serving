@@ -1,20 +1,16 @@
 """Client for the inference runtime.
 
-Three backends implement one interface, all taking and returning numpy arrays:
+Two backends implement one interface, both taking and returning numpy arrays:
 
 ``extension``
     The ``anytime_runtime`` pybind11 module, which runs ONNX Runtime in this
     process. Tensors are borrowed rather than copied and the GIL is released
-    around inference, so a pool of workers runs concurrently. This is the
-    production path.
-``subprocess``
-    The Stage 1 worker, spawned per pool slot and driven over line-delimited
-    JSON. Retained only so the extension can be checked against it; the encoding
-    cost it pays is the reason it is being replaced.
+    around inference, so a pool of workers runs concurrently. This is the serving
+    path.
 ``python``
     ONNX Runtime through its own Python wheel. The reference implementation the
-    tests compare the extension against, and the fallback where the extension
-    has not been built.
+    tests compare the extension against, and the fallback where the extension has
+    not been built.
 
 The backend is chosen automatically unless ``backend=`` names one. Tests pin it
 explicitly so a parity failure cannot be hidden by a silent fallback.
@@ -22,17 +18,13 @@ explicitly so a parity failure cannot be hidden by a silent fallback.
 
 from __future__ import annotations
 
-import base64
-import json
-import os
 import queue
-import subprocess
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 import numpy as np
 
@@ -40,7 +32,7 @@ from ..utils.logger import get_logger
 
 LOGGER = get_logger("serving.onnx_runtime")
 
-BACKENDS = ("extension", "subprocess", "python")
+BACKENDS = ("extension", "python")
 
 _extension: Any | None = None
 
@@ -49,12 +41,13 @@ def load_extension() -> Any:
     """Import ``anytime_runtime``, refusing a version mismatch.
 
     The extension and the ``onnxruntime`` wheel are two independent copies of
-    ONNX Runtime loaded into one process. Stage 1 built the worker against 1.20.1
-    while profiling against the 1.26.0 wheel and measured DistilBERT at 98.9 ms
-    versus 13.0 ms inside ``session->Run()``; every service time the planner used
-    was wrong by almost an order of magnitude, and nothing failed. The build
-    enforces this equality at configure time, and this is the second gate, in
-    case the extension is carried to an environment with a different wheel.
+    ONNX Runtime loaded into one process. Stage 1 built the C++ worker against
+    1.20.1 while profiling against the 1.26.0 wheel and measured DistilBERT at
+    98.9 ms versus 13.0 ms inside ``session->Run()``; every service time the
+    planner used was wrong by almost an order of magnitude, and nothing failed.
+    The build enforces this equality at configure time, and this is the gate that
+    still applies when a built extension is carried into an environment with a
+    different wheel.
     """
     global _extension
     if _extension is not None:
@@ -132,6 +125,10 @@ class _RuntimeBackend:
 
     Implementations return the first graph output and the time spent inside
     inference, excluding anything the client adds around it.
+
+    Anything meaning "the runtime could not serve this request" -- an unknown
+    variant, a missing declared input -- raises ``RuntimeError``. A malformed
+    argument, such as a dtype the engine does not accept, raises ``ValueError``.
     """
 
     name = "abstract"
@@ -207,130 +204,21 @@ class _PythonBackend(_RuntimeBackend):
         self._sessions.clear()
 
 
-def _encode(array: np.ndarray) -> dict:
-    """Encode a tensor for the subprocess protocol."""
-    contiguous = np.ascontiguousarray(array)
-    return {
-        "shape": list(contiguous.shape),
-        "dtype": str(contiguous.dtype),
-        "data": base64.b64encode(contiguous.tobytes()).decode("ascii"),
-    }
-
-
-def _decode(payload: dict) -> np.ndarray:
-    """Decode a tensor from the subprocess protocol."""
-    raw = base64.b64decode(payload["data"])
-    dtype = np.dtype(payload["dtype"])
-    return np.frombuffer(raw, dtype=dtype).reshape(payload["shape"])
-
-
-class _SubprocessBackend(_RuntimeBackend):
-    """The Stage 1 worker, over line-delimited JSON on stdin and stdout.
-
-    Kept so the extension can be validated against the implementation it
-    replaces. Every tensor is base64-encoded, parsed, and copied in each
-    direction, which is exactly what the extension removes.
-    """
-
-    name = "subprocess"
-
-    def __init__(self, binary: Path, model_paths: dict[str, Path]) -> None:
-        args = [str(binary)]
-        for variant, path in model_paths.items():
-            args.extend(["--model", f"{variant}={path}"])
-        self._process = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=1,
-            text=True,
-        )
-        # Popen types the pipes as Optional. All three were requested above, so
-        # bind them once to non-optional handles rather than narrowing at every
-        # use site.
-        assert self._process.stdin is not None
-        assert self._process.stdout is not None
-        assert self._process.stderr is not None
-        self._stdin: IO[str] = self._process.stdin
-        self._stdout: IO[str] = self._process.stdout
-        self._stderr: IO[str] = self._process.stderr
-
-        # Drain handshake line (the worker prints "ready" once every model has
-        # loaded).
-        handshake = self._stdout.readline().strip()
-        if handshake != "ready":
-            stderr = self._stderr.read()
-            raise RuntimeError(f"C++ runtime failed to start: {handshake!r} ({stderr})")
-
-    def infer(self, variant: str, feeds: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
-        request = {
-            "request_id": uuid.uuid4().hex,
-            "variant": variant,
-            "inputs": {name: _encode(tensor) for name, tensor in feeds.items()},
-        }
-        self._stdin.write(json.dumps(request) + "\n")
-        self._stdin.flush()
-        response_line = self._stdout.readline()
-        if not response_line:
-            stderr = self._stderr.read()
-            raise RuntimeError(f"C++ runtime closed unexpectedly: {stderr}")
-        response = json.loads(response_line)
-        # The worker reports a recoverable problem (an unknown variant, say) as an
-        # error field and stays alive for the next request.
-        if "error" in response:
-            raise RuntimeError(f"C++ runtime rejected the request: {response['error']}")
-        return _decode(response["logits"]), float(response["latency_ms"])
-
-    def close(self) -> None:
-        if self._process.poll() is None:
-            try:
-                self._stdin.close()
-            except OSError:
-                pass
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-        # Popen leaves stdout/stderr open after the child exits; close them so a
-        # long-lived pool does not accumulate file descriptors.
-        for stream in (self._stdin, self._stdout, self._stderr):
-            try:
-                stream.close()
-            except OSError:
-                pass
-
-
-def _make_backend(
-    model_paths: dict[str, Path],
-    requested: str | None,
-    binary: Path | None,
-) -> _RuntimeBackend:
+def _make_backend(model_paths: dict[str, Path], requested: str | None) -> _RuntimeBackend:
     """Build the requested backend, or pick one."""
     if requested is not None:
         if requested not in BACKENDS:
             raise ValueError(f"backend must be one of {BACKENDS}, got {requested!r}")
         if requested == "extension":
             return _ExtensionBackend(model_paths)
-        if requested == "subprocess":
-            if binary is None or not binary.exists():
-                raise ValueError("the subprocess backend needs binary= pointing at a built worker")
-            return _SubprocessBackend(binary, model_paths)
         return _PythonBackend(model_paths)
 
     if extension_available():
         return _ExtensionBackend(model_paths)
-    if binary is not None and binary.exists():
-        LOGGER.warning(
-            "anytime_runtime is unavailable; falling back to the subprocess worker "
-            "at %s. Build the extension with: pip install -e .",
-            binary,
-        )
-        return _SubprocessBackend(binary, model_paths)
     LOGGER.warning(
-        "anytime_runtime is unavailable; falling back to the Python backend. "
-        "Build the extension with: pip install -e ."
+        "anytime_runtime is unavailable; falling back to the Python backend. Measured "
+        "service times will not reflect the serving path. Build the extension with: "
+        "pip install -e ."
     )
     return _PythonBackend(model_paths)
 
@@ -343,13 +231,12 @@ class RuntimeClient:
         model_paths: dict[str, Path],
         *,
         backend: str | None = None,
-        binary: Path | None = None,
         input_name: str = "input",
     ) -> None:
         if not model_paths:
             raise ValueError("model_paths must be non-empty")
         self._input_name = input_name
-        self._backend = _make_backend(model_paths, backend, binary)
+        self._backend = _make_backend(model_paths, backend)
         self._lock = threading.Lock()
 
     @property
@@ -389,14 +276,12 @@ class RuntimePool:
         model_paths: dict[str, Path],
         *,
         backend: str | None = None,
-        binary: Path | None = None,
         input_name: str = "input",
     ) -> None:
         if size <= 0:
             raise ValueError("size must be positive")
         self._clients: list[RuntimeClient] = [
-            RuntimeClient(model_paths, backend=backend, binary=binary, input_name=input_name)
-            for _ in range(size)
+            RuntimeClient(model_paths, backend=backend, input_name=input_name) for _ in range(size)
         ]
         self._free: queue.Queue[RuntimeClient] = queue.Queue()
         for client in self._clients:
@@ -432,45 +317,3 @@ class RuntimePool:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
-
-
-def _build_dir_candidates(root: Path) -> tuple[Path, ...]:
-    build = root / "runtime_cpp" / "build"
-    return (
-        build / "anytime_runtime",
-        build / "Release" / "anytime_runtime.exe",
-    )
-
-
-def find_runtime_binary() -> Path | None:
-    """Locate the compiled subprocess worker, if it exists.
-
-    ``ANYTIME_RUNTIME_BIN`` takes precedence and is the only reliable option for
-    a non-editable install, where the package no longer lives inside the source
-    tree. Otherwise search upward from this file (covering an editable install)
-    and from the working directory (covering a plain checkout).
-    """
-    env_override = os.environ.get("ANYTIME_RUNTIME_BIN")
-    if env_override:
-        candidate = Path(env_override)
-        return candidate if candidate.exists() else None
-
-    roots: list[Path] = []
-    # Walk up from this module: src/anytime_serving/serving/ -> repo root. Done by
-    # search rather than a fixed parent index so moving the package does not
-    # silently break resolution.
-    here = Path(__file__).resolve()
-    roots.extend(here.parents)
-    cwd = Path.cwd().resolve()
-    roots.append(cwd)
-    roots.extend(cwd.parents)
-
-    seen: set[Path] = set()
-    for root in roots:
-        if root in seen:
-            continue
-        seen.add(root)
-        for candidate in _build_dir_candidates(root):
-            if candidate.exists():
-                return candidate
-    return None

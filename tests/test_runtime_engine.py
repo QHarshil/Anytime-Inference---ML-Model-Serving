@@ -1,19 +1,17 @@
-"""Tests for the in-process engine, against the backends it replaces.
+"""Tests for the in-process engine, against the reference implementation.
 
 The point of most of this file is cross-backend agreement. The extension runs
-ONNX Runtime in this process over borrowed buffers; the ``python`` backend runs
-the same graph through the onnxruntime wheel; the ``subprocess`` backend runs it
-in the Stage 1 worker over base64-encoded JSON. All three must produce bitwise
-identical output, because they are the same library doing the same work and any
-difference means the new tensor path is corrupting something.
+ONNX Runtime in this process over borrowed buffers; the ``python`` backend runs the
+same graph through the onnxruntime wheel. Both must produce bitwise identical
+output, because they are the same library doing the same work and any difference
+means the tensor path is corrupting something.
 
-This comparison is why the subprocess worker is still here. Stage 1's mistake was
-that nothing compared the serving path against the path used for profiling, so a
-7.6x discrepancy sat undetected. The replacement is checked against what it
-replaces before that code is removed.
+The Stage 1 subprocess worker was the third backend here until it was removed. It
+agreed bitwise with the extension on DistilBERT, which is what justified deleting
+it: a replacement should be checked against the thing it replaces before that
+thing goes away.
 
-Tests needing a compiled runtime are marked ``needs_runtime`` and skipped when it
-is absent. Build it with:
+Tests needing the compiled extension are skipped when it is absent. Build it with:
 
     pip install -e .
 """
@@ -34,11 +32,8 @@ from anytime_serving.serving.onnx_runtime import (  # noqa: E402
     RuntimeClient,
     RuntimePool,
     extension_available,
-    find_runtime_binary,
     load_extension,
 )
-
-BINARY = find_runtime_binary()
 
 requires_extension = pytest.mark.skipif(
     not extension_available(), reason="anytime_runtime is not built; see module docstring"
@@ -112,13 +107,11 @@ def _available_backends() -> list[str]:
     available = ["python"]
     if extension_available():
         available.append("extension")
-    if BINARY is not None:
-        available.append("subprocess")
     return available
 
 
 def _client(model_paths, backend):
-    return RuntimeClient(model_paths, backend=backend, binary=BINARY)
+    return RuntimeClient(model_paths, backend=backend)
 
 
 def _expected(data: np.ndarray) -> np.ndarray:
@@ -240,7 +233,7 @@ def test_backend_reports_unknown_variant_and_stays_usable(model_paths, backend):
         pytest.skip(f"the {backend!r} backend is not available here")
     data = np.ones((1, 4), dtype=np.float32)
     with _client(model_paths, backend) as client:
-        with pytest.raises(RuntimeError, match="unknown variant|rejected the request"):
+        with pytest.raises(RuntimeError, match="unknown variant"):
             client.infer(InferenceRequest(variant="does_not_exist", data=data))
         response = client.infer(InferenceRequest(variant="fp32", data=data))
         np.testing.assert_allclose(response.logits, _expected(data), rtol=1e-6, atol=1e-6)
@@ -277,7 +270,7 @@ def test_backend_rejects_a_missing_declared_input(graphs, backend):
         pytest.skip(f"the {backend!r} backend is not available here")
     paths = {"scaled": graphs["two_input"]}
     with _client(paths, backend) as client:
-        with pytest.raises(RuntimeError, match="missing input|rejected the request"):
+        with pytest.raises(RuntimeError, match="missing input"):
             client.infer(
                 InferenceRequest(
                     variant="scaled", inputs={"input": np.ones((1, 4), dtype=np.float32)}
@@ -368,27 +361,11 @@ def test_extension_releases_the_gil_during_inference(model_paths):
 
 @requires_extension
 def test_the_extension_is_preferred_when_available(model_paths):
-    """Automatic selection picks the in-process path, not a fallback."""
-    with RuntimeClient(model_paths, binary=BINARY) as client:
+    """Automatic selection picks the in-process path, not the fallback."""
+    with RuntimeClient(model_paths) as client:
         assert client.backend_name == "extension"
 
 
 def test_an_unknown_backend_name_is_rejected(model_paths):
     with pytest.raises(ValueError, match="backend must be one of"):
         RuntimeClient(model_paths, backend="does_not_exist")
-
-
-def test_the_subprocess_backend_requires_a_binary(model_paths):
-    with pytest.raises(ValueError, match="needs binary="):
-        RuntimeClient(model_paths, backend="subprocess", binary=None)
-
-
-def test_find_runtime_binary_honours_env_override(monkeypatch, tmp_path):
-    """The env override wins, and a missing path resolves to None."""
-    monkeypatch.setenv("ANYTIME_RUNTIME_BIN", str(tmp_path / "absent"))
-    assert find_runtime_binary() is None
-
-    present = tmp_path / "anytime_runtime"
-    present.write_text("")
-    monkeypatch.setenv("ANYTIME_RUNTIME_BIN", str(present))
-    assert find_runtime_binary() == present

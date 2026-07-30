@@ -47,7 +47,7 @@ Markers, declared in `pytest.ini` with `--strict-markers`:
 | --- | --- |
 | `slow` | takes more than a few seconds |
 | `needs_torch` | requires torch, torchvision, or transformers |
-| `needs_runtime` | requires a compiled native runtime (the extension or the subprocess worker) |
+| `needs_runtime` | requires the compiled `anytime_runtime` extension |
 
 Tests skip cleanly rather than failing when an optional dependency is absent. The
 serving tests build a tiny ONNX graph on the fly, so they need neither torch nor a
@@ -59,7 +59,7 @@ against itself. Set `ANYTIME_REQUIRE_BACKENDS` to the backends an environment is
 supposed to provide and a missing one fails instead:
 
 ```bash
-ANYTIME_REQUIRE_BACKENDS=extension,python,subprocess pytest -q tests/test_runtime_engine.py
+ANYTIME_REQUIRE_BACKENDS=extension,python pytest -q tests/test_runtime_engine.py
 ```
 
 ## Lint and types
@@ -75,7 +75,7 @@ Configuration lives in `pyproject.toml`. `mypy` runs over
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs five jobs. Every one of them compiles the
+`.github/workflows/ci.yml` runs four jobs. Every one of them compiles the
 extension, because installing the package is what builds it.
 
 | Job | What it does |
@@ -83,8 +83,7 @@ extension, because installing the package is what builds it.
 | `lint` | ruff check, ruff format, mypy |
 | `test` | full suite on Python 3.10 through 3.13 with `[bench]`; asserts the extension built |
 | `test-minimal` | base dependencies only; asserts torch and pandas are absent, then runs the serving tests and boundary guards |
-| `engine` | builds the extension and the subprocess worker against one SDK and compares all three backends |
-| `runtime` | checks the subprocess worker's CLI contract |
+| `engine` | asserts the extension links the installed wheel, and compares it against the reference backend |
 
 `test-minimal` exists because the boundary it protects is easy to break by
 accident and impossible to notice locally, where the research stack is installed.
@@ -108,12 +107,11 @@ src/anytime_serving/
   utils/          io, logging, metrics, visualisation
   workloads/      synthetic Poisson and bursty trace generators
 runtime/          C++ engine and pybind11 bindings (built by pip install)
-runtime_cpp/      Stage 1 subprocess worker, kept until the engine replaces it
 scripts/          export, profiling, load sweep, demo
 experiments/      offline profiling and statistical evaluation pipeline
 configs/          deadlines, model zoo, measured serving profiles
 docs/             architecture, planner, runtime, quantisation, benchmarks
-tests/            unit, integration, protocol, and import-boundary tests
+tests/            unit, integration, engine-parity, and import-boundary tests
 ```
 
 ## Generated files

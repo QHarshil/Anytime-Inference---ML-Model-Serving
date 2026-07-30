@@ -1,114 +1,57 @@
-# C++ runtime worker
+# Inference runtime
 
-`runtime_cpp/` builds `anytime_runtime`, a single-threaded ONNX Runtime worker
-that reads line-delimited JSON on stdin and writes it on stdout. The Python
-control plane spawns one process per pool slot.
+`runtime/` builds `anytime_runtime`, a pybind11 extension that runs ONNX Runtime in
+the caller's process. `RuntimePool` in `src/anytime_serving/serving/onnx_runtime.py`
+holds one engine per worker slot and dispatches across them.
+
+Build and layout details are in [`../runtime/README.md`](../runtime/README.md).
+This page is about the two decisions that shape everything downstream.
 
 ## Build
 
 ```bash
-cmake -S runtime_cpp -B runtime_cpp/build -DCMAKE_BUILD_TYPE=Release \
-    -DONNXRUNTIME_ROOT_PATH=/path/to/onnxruntime
-cmake --build runtime_cpp/build -j
+pip install -e .
 ```
 
-Download the ONNX Runtime release matching your platform from
-<https://github.com/microsoft/onnxruntime/releases> and unpack it. Release tarball
-layouts differ between versions: some nest a versioned directory. Point
-`ONNXRUNTIME_ROOT_PATH` at whichever directory contains `include/` and `lib/`.
-
-The binary lands at `runtime_cpp/build/anytime_runtime`. The Python client finds
-it via `ANYTIME_RUNTIME_BIN`, or by searching upward from the package and the
-working directory. Set the environment variable explicitly for a non-editable
-install, where the package no longer sits inside the source tree.
+That is the whole thing. `scikit-build-core` runs CMake, and CMake resolves an ONNX
+Runtime SDK matching the installed `onnxruntime` wheel, downloading it once into
+`~/.cache/anytime-inference-planner/` if it is not already there.
 
 ## Match the ONNX Runtime version to the Python wheel
 
-This is the single most important build detail. Building the worker against
-1.20.1 while the Python side used the 1.26.0 wheel measured DistilBERT at
-**98.9 ms inside the worker against 13.0 ms in the profiler**, a 7.6x gap. The
-timing is taken around `session->Run()`, so this was not transport overhead; the
-older release simply lacks the optimisations the newer one applies to this graph
-on arm64.
+This is the single most important build detail, and it is now enforced rather than
+documented.
 
-Because the profiler and the serving path disagreed, every service time the
-planner used was wrong by almost an order of magnitude and no request met its
-deadline. With matched versions the worker measures 14.05 ms, within 8% of the
-in-process session, and the JSON transport costs 0.27 ms per request.
+Building the Stage 1 worker against 1.20.1 while the Python side used the 1.26.0
+wheel measured DistilBERT at **98.9 ms inside the worker against 13.0 ms in the
+profiler**, a 7.6x gap. The timing was taken around `session->Run()`, so this was
+not transport overhead; the older release simply lacks the optimisations the newer
+one applies to this graph on arm64. Because the profiler and the serving path
+disagreed, every service time the planner used was wrong by almost an order of
+magnitude and no request met its deadline. Nothing crashed and no test failed. The
+numbers were just false.
 
-`CMakeLists.txt` guards a related trap: `find_library` caches its result, so
-reconfiguring with a different `ONNXRUNTIME_ROOT_PATH` would keep linking the
-previously found library while compiling against the new headers. That mismatch
-surfaces only at runtime, as `The requested API version [N] is not available`.
-The cache entry is now invalidated when the root path changes, and the resolved
-library is printed at configure time.
+With the extension, both copies of ONNX Runtime are loaded into the same process,
+so this stopped being a performance question and became a correctness one. The
+version is therefore never written down twice. It is read from the wheel the target
+interpreter will import, and checked in three places:
 
-## Protocol
+1. **Configure time.** The SDK version must equal the wheel version, or CMake
+   fails.
+2. **Compile time.** `ORT_API_VERSION` is read out of the resolved headers and
+   asserted in `src/tensor.cpp`, so a header from a different include path breaks
+   the build rather than the run.
+3. **Import time.** `load_extension()` compares
+   `anytime_runtime.onnxruntime_version()` against `onnxruntime.__version__`,
+   which covers an extension carried into an environment with a different wheel.
 
-Handshake: the worker prints `ready` on stdout once every model has loaded.
+A related consequence: CI no longer pins a version anywhere. It had been building
+the C++ side against 1.26.0 while `pip` installed 1.28.0, since the dependency
+floor is `>=1.16`. That was harmless only because the two never shared a process.
 
-Request, one JSON object per line:
+## Cost of the transport it replaced
 
-```json
-{"request_id": "r-1",
- "variant": "distilbert_fp32",
- "inputs": {"input_ids":      {"shape": [1,128], "dtype": "int64", "data": "<base64>"},
-            "attention_mask": {"shape": [1,128], "dtype": "int64", "data": "<base64>"}}}
-```
-
-Response:
-
-```json
-{"request_id": "r-1",
- "logits": {"shape": [1,2], "dtype": "float32", "data": "<base64>"},
- "latency_ms": 14.05}
-```
-
-Error response, for anything recoverable:
-
-```json
-{"request_id": "r-1", "error": "unknown variant"}
-```
-
-The Python client raises `RuntimeError` on an error response.
-
-## Behaviour
-
-- **One inference at a time.** Run a pool from the Python side for concurrency.
-  Intra-op threads are set to 1 so N workers behave as N independent servers,
-  which is what makes the M/M/c queueing model in
-  [`planner.md`](planner.md) valid.
-- **Per-request error isolation.** A malformed request, an unknown variant, or an
-  ONNX Runtime failure produces an error response and the worker continues. An
-  earlier version wrapped the whole request loop in one `try`, so a single bad
-  request terminated the worker and failed every subsequent request routed to it.
-- **Input filtering.** Variants can declare different inputs. The worker keeps the
-  subset its graph declares and drops the rest, and errors if a declared input is
-  missing rather than running on a partial feed.
-- **Supported dtypes.** Inputs `float32` and `int64`; outputs `float32`.
-- **No external dependencies.** JSON parsing and base64 are implemented in
-  `main.cpp` so the worker needs only ONNX Runtime.
-
-## Tests
-
-`tests/test_runtime_subprocess.py` exercises the real binary: round-trip
-fidelity, the base64 codec across all three padding cases, variant routing,
-concurrent dispatch through a pool, and error isolation. Marked `needs_runtime`
-and skipped when the binary is absent.
-
-```bash
-pytest -q tests/test_runtime_subprocess.py
-```
-
-## Superseded by the in-process engine
-
-This worker is no longer the serving path. `anytime_runtime`, documented in
-[`../runtime/README.md`](../runtime/README.md), runs ONNX Runtime in the caller's
-process over borrowed numpy buffers and is selected automatically.
-
-The subprocess boundary costs a base64 encode, a JSON parse, and a copy in each
-direction. Measured on DistilBERT at batch size one, over 60 requests after
-warm-up:
+Measured on DistilBERT at batch size one, 60 requests after warm-up:
 
 | Backend | Inference p50 | Wall p50 | Transport |
 | --- | --- | --- | --- |
@@ -116,15 +59,55 @@ warm-up:
 | `extension` | 13.609 ms | 13.628 ms | 0.018 ms |
 | `subprocess` | 13.629 ms | 13.926 ms | 0.296 ms |
 
-All three agree bitwise on the logits, and their inference times agree within
-0.4%, which is what a matched ONNX Runtime version looks like. The transport cost
-falls from 0.296 ms to 0.018 ms.
+All three agreed bitwise on the logits, and their inference times agreed within
+0.4%. That agreement is what a matched version looks like, and it is the check that
+was missing in Stage 1.
 
-Against 14 ms of inference that saving is not the reason for the change. The
-reason is that a subprocess boundary rules out batching across requests and
-sharing a KV cache between them, which is what the rest of Stage 2 needs.
+Transport fell from 0.296 ms to 0.018 ms. Against 14 ms of inference that saving is
+not why the change was made: a subprocess boundary rules out batching across
+requests and sharing a KV cache between them, which is what the rest of Stage 2
+needs. The `subprocess` row is from the Stage 1 worker, which was removed once it
+had served as the reference the extension was validated against.
 
-The worker is kept for now because it is what the engine is validated against:
-`tests/test_runtime_engine.py` asserts all three backends agree, on the principle
-that a replacement should be checked against the thing it replaces before that
-thing is deleted.
+## Behaviour
+
+- **Tensors are borrowed, not copied.** Inputs point into the numpy buffer;
+  outputs are numpy views over ONNX Runtime's buffers, kept alive by a capsule
+  owning the `Ort::Value`. A response therefore holds runtime memory until it is
+  dropped, so copy `logits` if it needs to outlive the request.
+- **The GIL is released during inference.** Without that a pool would serialise on
+  the interpreter lock, and the M/M/c model in [`planner.md`](planner.md) would
+  describe a machine that does not exist.
+- **One engine per worker.** Intra-op threads are set to 1 so that N workers behave
+  as N independent servers, which is what makes that queueing model valid, and
+  matches how the service times in `configs/serving.yaml` were measured.
+- **Input filtering.** Variants can declare different inputs, so callers pass the
+  union and each graph takes the subset it declares. A declared input that is
+  missing is an error rather than a run on a partial feed.
+- **Error contract.** An unknown variant or a missing declared input raises
+  `RuntimeError`; a dtype the engine does not accept raises `ValueError`. Both
+  backends behave identically, which is what makes them comparable.
+- **Supported dtypes.** Inputs and outputs: float32, float64, int32, int64, bool.
+
+## Backends
+
+`RuntimeClient` picks the extension when it imports and matches the wheel, and
+otherwise warns and falls back to ONNX Runtime's own Python API. The fallback exists
+so the control plane runs where the extension has not been built; it is not the
+serving path, and a measurement taken through it does not describe one.
+
+`backend="extension"` or `backend="python"` pins the choice. Tests pin it so a
+parity failure cannot hide behind a silent fallback.
+
+## Tests
+
+```bash
+pytest -q tests/test_runtime_engine.py
+ANYTIME_REQUIRE_BACKENDS=extension,python pytest -q tests/test_runtime_engine.py
+```
+
+`tests/test_runtime_engine.py` asserts the backends agree bitwise on a graph with
+real arithmetic in it, that outputs are views rather than copies, that a strided
+input is made contiguous rather than misread, and that an unsupported dtype is
+refused. `ANYTIME_REQUIRE_BACKENDS` turns a missing backend from a skip into a
+failure, so the comparison cannot decay into one backend checked against itself.

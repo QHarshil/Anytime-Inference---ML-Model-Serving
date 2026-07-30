@@ -9,7 +9,6 @@ from .onnx_runtime import (
     RuntimeClient,
     RuntimePool,
     extension_available,
-    find_runtime_binary,
     load_extension,
 )
 from .selector import AdaptiveSelector, SelectionDecision, VariantProfile
@@ -31,7 +30,6 @@ __all__ = [
     "InferenceRequest",
     "InferenceResponse",
     "extension_available",
-    "find_runtime_binary",
     "load_extension",
     "AdaptiveServer",
     "ServedRequest",

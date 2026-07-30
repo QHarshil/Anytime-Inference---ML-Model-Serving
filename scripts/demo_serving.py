@@ -22,7 +22,7 @@ import onnx
 from onnx import TensorProto, helper
 
 from anytime_serving.serving.load_monitor import LoadMonitor
-from anytime_serving.serving.onnx_runtime import InferenceRequest, RuntimePool, find_runtime_binary
+from anytime_serving.serving.onnx_runtime import InferenceRequest, RuntimePool
 from anytime_serving.serving.selector import AdaptiveSelector, VariantProfile
 from anytime_serving.serving.server import AdaptiveServer, drive_workload, poisson_arrivals
 from anytime_serving.utils.logger import get_logger
@@ -71,7 +71,7 @@ def _run_policy(
     monitor.start()
     rng = np.random.default_rng(seed)
     try:
-        with RuntimePool(workers, model_paths, binary=find_runtime_binary()) as pool:
+        with RuntimePool(workers, model_paths) as pool:
             server = AdaptiveServer(pool, selector, monitor)
             try:
 

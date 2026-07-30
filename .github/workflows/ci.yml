@@ -121,11 +121,8 @@ jobs:
             tests/test_import_boundaries.py
 
   engine:
-    name: Engine parity across all three backends
+    name: Engine parity against the reference backend
     runs-on: ubuntu-latest
-    # The whole point of this job is comparing the extension against the
-    # subprocess worker it replaces, which means building both and refusing to
-    # skip either.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -140,32 +137,19 @@ jobs:
           restore-keys: ort-sdk-${{ runner.os }}-
       - name: Install
         run: pip install -e . pytest
-      # The subprocess worker links its own SDK. Reuse the one CMake resolved for
-      # the extension, so both halves of the comparison are the same build of
-      # ONNX Runtime and a disagreement cannot be blamed on versions.
-      - name: Locate the resolved SDK
+      # Both copies of ONNX Runtime in this process must be the same version. The
+      # extension reports what it linked; the wheel reports what it will import.
+      - name: Report the resolved ONNX Runtime versions
         run: |
-          root=$(find ~/.cache/anytime-inference-planner -maxdepth 3 -type d \
-            -name include -exec dirname {} \; | head -1)
-          if [ -z "$root" ]; then
-            echo "no ONNX Runtime SDK found in the cache"; exit 1
-          fi
-          echo "ONNXRUNTIME_ROOT_PATH=$root" >> "$GITHUB_ENV"
-          echo "resolved $root ($(cat "$root/VERSION_NUMBER"))"
-      - name: Build the subprocess worker
-        run: |
-          cmake -S runtime_cpp -B runtime_cpp/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DONNXRUNTIME_ROOT_PATH="$ONNXRUNTIME_ROOT_PATH"
-          cmake --build runtime_cpp/build -j"$(nproc)"
-      - name: Verify the worker starts and reports its usage
-        run: |
-          # No --model argument is an error; the binary must exit non-zero with a
-          # message rather than hang waiting on stdin.
-          if runtime_cpp/build/anytime_runtime </dev/null; then
-            echo "expected a non-zero exit without --model"; exit 1
-          fi
-      - name: Compare all three backends
+          python -c "
+          from anytime_serving.serving import load_extension
+          import onnxruntime
+          linked = load_extension().onnxruntime_version()
+          print('anytime_runtime links ONNX Runtime', linked)
+          print('onnxruntime wheel reports         ', onnxruntime.__version__)
+          assert linked == onnxruntime.__version__
+          "
+      - name: Compare the extension against the reference backend
         env:
-          ANYTIME_REQUIRE_BACKENDS: extension,python,subprocess
+          ANYTIME_REQUIRE_BACKENDS: extension,python
         run: pytest -q tests/test_runtime_engine.py
