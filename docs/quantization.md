@@ -44,6 +44,53 @@ variants into `configs/serving.yaml`. On a host where INT8 does accelerate
 inference, the same script will place the INT8 variants on the frontier and the
 planner will use them with no code change.
 
+## Decoders: the same conclusion, more sharply
+
+`scripts/export_decoder.py` exports GPT-2 124M with its KV cache in the graph
+signature and measures each precision against WikiText-2. Perplexity is scored
+through the serving path, over 32,736 tokens in 32 non-overlapping 1024-token
+windows.
+
+| Precision | Size | vs FP32 | Perplexity | Delta | Prefill p50 |
+| --- | --- | --- | --- | --- | --- |
+| `fp32` | 653 MB | 1.000 | 31.307 | -- | 450 ms |
+| `int8` | 399 MB | 0.611 | 31.371 | +0.063 | 415 ms |
+| `int4` | 367 MB | 0.563 | 32.866 | +1.559 | 1837 ms |
+
+INT8 is nearly free in quality terms, costing 0.06 perplexity for a 39% smaller
+graph, and is marginally faster. INT4 costs 1.56 perplexity and runs **4.1x
+slower** than FP32. That is the encoder finding again, and worse: on this host
+`MatMulNBits` has no tuned kernel, so the 4-bit weights are unpacked to float on
+every matrix multiply and the arithmetic happens at full width anyway. INT4 here
+buys memory and nothing else.
+
+Prefill is a single 1024-token forward pass with an empty cache, which is the
+right shape to compare on: it is dominated by the weight-bound matrix multiplies
+that quantisation changes.
+
+### Two decisions that decide whether the numbers mean anything
+
+Both were found by disbelieving the first result rather than recording it.
+
+**Leave the output projection in float.** It maps the hidden state onto 50257
+vocabulary entries, so its error lands directly on the distribution being scored.
+Quantising it to symmetric 4-bit and nothing else measured perplexity of **1265**
+against 26.8. Both quantisers here exclude it.
+
+**GPT-2's linear layers export as `Gemm`, not `MatMul`.** PyTorch implements them
+as `Conv1D`, and `MatMulNBitsQuantizer` only rewrites `MatMul`. Left alone, INT4
+reached exactly one node in the whole graph -- the output projection, the one node
+that must not be touched -- which is how both failures above arrived together.
+`export_decoder.py` rewrites `Gemm(A, B, C)` as `Add(MatMul(A, B), C)` first, which
+is exact at alpha = beta = 1 with no transpose and is asserted bitwise lossless in
+`tests/test_decoder_export.py`. Models built from `nn.Linear`, the Llama family
+among them, export as `MatMul` and need no rewrite.
+
+The first INT8 attempt was per-tensor and quantised the output projection: 44.4
+perplexity against 26.8. Per-channel scales with the projection left in float cost
+0.06. A quantisation result is a statement about a configuration, not about a
+precision.
+
 ## Quantising for the right architecture
 
 Quantising for the wrong instruction set is worse than not quantising: the INT8

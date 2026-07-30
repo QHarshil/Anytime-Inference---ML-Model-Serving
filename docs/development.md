@@ -119,10 +119,17 @@ tests/            unit, integration, engine-parity, and import-boundary tests
 `models/` and `results/` are ignored. Both are reproducible:
 
 ```bash
-python scripts/export_onnx.py --task text     # models/
+python scripts/export_onnx.py --task text     # models/, encoder variants
+python scripts/export_decoder.py              # models/, decoder variants + results/decoder_profiles.json
 python scripts/profile_variants.py            # results/variant_profiles.json, configs/serving.yaml
 python scripts/run_load_sweep.py              # results/load_sweep.csv, docs/img/
 ```
+
+`export_decoder.py` needs the `research` extra and Python 3.13 or 3.14. On 3.14 it
+applies a small shim to optimum before exporting: CPython 3.14 made
+`functools.partial` a descriptor, and optimum holds its decoder config factories
+as class-level partials, so they bind `self` and fail. See
+`apply_partial_descriptor_shim` for the detail. Encoder export is unaffected.
 
 Figures referenced by the docs are committed under `docs/img/`.
 
