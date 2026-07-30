@@ -44,7 +44,7 @@ variants into `configs/serving.yaml`. On a host where INT8 does accelerate
 inference, the same script will place the INT8 variants on the frontier and the
 planner will use them with no code change.
 
-## Decoders: the same conclusion, more sharply
+## Decoders: the same conclusion for INT4, the opposite one for INT8
 
 `scripts/export_decoder.py` exports GPT-2 124M with its KV cache in the graph
 signature and measures each precision against WikiText-2. Perplexity is scored
@@ -65,8 +65,37 @@ every matrix multiply and the arithmetic happens at full width anyway. INT4 here
 buys memory and nothing else.
 
 Prefill is a single 1024-token forward pass with an empty cache, which is the
-right shape to compare on: it is dominated by the weight-bound matrix multiplies
-that quantisation changes.
+right shape to compare on for that claim: it is dominated by the weight-bound
+matrix multiplies that quantisation changes.
+
+### The precision ordering depends on the phase
+
+A decoder has a second shape to compare on, and it gives a different answer.
+`scripts/profile_decode.py` measures a decode step -- one token against a filled
+cache -- which is a matrix-vector product rather than a matrix-matrix one, and is
+bound by the bandwidth to read the weights rather than by arithmetic. Moving a
+quarter of the bytes helps there:
+
+| Precision | TPOT at 128 cached | at 512 | at 960 | vs FP32 |
+| --- | --- | --- | --- | --- |
+| `fp32` | 4.83 ms | 7.22 ms | 9.54 ms | 1.000x |
+| `int8` | 3.60 ms | 5.79 ms | 8.45 ms | 0.75x to 0.89x |
+| `int4` | 11.56 ms | 13.85 ms | 16.63 ms | 1.74x to 2.39x |
+
+So **INT8 is not dominated on the decoder.** It is faster on prefill and 11-25%
+faster on decode, at 0.61x the size for 0.06 perplexity. On this model it wins on
+every axis, and the earlier finding stands unchanged as what it always was: a
+statement about an encoder at sequence length 128, not about a precision.
+
+INT4 stays dominated, but its penalty shrinks from 4.8x on prefill to 1.7x on
+decode. Same explanation from the other side -- the unpacking cost is fixed per
+matrix multiply while the bandwidth saving grows in relative terms as the
+arithmetic per weight falls, so decode recovers part of what prefill loses. Not
+enough to matter, and INT4 still buys memory and nothing else.
+
+The lesson is the one this page opens with, one level further in. A quantisation
+result is a statement about a configuration; it is also a statement about a
+*shape*, and a decoder runs two shapes that disagree.
 
 ### Two decisions that decide whether the numbers mean anything
 

@@ -319,6 +319,20 @@ class DecoderClient:
     def emitted(self, request_id: str) -> list[int]:
         return list(self._lookup(request_id).emitted)
 
+    def next_token_logits(self, request_id: str) -> np.ndarray:
+        """The distribution the next token would be drawn from.
+
+        One row, not one per position: the graph returns logits for every position it
+        was given, and the runtime copies out only the last. A caller wanting
+        something other than the greedy `emit` samples from this.
+        """
+        sequence = self._lookup(request_id)
+        if sequence.logits is None:
+            raise RuntimeError(
+                f"request {request_id} has no logits yet; prefill or resume it first"
+            )
+        return sequence.logits
+
     # --- admission -----------------------------------------------------------
 
     def admit(self, request: GenerationRequest, *, now: float | None = None) -> AdmissionPlan:

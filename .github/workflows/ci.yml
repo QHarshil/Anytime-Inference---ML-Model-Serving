@@ -108,6 +108,10 @@ jobs:
       - name: Import the serving plane
         run: python -c "import anytime_serving.serving, anytime_serving.models.cascade"
       # The remaining suites need pandas/scipy and are covered by the `test` job.
+      # The decoder suites belong here too: the KV cache and its admission policy are
+      # part of the control plane, so they have to run where the research stack does
+      # not. They build a synthetic decoder graph rather than exporting one, and the
+      # GPT-2 cases skip when that export is absent, which it always is here.
       - name: Run serving tests and import-boundary guards
         env:
           ANYTIME_REQUIRE_BACKENDS: extension,python
@@ -118,6 +122,11 @@ jobs:
             tests/test_serving.py \
             tests/test_load_monitor.py \
             tests/test_runtime_engine.py \
+            tests/test_kv_cache.py \
+            tests/test_decoder_session.py \
+            tests/test_decoder_client.py \
+            tests/test_kv_admission.py \
+            tests/test_profile_decode.py \
             tests/test_import_boundaries.py
 
   engine:
@@ -149,7 +158,14 @@ jobs:
           print('onnxruntime wheel reports         ', onnxruntime.__version__)
           assert linked == onnxruntime.__version__
           "
+      # Two comparisons, same discipline. The engine is checked against ONNX Runtime's
+      # own Python API on an encoder graph; the block-allocated KV cache is checked
+      # against holding that cache contiguously, which is the faster path it replaces.
       - name: Compare the extension against the reference backend
         env:
           ANYTIME_REQUIRE_BACKENDS: extension,python
         run: pytest -q tests/test_runtime_engine.py
+      - name: Compare the block-allocated cache against contiguous KV
+        env:
+          ANYTIME_REQUIRE_BACKENDS: extension,python
+        run: pytest -q tests/test_kv_cache.py tests/test_decoder_session.py

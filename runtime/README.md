@@ -85,8 +85,47 @@ placeholders: the scheduler and batch assembly are not here yet.
 - **Error contract.** Anything meaning "the runtime could not serve this request"
   (an unknown variant, a missing input) raises `RuntimeError`. A malformed
   argument (a dtype the engine does not accept) raises `ValueError`.
+  `CacheExhausted` derives from `RuntimeError` and means specifically "the arena has
+  no room", which is the one such failure a policy is expected to handle by evicting
+  rather than propagate.
 - **Supported input dtypes.** float32, float64, int32, int64, bool. Outputs are
-  mapped back from the same set.
+  mapped back from the same set. The KV arena is float32, which is what weight-only
+  quantisation leaves the cache as; a graph declaring a narrower cache is refused
+  rather than reinterpreted.
+
+## The decoder path
+
+`DecoderSession` runs a decoder-only graph over a fixed arena of KV blocks. It is a
+host-side block allocator and not paged attention, for the reason at the top of
+`include/anytime/kv_cache.hpp`: ONNX Runtime allocates the `present` tensors itself,
+so there is no block table to hand the graph.
+
+```python
+import anytime_runtime as ar
+
+session = ar.DecoderSession("model.onnx", block_tokens=64, num_blocks=24)
+session.geometry  # read off the graph, not from a config
+session.open("seq", reserve_tokens=1024)
+result = session.prefill("seq", prompt)  # chunked at 256 by default
+result.logits  # the next token's row, only
+result.timings.gather_ms  # what block accounting cost
+session.decode("seq", token)
+session.release("seq")  # blocks back; tokens are the caller's
+```
+
+- **`open` refuses, it does not raise.** Returning `False` is the admission
+  controller's answer. A sequence that outgrows its reservation mid-decode raises
+  `CacheExhausted` instead, because by then something has already promised it room.
+- **The arena is fixed at construction** and zero-filled, so its pages are resident
+  before the first run rather than faulting in during the opening decode steps.
+- **Gather is timed, not assumed.** `StepTimings` breaks out gather, run, scatter and
+  the once-per-sequence invariant check separately. On GPT-2 the gather is 4% of a
+  decode step at 128 cached tokens and 11% at 960.
+- **Only the new tail is scattered back.** That rests on `present` beginning with the
+  `past` it was given, which is verified once per sequence and raises on mismatch.
+- **One arena per session.** The policy half lives in
+  `src/anytime_serving/serving/kv_admission.py`; consolidating to one shared arena
+  across a batch is what the scheduler will need.
 
 ## Tests
 

@@ -111,21 +111,130 @@ admission happens to let through.
   it admits 5 requests and all 5 hit, giving 100% attainment and 2 rps of
   goodput. This is why goodput, not attainment, is the headline.
 
+## Decoder: prefill and decode are two different measurements
+
+GPT-2 124M through the block-allocated KV cache, measured by
+`scripts/profile_decode.py` through the same `DecoderClient` that serves decoding.
+Recorded in full in `results/decode_profiles.json`.
+
+The headline is the gap. Time to first token and time per output token differ by a
+factor of 39 at FP32 and 107 at INT4, so a single latency figure would describe
+neither phase.
+
+| Precision | TTFT, 1024-token prompt | TPOT, 960 cached | TTFT / TPOT | Arena cost |
+| --- | --- | --- | --- | --- |
+| `fp32` | 372.2 ms (0.5%) | 9.54 ms (0.3%) | 39.0x | 11.1% |
+| `int8` | 345.6 ms (0.8%) | 8.45 ms (0.2%) | 40.9x | 12.6% |
+| `int4` | 1772.3 ms (0.2%) | 16.63 ms (0.5%) | 106.6x | 6.5% |
+
+TTFT is a chunked prefill at the 256-token default; the percentage is the range
+across three passes. "Arena cost" is the gather plus scatter as a share of the
+decode step -- what block accounting costs.
+
+### TPOT grows with the cache, so one figure is not enough
+
+A decode step re-reads the whole cache before it runs, so its cost is a line in the
+number of cached tokens rather than a constant:
+
+| Cached tokens | Cache size | `fp32` TPOT | Gather | Scatter | Arena cost |
+| --- | --- | --- | --- | --- | --- |
+| 128 | 9 MB | 4.83 ms | 0.185 ms | 0.009 ms | 4.0% |
+| 512 | 38 MB | 7.22 ms | 0.600 ms | 0.015 ms | 8.5% |
+| 960 | 71 MB | 9.54 ms | 1.044 ms | 0.018 ms | 11.1% |
+
+The gather is pure `memcpy` and comes out the same at every precision -- 0.19, 0.59
+and 1.05 ms at the three lengths -- because it moves the same bytes whatever the
+weights are. 71 MB in 1.044 ms is 68 GB/s, close to this host's memory bandwidth.
+The scatter stays near zero because it writes only the new token rather than the
+whole `present` tensor, which is worth about 1 ms a step at full context.
+
+So the price of block accounting is 4% of a decode step at short context and 11-13%
+at long. `scripts/profile_decode.py` also runs the same generation over contiguous KV
+and fails rather than reporting anything if the two disagree on the tokens they emit,
+or if time inside `Session::Run` differs by more than 15%. Measured, the two agree on
+tokens exactly and on graph time to within 3% (0.995x to 1.029x).
+
+`kv_admission.CacheCost` is fitted to these points rather than written down: FP32
+comes out at 4.18 ms plus 0.00565 ms per cached token, which reproduces all three
+measurements to within 0.14 ms. Recompute is 0.35 ms per token, fitted from the
+chunked prefill because that is the width a resume actually runs at. Drawing it from
+the single-pass sweep beside it instead would overstate every recompute by 13% and
+leave the eviction policy needlessly unwilling to act.
+
+The whole run was repeated to check it. After a two-minute pause every figure
+reproduced within 2.5% -- FP32 TPOT at 960 cached read 9.54 then 9.46 ms, INT8 8.45
+then 8.43. Started back to back with no pause it drifts up to 10%, which is worth
+knowing before comparing two runs.
+
+### Chunked prefill is faster and smaller
+
+Splitting a prefill into chunks re-reads the growing cache, so it ought to cost more.
+It does not, because a single pass over 1024 tokens also allocates logits for every
+position -- 206 MB -- when sampling reads one row of them.
+
+| Prefill width | `fp32` TTFT | vs one pass | Peak logits |
+| --- | --- | --- | --- |
+| one pass | 433.6 ms | 1.000x | 206 MB |
+| 512 | 388.4 ms | 0.896x | 103 MB |
+| 256 | 372.2 ms | **0.858x** | 52 MB |
+| 128 | 391.3 ms | 0.902x | 26 MB |
+
+256 tokens is the default. It is clearly fastest for FP32 and INT4; for INT8, 128 and
+256 are indistinguishable (345.4 against 344.1 ms in one run and a dead heat in the
+other), so 256 is chosen for the two reasons that are not about speed: at four blocks
+of 64 it aligns with the allocator, and it gives the scheduler a preemption point
+inside a long prefill.
+
+The gain is 1.17x at FP32 and 1.19x at INT8 but only 1.02x at INT4, where the cost is
+unpacking 4-bit weights once per run and more runs multiply it. Going below 256 stops
+helping for the same reason at every precision: eight passes over a 1024-token prompt
+re-read the growing cache eight times.
+
+This was checked twice with the chunk widths interleaved, because the first ordering
+measured them in sequence and could have been recording thermal drift.
+
+### INT8 is not dominated on the decoder
+
+Stage 1 found INT8 strictly dominated on this host, and
+[`quantization.md`](quantization.md) records it. That was an encoder at sequence
+length 128. Decode at sequence length 1 is a different kernel regime -- a
+matrix-vector product bound by weight bandwidth, where moving a quarter of the bytes
+helps -- and there INT8 wins:
+
+| Precision | TPOT at 128 cached | at 512 | at 960 | vs FP32 |
+| --- | --- | --- | --- | --- |
+| `fp32` | 4.83 ms | 7.22 ms | 9.54 ms | 1.000x |
+| `int8` | 3.60 ms | 5.79 ms | 8.45 ms | 0.75x to 0.89x |
+| `int4` | 11.56 ms | 13.85 ms | 16.63 ms | 1.74x to 2.39x |
+
+INT8 leads by 25% at 128 cached tokens and 11% at 960; the advantage narrows as cache
+reads take a larger share of the step. With P2's +0.063 perplexity at 0.61x the graph
+size, INT8 is the better decode variant on this host on every axis.
+
+INT4 is still dominated, but the penalty shrinks from 4.8x on prefill to 1.7x on
+decode, in the same direction and for the same reason. It buys memory and nothing
+else, which is the P2 finding unchanged.
+
 ## Reproducing
 
 ```bash
 python scripts/export_onnx.py --task text     # export FP32 and INT8 variants
 python scripts/profile_variants.py            # measure frontier, write serving.yaml
 python scripts/run_load_sweep.py              # sweep load, write CSV and figure
+python scripts/export_decoder.py              # export GPT-2, measure perplexity
+python scripts/profile_decode.py              # measure TTFT and TPOT
 ```
 
-Add `--quick` to either of the last two for a reduced run during development. Do
-not report `--quick` numbers: it drops accuracy to 128 of the 872 validation
-examples, which moves the measured accuracy by half a point.
+Add `--quick` to any of these for a reduced run during development. Do not report
+`--quick` numbers: for `profile_variants.py` it drops accuracy to 128 of the 872
+validation examples, which moves the measured accuracy by half a point, and for
+`profile_decode.py` it drops both the prompt lengths and the number of passes.
 
-Outputs land in `results/` and `docs/img/`. Both scripts are deterministic given a
-seed except for wall-clock effects, which is why latency is reported as
-percentiles over repeated passes rather than as single figures.
+Outputs land in `results/` and `docs/img/`. Every script writes only the paths named
+in its `--help`, all of which are overridable, and the decoder profiler deliberately
+writes no config: the decoder path is not wired into the adaptive serving harness yet.
+The scripts are deterministic given a seed except for wall-clock effects, which is why
+latency is reported as percentiles over repeated passes rather than as single figures.
 
 ## Known limitations
 

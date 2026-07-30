@@ -63,6 +63,13 @@ python scripts/profile_variants.py            # measure the Pareto frontier
 python scripts/run_load_sweep.py              # sweep load, write the figure
 ```
 
+The decoder path, which needs the `research` extra for the export:
+
+```bash
+python scripts/export_decoder.py              # GPT-2 in FP32, INT8, INT4
+python scripts/profile_decode.py              # TTFT and TPOT through the KV cache
+```
+
 ## Tests
 
 ```bash

@@ -69,12 +69,69 @@ requests and sharing a KV cache between them, which is what the rest of Stage 2
 needs. The `subprocess` row is from the Stage 1 worker, which was removed once it
 had served as the reference the extension was validated against.
 
+## The KV cache is a block allocator, not paged attention
+
+This distinction is structural rather than terminological, and the graph interface
+is what settles it. An optimum-exported decoder declares
+
+```text
+past_key_values.{i}.key    [batch, kv_heads, past, head_dim]     as an input
+present.{i}.key            [batch, kv_heads, past + sequence, head_dim]   as an output
+```
+
+ONNX Runtime allocates the `present` tensors itself. There is no block table to hand
+such a graph and no hook by which attention could read scattered pages, so paging over
+a stock exported decoder is not available at any price. What is available is an
+engine-owned arena in fixed blocks: keep a sequence's KV in blocks, gather them into
+the batch-shaped tensor before each run, and copy the new tail back afterwards.
+`runtime/include/anytime/kv_cache.hpp` states this at the top of the file so it cannot
+drift, and nothing in these docs calls it paged attention.
+
+Two alternatives were considered and declined. `past_present_share_buffer` contrib-op
+graphs may not be reachable through optimum for TinyLlama, and `onnxruntime-genai`
+brings its own scheduler rather than accepting ours.
+
+**The allocator is not a speedup, and does not claim to be.** Feeding the `present`
+tensors straight back as the next `past` costs no gather at all and is the fastest
+thing available. What blocks buy is accounting: a fixed arena whose occupancy is a
+number that admission can refuse against and eviction can choose against. The price
+of that is measured rather than assumed, and it is the gather.
+
+A block holds `block_tokens` token positions across every layer, for both key and
+value, because that is the unit admission reasons about. For GPT-2 at 64 tokens a
+block that is 4.5 MiB, and a 1024-token sequence is 16 blocks. Geometry is read off
+the graph -- layers by counting the past inputs, `kv_heads` and `head_dim` from their
+static dimensions -- rather than from a model config that could disagree with the
+graph it describes.
+
+Fragmentation is not a concern and that is the point of fixed blocks: any free block
+serves any request, so the arena cannot reach a state where free space exists and
+nothing fits. `tests/test_kv_cache.py` asserts the consequence, which is that a
+sequence whose blocks are non-adjacent and reversed computes bitwise the same output
+as one whose blocks are contiguous.
+
+Two properties of the exported graph are load-bearing and neither is assumed:
+
+- **A decode step from a gathered cache is bitwise identical to the same step over
+  contiguous KV.** Only the source of the bytes differs, so anything less means the
+  gather is corrupting something. Asserted on both the synthetic graph and GPT-2.
+- **`present[..., :past_len, :]` equals the `past` that produced it**, because the
+  graph concatenates rather than rewriting. That is what lets scatter write only the
+  new tail -- 0.02 ms against a 1.0 ms gather at 960 cached tokens. It is a property
+  of how these graphs are exported and not of the ONNX specification, so it is
+  verified once per sequence and raises on mismatch. Falling back to a full-present
+  scatter would keep running while silently changing what a decode step costs.
+
 ## Behaviour
 
 - **Tensors are borrowed, not copied.** Inputs point into the numpy buffer;
   outputs are numpy views over ONNX Runtime's buffers, kept alive by a capsule
   owning the `Ort::Value`. A response therefore holds runtime memory until it is
   dropped, so copy `logits` if it needs to outlive the request.
+- **One exception, and it is a saving.** `DecoderSession` copies the last row of the
+  logits out and drops the rest. The graph returns one row per position it was given,
+  which is 206 MB for a 1024-token prefill, and sampling reads 200 KB of it. Handing
+  that back as a view would keep tens of megabytes alive to read one row.
 - **The GIL is released during inference.** Without that a pool would serialise on
   the interpreter lock, and the M/M/c model in [`planner.md`](planner.md) would
   describe a machine that does not exist.

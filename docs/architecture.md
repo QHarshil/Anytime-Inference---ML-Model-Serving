@@ -43,6 +43,54 @@ same interpreter.
 5. The result is recorded as a `ServedRequest`: chosen variant, measured
    runtime and wall latency, predicted sojourn, load, and compute cost.
 
+## The decoder path
+
+Encoders run once per request; decoders run once per token, and the two need
+different shapes of machinery. The decoder path is a second lane through the same
+extension, following the same split:
+
+```text
+                +-----------------------------------+
+  generations   | BlockAdmission                    |
+      --------> |   blocks needed vs blocks free    |
+                |   eviction ordered by deadline    |
+                |   slack, priced against recompute |
+                +----------------+------------------+
+                                 |  a plan: admit, and who to preempt
+                                 v
+                +-----------------------------------+
+                | DecoderClient                     |
+                |   token history per sequence      |
+                |   greedy stepping, TTFT and TPOT  |
+                +----------------+------------------+
+                                 |  prefill / decode / release
+                                 v
+                +-----------------------------------+
+                | anytime_runtime.DecoderSession    |
+                |   fixed block arena               |
+                |   gather -> Run -> scatter tail   |
+                +-----------------------------------+
+```
+
+The division of labour is the same one as above, applied to memory rather than to
+time. `DecoderSession` owns the arena and knows nothing about deadlines;
+`BlockAdmission` reasons about deadlines and imports no runtime. `DecoderClient`
+holds the one thing neither does: the tokens a sequence has produced, which is what
+lets the arena give its blocks away and still finish the sequence correctly later.
+
+Two consequences worth stating:
+
+- **A decoding sequence is not a request.** It occupies its blocks for hundreds of
+  steps, so "admit and see" does not work the way it does for an encoder. Either the
+  arena can hold it or somebody has to be preempted for it.
+- **Preemption is preempt-and-recompute, and it costs.** Resuming re-runs the whole
+  history, so eviction is only safe for a sequence with enough deadline slack to
+  absorb that. Output is token-identical either way, which is what makes it a
+  scheduling decision rather than a correctness bug.
+
+There is no continuous batching yet, so one sequence is in flight at a time and the
+decoder path is not wired into `AdaptiveServer`. That is what P4 adds.
+
 ## Why the split
 
 The control plane needs to be cheap and observable; inference needs to be fast.
