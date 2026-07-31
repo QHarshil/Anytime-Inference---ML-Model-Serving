@@ -130,6 +130,7 @@ python scripts/export_onnx.py --task text     # models/, encoder variants
 python scripts/export_decoder.py              # models/, decoder variants + results/decoder_profiles.json
 python scripts/profile_variants.py            # results/variant_profiles.json, configs/serving.yaml
 python scripts/profile_decode.py              # results/decode_profiles.json
+python scripts/plot_decode_profiles.py        # docs/img/ decoder figures, from that JSON
 python scripts/run_load_sweep.py              # results/load_sweep.csv, docs/img/
 ```
 
