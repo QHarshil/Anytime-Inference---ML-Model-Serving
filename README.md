@@ -1,5 +1,7 @@
 # Anytime Inference Planner
 
+[![CI](https://github.com/QHarshil/Anytime-Inference-ML-Model-Serving/actions/workflows/ci.yml/badge.svg)](https://github.com/QHarshil/Anytime-Inference-ML-Model-Serving/actions/workflows/ci.yml)
+
 Latency-bounded ML serving. A Python control plane watches queue depth and CPU
 load, then routes each request to one of several profiled model variants so that
 as much traffic as possible completes inside a deadline. Inference runs in a C++

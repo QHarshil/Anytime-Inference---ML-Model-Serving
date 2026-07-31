@@ -13,8 +13,11 @@ This page is about the two decisions that shape everything downstream.
 pip install -e .
 ```
 
-That is the whole thing. `scikit-build-core` runs CMake, and CMake resolves an ONNX
-Runtime SDK matching the installed `onnxruntime` wheel, downloading it once into
+That is the whole thing.
+[`scikit-build-core`](https://scikit-build-core.readthedocs.io/en/latest/) runs
+CMake, and CMake resolves an [ONNX Runtime](https://onnxruntime.ai/docs/) SDK
+matching the installed `onnxruntime` wheel, downloading the matching
+[release archive](https://github.com/microsoft/onnxruntime/releases) once into
 `~/.cache/anytime-inference-planner/` if it is not already there.
 
 ## Match the ONNX Runtime version to the Python wheel
@@ -80,7 +83,10 @@ had served as the reference the extension was validated against.
 ## The KV cache is a block allocator, not paged attention
 
 This distinction is structural rather than terminological, and the graph interface
-is what settles it. An optimum-exported decoder declares
+is what settles it. [PagedAttention](https://arxiv.org/abs/2309.06180) works by
+handing the attention kernel a block table so it can read KV from
+non-contiguous pages. An [optimum](https://huggingface.co/docs/optimum/index)-exported
+decoder declares
 
 ```text
 past_key_values.{i}.key    [batch, kv_heads, past, head_dim]     as an input
@@ -96,8 +102,9 @@ the batch-shaped tensor before each run, and copy the new tail back afterwards.
 drift, and nothing in these docs calls it paged attention.
 
 Two alternatives were considered and declined. `past_present_share_buffer` contrib-op
-graphs may not be reachable through optimum for TinyLlama, and `onnxruntime-genai`
-brings its own scheduler rather than accepting ours.
+graphs may not be reachable through optimum for TinyLlama, and
+[onnxruntime-genai](https://github.com/microsoft/onnxruntime-genai) brings its own
+scheduler rather than accepting ours.
 
 **The allocator is not a speedup, and does not claim to be.** Feeding the `present`
 tensors straight back as the next `past` costs no gather at all and is the fastest

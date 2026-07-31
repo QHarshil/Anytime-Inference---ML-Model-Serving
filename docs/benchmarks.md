@@ -13,8 +13,8 @@ assumed, or carried over from another machine.
 | Workers | 4, one intra-op thread each |
 | Batch size | 1 |
 | Sequence length | 128 tokens |
-| Task | SST-2 binary sentiment |
-| Accuracy split | GLUE SST-2 validation, all 872 examples |
+| Task | [SST-2](https://huggingface.co/datasets/stanfordnlp/sst2) binary sentiment |
+| Accuracy split | [GLUE](https://gluebenchmark.com/) SST-2 validation, all 872 examples |
 | Latency samples | 200 per pass, 3 independent passes per variant, 20 warmup iterations each |
 | Deadline | 38.7 ms (3x the slowest frontier variant) |
 | Measured through | the `anytime_runtime` extension, the same path the server uses |
@@ -34,10 +34,11 @@ measurement passes; the spread column is the range across those passes.
 | `distilbert_int8` | 17.17 ms | 1.4% | 18.38 ms | 19.51 ms | 0.85 ms | 90.60% | 67 MB | 1.332 | dominated |
 | `minilm_int8` | 7.16 ms | 0.9% | 7.45 ms | 7.75 ms | 0.22 ms | 90.14% | 23 MB | 0.556 | dominated |
 
-The measured 91.06% for DistilBERT-SST-2 matches its published SST-2 dev accuracy
-of roughly 91.3%, which is the main sanity check on the measurement path. All four
-accuracies reproduce Stage 1 exactly, which is the check that the engine's logits
-are the same logits.
+The measured 91.06% for
+[DistilBERT-SST-2](https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english)
+matches the roughly 91.3% its model card reports on SST-2 dev, which is the main
+sanity check on the measurement path. All four accuracies reproduce Stage 1 exactly,
+which is the check that the engine's logits are the same logits.
 
 Both INT8 variants are strictly dominated: slower with no accuracy gain. See
 [`quantization.md`](quantization.md).
@@ -170,7 +171,10 @@ knowing before comparing two runs.
 
 Splitting a prefill into chunks re-reads the growing cache, so it ought to cost more.
 It does not, because a single pass over 1024 tokens also allocates logits for every
-position -- 206 MB -- when sampling reads one row of them.
+position -- 206 MB -- when sampling reads one row of them. Chunking a prefill is the
+first half of [SARATHI](https://arxiv.org/abs/2308.16369); the second half, sharing
+a run with decode steps, is not reachable over this graph, for the reason in
+[`architecture.md`](architecture.md).
 
 | Prefill width | `fp32` TTFT | vs one pass | Peak logits |
 | --- | --- | --- | --- |

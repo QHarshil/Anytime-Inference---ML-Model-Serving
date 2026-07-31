@@ -10,10 +10,14 @@ pip install -e ".[dev]"
 Or run `./setup.sh`, which does the same.
 
 Installing compiles the `anytime_runtime` extension, so a C++17 compiler and CMake
-3.20 or newer are needed. An ONNX Runtime SDK matching the `onnxruntime` wheel is
-downloaded once into `~/.cache/anytime-inference-planner/`; nothing needs to be
-fetched by hand. See [`../runtime/README.md`](../runtime/README.md) for why the
-version is derived rather than pinned.
+3.20 or newer are needed. The build runs through
+[scikit-build-core](https://scikit-build-core.readthedocs.io/en/latest/) and the
+bindings are [pybind11](https://pybind11.readthedocs.io/en/stable/). An
+[ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) SDK matching the
+`onnxruntime` wheel is downloaded once into
+`~/.cache/anytime-inference-planner/`; nothing needs to be fetched by hand. See
+[`../runtime/README.md`](../runtime/README.md) for why the version is derived rather
+than pinned.
 
 ### Dependency groups
 

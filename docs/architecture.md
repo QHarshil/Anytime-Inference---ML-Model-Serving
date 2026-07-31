@@ -168,6 +168,33 @@ Unrelated sense, same word: `models/cascade.py` and the `experiments/` pipeline 
 the two models of a cascade "stage 1" and "stage 2" — the cheap model, then the
 accurate one if its confidence is too low. Nothing to do with the above.
 
+## Where this sits
+
+Four pieces of published work this design is measured against or deliberately
+departs from. Each is here because something in the repository either implements it,
+declines it, or stands in for it.
+
+- **[Orca](https://www.usenix.org/conference/osdi22/presentation/yu)** (Yu et al.,
+  OSDI '22) introduced iteration-level scheduling: admit and retire sequences
+  between decode steps rather than between whole batches. That is the scheduler the
+  decoder path does not have yet, and the reason the arena and its admission policy
+  were built before it.
+- **[PagedAttention](https://arxiv.org/abs/2309.06180)** (Kwon et al., SOSP '23)
+  pages KV across non-contiguous blocks by handing attention a block table. This
+  repository does not do that and, over a stock exported graph, cannot — the
+  argument is in [`runtime.md`](runtime.md). The block arena here takes the
+  accounting and not the kernel, and the docs are careful never to call it paged
+  attention.
+- **[SARATHI](https://arxiv.org/abs/2308.16369)** (Agrawal et al., 2023) splits a
+  prefill into chunks and piggybacks decode steps onto them. The chunked prefill
+  here is the first half of that. The piggybacking is not reachable: the graph takes
+  one sequence length for the whole batch, so a one-token decode row sharing a run
+  with a 256-token prefill chunk would have to be padded to the chunk width.
+- **[INFaaS](https://www.usenix.org/conference/atc21/presentation/romero)** (Romero
+  et al., ATC '21) picks a model variant per request against a latency target.
+  `planner/infaas_style_baseline.py` is an offline stand-in for that policy, used as
+  a comparison rather than as a reimplementation.
+
 ## Further reading
 
 - [`planner.md`](planner.md) — admission control and variant selection

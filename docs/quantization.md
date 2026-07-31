@@ -4,6 +4,15 @@ Which variants are worth serving is a property of the hardware. This project
 measures it rather than assuming a precision ladder, because on the reference
 host the assumption is wrong.
 
+The two text models are
+[DistilBERT](https://huggingface.co/distilbert/distilbert-base-uncased-finetuned-sst-2-english)
+([Sanh et al., 2019](https://arxiv.org/abs/1910.01108)) and
+[MiniLM-L6-H384](https://huggingface.co/philschmid/MiniLM-L6-H384-uncased-sst2)
+([Wang et al., 2020](https://arxiv.org/abs/2002.10957)), both already fine-tuned on
+SST-2, and the decoder is [GPT-2 124M](https://huggingface.co/openai-community/gpt2).
+Quantisation is [ONNX Runtime's](https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html),
+applied through [optimum](https://huggingface.co/docs/optimum/index).
+
 ## The finding
 
 Dynamic INT8 quantisation shrinks both text models about fourfold and costs
@@ -47,7 +56,9 @@ planner will use them with no code change.
 ## Decoders: the same conclusion for INT4, the opposite one for INT8
 
 `scripts/export_decoder.py` exports GPT-2 124M with its KV cache in the graph
-signature and measures each precision against WikiText-2. Perplexity is scored
+signature and measures each precision against
+[WikiText-2](https://huggingface.co/datasets/Salesforce/wikitext)
+([Merity et al., 2016](https://arxiv.org/abs/1609.07843)). Perplexity is scored
 through the serving path, over 32,736 tokens in 32 non-overlapping 1024-token
 windows.
 
@@ -59,10 +70,11 @@ windows.
 
 INT8 is nearly free in quality terms, costing 0.06 perplexity for a 39% smaller
 graph, and is marginally faster. INT4 costs 1.56 perplexity and runs **4.1x
-slower** than FP32. That is the encoder finding again, and worse: on this host
-`MatMulNBits` has no tuned kernel, so the 4-bit weights are unpacked to float on
-every matrix multiply and the arithmetic happens at full width anyway. INT4 here
-buys memory and nothing else.
+slower** than FP32. That is the encoder finding again, and worse: on this host the
+[`MatMulNBits`](https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html#quantize-to-int4uint4)
+operator that 4-bit weights are folded into has no tuned kernel, so they are
+unpacked to float on every matrix multiply and the arithmetic happens at full width
+anyway. INT4 here buys memory and nothing else.
 
 Prefill is a single 1024-token forward pass with an empty cache, which is the
 right shape to compare on for that claim: it is dominated by the weight-bound

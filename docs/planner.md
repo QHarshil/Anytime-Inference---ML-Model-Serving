@@ -4,10 +4,12 @@ The planner answers one question per request: which variant, or none?
 
 ## Admission control
 
-`MMcAdmissionController` models the worker pool as an M/M/c queue. For arrival
-rate `lambda`, per-worker service rate `mu`, and `c` workers, the offered load is
+`MMcAdmissionController` models the worker pool as an
+[M/M/c queue](https://en.wikipedia.org/wiki/M/M/c_queue). For arrival rate `lambda`,
+per-worker service rate `mu`, and `c` workers, the offered load is
 `a = lambda / mu` and per-worker utilisation is `rho = a / c`. The probability an
-arrival waits is Erlang's C formula:
+arrival waits is
+[Erlang's C formula](https://en.wikipedia.org/wiki/Erlang_%28unit%29#Erlang_C_formula):
 
 ```text
 C(c, a) = B(c, a) / (1 - rho * (1 - B(c, a)))

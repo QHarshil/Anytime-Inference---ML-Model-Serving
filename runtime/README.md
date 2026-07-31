@@ -1,12 +1,14 @@
 # anytime_runtime (C++ extension)
 
-In-process ONNX Runtime engine, exposed to Python through pybind11. Replaces the
-Stage 1 subprocess worker: the transport is a function call, so there is no JSON
-framing, no base64, and no copy in either direction.
+In-process [ONNX Runtime](https://onnxruntime.ai/docs/) engine, exposed to Python
+through [pybind11](https://pybind11.readthedocs.io/en/stable/). Replaces the Stage 1
+subprocess worker: the transport is a function call, so there is no JSON framing, no
+base64, and no copy in either direction.
 
 ## Build
 
-The extension is built by installing the package. `scikit-build-core` drives
+The extension is built by installing the package.
+[`scikit-build-core`](https://scikit-build-core.readthedocs.io/en/latest/) drives
 CMake, so there is no separate build step:
 
 ```bash

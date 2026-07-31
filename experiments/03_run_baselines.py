@@ -4,7 +4,8 @@ Baselines:
 1. StaticSmall: Always use fastest model (lowest latency)
 2. StaticLarge: Always use most accurate model (highest accuracy)
 3. ThroughputAutotuner: Select model with best throughput under deadline
-4. INFaaS-style: Variant-aware selection (adapted from Romero et al., ATC'20)
+4. INFaaS-style: Variant-aware selection (adapted from Romero et al., USENIX ATC '21,
+   https://www.usenix.org/conference/atc21/presentation/romero)
 
 Evaluation:
 - Real batched inference runs (not simulated)
@@ -94,7 +95,7 @@ def select_infaas_style(
     deadline_ms: float,
     accuracy_target: float = 0.85,
 ) -> dict:
-    """INFaaS-style variant-aware selection (adapted from Romero et al., ATC'20)."""
+    """INFaaS-style variant-aware selection (adapted from Romero et al., ATC '21)."""
     task_lat = latency_df[latency_df["task"] == task].copy()
     task_acc = accuracy_df[accuracy_df["task"] == task].copy()
 
