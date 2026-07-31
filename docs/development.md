@@ -109,7 +109,7 @@ src/anytime_serving/
 runtime/          C++ engine and pybind11 bindings (built by pip install)
 scripts/          export, profiling, load sweep, demo
 experiments/      offline profiling and statistical evaluation pipeline
-configs/          deadlines, model zoo, measured serving profiles
+configs/          serving.yaml: the measured frontier the planner reads
 docs/             architecture, planner, runtime, quantisation, benchmarks
 tests/            unit, integration, engine-parity, and import-boundary tests
 ```
