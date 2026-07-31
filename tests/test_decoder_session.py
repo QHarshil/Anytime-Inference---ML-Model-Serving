@@ -5,15 +5,26 @@ same thing as holding a sequence's KV contiguously, while making the arena's
 occupancy a number that admission and eviction can act on. It does not claim to be
 faster -- feeding the `present` tensors straight back costs no gather at all.
 
-So the reference here is that faster path, and the bar is bitwise equality. Only the
-source of the bytes differs between the two, so anything less means the gather is
-corrupting something. `tests/decoder_reference.py` holds both loops.
+So the reference here is that faster path. `tests/decoder_reference.py` holds both
+loops.
 
-The exception is preemption. A recomputed sequence re-runs its whole history in one
-wide pass where the uninterrupted path ran many narrow ones, and those differ in
-float summation order -- about 6e-05 on GPT-2. What has to hold is that the emitted
-tokens are identical, which is what `test_a_preempted_sequence_emits_token_identical
-_output` asserts, along with enough margin that it is not passing by luck.
+Which bar applies depends on what is being compared, and getting that wrong is how
+this file first went red on CI:
+
+- **Same ONNX Runtime instance, cache held two ways.** Only the source of the bytes
+  differs, so the bar is **bitwise**. Anything less means the gather is corrupting
+  something. This is the test that actually covers the block allocator.
+- **Two independent ONNX Runtime builds.** The extension links its own SDK and the
+  wheel ships another, and on x86-64 they dispatch to different MLAS kernels, so a
+  reduction accumulates in a different order. Measured 8.6e-07 relative, around seven
+  float32 ULP. Bitwise held on arm64 only because both took the same NEON path, which
+  made it look like a guarantee. The bar is token identity plus float32 agreement.
+- **A recomputed sequence against an uninterrupted one.** One wide pass against many
+  narrow ones, about 6e-05 on GPT-2. Token identity, with the winning margin asserted
+  so it is not passing by luck.
+
+Token identity is the hard assertion in all three cases: a gather that reads the
+wrong block moves logits by hundreds, not by ULPs, so it changes the argmax.
 """
 
 import numpy as np
@@ -47,10 +58,31 @@ def _session(graph, *, block_tokens=4, num_blocks=64):
     )
 
 
+# Bound for comparisons across two independent ONNX Runtime builds. Derived rather
+# than tuned until it passed: float32 carries about 1.2e-07 per operation, the
+# measured disagreement on x86-64 is 8.6e-07 (roughly seven ULP through a reduction),
+# and this is 12x that. It is also five orders of magnitude below a real fault -- a
+# gather reading the wrong block moved these logits by 1.8e+03 when it was tried.
+CROSS_BUILD_RTOL = 1e-5
+CROSS_BUILD_ATOL = 1e-3
+
+
 def _assert_bitwise(reference, measured, label):
     for step, (want, got) in enumerate(zip(reference, measured, strict=True)):
         np.testing.assert_array_equal(
             got, want, err_msg=f"{label}: step {step} differs (0 = prefill, then decode steps)"
+        )
+
+
+def _assert_same_to_float32(reference, measured, label):
+    for step, (want, got) in enumerate(zip(reference, measured, strict=True)):
+        np.testing.assert_allclose(
+            got,
+            want,
+            rtol=CROSS_BUILD_RTOL,
+            atol=CROSS_BUILD_ATOL,
+            err_msg=f"{label}: step {step} differs by more than float32 accumulation "
+            f"error (0 = prefill, then decode steps)",
         )
 
 
@@ -83,14 +115,25 @@ def test_the_block_allocated_cache_matches_a_contiguous_one_bitwise(decoder_grap
     _assert_bitwise(expected_logits, logits, f"chunk_tokens={chunk_tokens}")
 
 
-def test_the_session_matches_an_independent_onnxruntime_bitwise(decoder_graph):
+def test_the_session_matches_an_independent_onnxruntime(decoder_graph):
     """Cross-checked against the wheel, not just against the engine beside it.
 
     The same discipline as `tests/test_runtime_engine.py`: a replacement is validated
     against the thing it replaces, through a separate copy of the library. This also
     covers `position_ids` and `attention_mask`, which the reference loop sets
     explicitly and the session derives -- a decode step that offset its positions
-    wrongly would diverge here.
+    wrongly would diverge here, and by far more than float32 noise.
+
+    Not bitwise, and the reason is the point. The extension links its own ONNX Runtime
+    SDK while the wheel ships a separate build of the same version, and on x86-64 the
+    two dispatch to different MLAS kernels: the reduction in this graph accumulates in
+    a different order and the last one or two float32 digits differ. This test asserted
+    bitwise equality at first and passed locally on arm64, where both builds take the
+    same NEON path -- then failed on every x86-64 CI job. Bitwise was never derivable
+    across two builds; it only looked that way on one architecture.
+
+    What is derivable is that both compute the same function, so the tokens match
+    exactly and the logits match to float32 accumulation error.
     """
     ort = pytest.importorskip("onnxruntime")
     session = ort.InferenceSession(str(decoder_graph), providers=["CPUExecutionProvider"])
@@ -99,7 +142,7 @@ def test_the_session_matches_an_independent_onnxruntime_bitwise(decoder_graph):
     )
     tokens, logits = session_generate(_session(decoder_graph), "a", PROMPT, STEPS, chunk_tokens=0)
     assert tokens == expected_tokens
-    _assert_bitwise(expected_logits, logits, "wheel reference")
+    _assert_same_to_float32(expected_logits, logits, "wheel reference")
 
 
 @pytest.mark.parametrize("chunk_tokens", [3, 4, 8])

@@ -174,7 +174,15 @@ def test_extension_reports_its_compiled_api_version():
 
 
 def test_every_backend_computes_the_same_result(model_paths):
-    """Bitwise agreement across every backend built in this environment."""
+    """Bitwise agreement across every backend built in this environment.
+
+    Bitwise holds here, but it is a property of this graph rather than a guarantee
+    across the two libraries. The extension links its own ONNX Runtime SDK and the
+    wheel ships a separate build, and on x86-64 they can dispatch to different MLAS
+    kernels. A 4x4 matmul with a bias and a Relu gives them nothing to disagree about;
+    a long reduction does. `tests/test_decoder_session.py` has the case where it does
+    not hold, measured at seven float32 ULP, and asserts float32 agreement instead.
+    """
     backends = _available_backends()
     if len(backends) < 2:
         pytest.skip(f"only the {backends[0]!r} backend is available; nothing to compare")

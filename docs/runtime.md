@@ -63,6 +63,14 @@ All three agreed bitwise on the logits, and their inference times agreed within
 0.4%. That agreement is what a matched version looks like, and it is the check that
 was missing in Stage 1.
 
+Bitwise agreement across the two libraries is a property of the graph rather than a
+guarantee, and it is worth not over-reading. The extension links its own ONNX Runtime
+SDK and the wheel ships a separate build of the same version, so on x86-64 they can
+dispatch to different MLAS kernels. DistilBERT and the small fixture graphs give them
+nothing to disagree about; the decoder graph's reduction does, at around seven float32
+ULP. Comparisons within one instance stay bitwise, comparisons across the two are held
+to float32 agreement, and `tests/test_decoder_session.py` records which is which.
+
 Transport fell from 0.296 ms to 0.018 ms. Against 14 ms of inference that saving is
 not why the change was made: a subprocess boundary rules out batching across
 requests and sharing a KV cache between them, which is what the rest of Stage 2
