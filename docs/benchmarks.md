@@ -143,9 +143,18 @@ number of cached tokens rather than a constant:
 | 512 | 38 MB | 7.22 ms | 0.600 ms | 0.015 ms | 8.5% |
 | 960 | 71 MB | 9.54 ms | 1.044 ms | 0.018 ms | 11.1% |
 
-The gather is pure `memcpy` and comes out the same at every precision -- 0.19, 0.59
-and 1.05 ms at the three lengths -- because it moves the same bytes whatever the
-weights are. 71 MB in 1.044 ms is 68 GB/s, close to this host's memory bandwidth.
+The gather is pure `memcpy`, so it comes out the same at every precision to within a
+few percent -- 0.19, 0.59 and 1.05 ms at the three lengths, spreading 5% across
+precisions at 128 tokens and 2% at 960 -- because it moves the same bytes whatever the
+weights are.
+
+70.8 MB in 1.044 ms is 68 GB/s. That is **not** near this host's peak memory
+bandwidth, and the comparison that matters is not the peak but what one thread can do:
+a plain 70.8 MB `np.copyto` on the same host measures 1.049 ms as the median of three
+passes, against the gather's 1.044. The gather is therefore already running at the copy
+rate, and the only ways to make it cheaper are to move fewer bytes or to use more than
+one thread.
+
 The scatter stays near zero because it writes only the new token rather than the
 whole `present` tensor, which is worth about 1 ms a step at full context.
 
@@ -200,10 +209,8 @@ measured them in sequence and could have been recording thermal drift.
 ### INT8 is not dominated on the decoder
 
 Stage 1 found INT8 strictly dominated on this host, and
-[`quantization.md`](quantization.md) records it. That was an encoder at sequence
-length 128. Decode at sequence length 1 is a different kernel regime -- a
-matrix-vector product bound by weight bandwidth, where moving a quarter of the bytes
-helps -- and there INT8 wins:
+[`quantization.md`](quantization.md) records it. That was an encoder at sequence length
+128, and on the decoder the ordering reverses:
 
 | Precision | TPOT at 128 cached | at 512 | at 960 | vs FP32 |
 | --- | --- | --- | --- | --- |
@@ -211,13 +218,55 @@ helps -- and there INT8 wins:
 | `int8` | 3.60 ms | 5.79 ms | 8.45 ms | 0.75x to 0.89x |
 | `int4` | 11.56 ms | 13.85 ms | 16.63 ms | 1.74x to 2.39x |
 
-INT8 leads by 25% at 128 cached tokens and 11% at 960; the advantage narrows as cache
-reads take a larger share of the step. At +0.063 perplexity for 0.61x the graph size,
-INT8 is the better decode variant on this host on every axis.
+INT8 leads by 25% at 128 cached tokens and 11% at 960. At +0.063 perplexity for 0.61x
+the graph size it is the decode variant to serve here — but it does not dominate, and
+the difference matters when reading the frontier. INT4 is smaller (367 MB against 399)
+and FP32 is more accurate (31.307 against 31.371), so all three sit on the frontier and
+what INT8 wins is speed. "Not dominated" is the claim; "wins on every axis" would not
+be true of any of them.
 
-INT4 is still dominated, but the penalty shrinks from 4.8x on prefill to 1.7x on
-decode, in the same direction and for the same reason. It buys memory and nothing
-else, which is what the export measured and this does not change.
+### What the reversal does and does not establish
+
+Three things differ between the encoder measurement and this one, not one:
+
+- **Model.** DistilBERT and MiniLM against GPT-2.
+- **Shape.** Sequence length 128 in one pass, against a 256-token prefill chunk and
+  then single-token decode steps.
+- **The quantisation recipe itself.** `export_onnx.py` asks optimum for
+  `AutoQuantizationConfig.arm64(is_static=False, per_channel=False)`, which is
+  per-tensor across the graph. `export_decoder.py` runs `quantize_dynamic` with
+  `per_channel=True` over `MatMul` and `Gemm` only, with the output projection
+  excluded, because including it measured 44.4 perplexity against 26.8 for the
+  unquantised graph in that same early run — a smaller scoring configuration than the
+  32 windows above, so those two numbers compare with each other and not with this
+  page's table.
+
+So the honest conclusion is that the encoder result does not generalise to the
+decoder. It is not evidence that decode shape alone is responsible, and the usual
+explanation — that decode at length 1 is a matrix-vector product bound by the
+bandwidth to read weights — does not even cover the whole result, because INT8 also
+wins the 256-token chunked prefill, which is not a matrix-vector product.
+
+What the fitted cost model does isolate is the part of the step precision acts on:
+
+| Precision | Cache-independent term | Per cached token | Cache-independent share at 960 |
+| --- | --- | --- | --- |
+| `fp32` | 4.18 ms | 5.65 µs | 44% |
+| `int8` | 2.83 ms | 5.84 µs | 34% |
+| `int4` | 10.76 ms | 6.10 µs | 65% |
+
+The per-token coefficients agree within 8% across precisions while the constant terms
+span 3.8x. Reading the cache is precision-invariant, as it must be — the arena is
+float32 whatever the weights are — and quantisation acts on the constant part. That is
+enough to explain the narrowing lead without claiming to have identified the
+bottleneck: by the same fit, the term INT8 shrinks is 85% of an FP32 step at 128 cached
+tokens and 44% at 960.
+
+INT4 is still dominated on speed, but the penalty shrinks from 4.8x on prefill to 1.7x
+on decode, consistent with the same split: its constant term is the one carrying the
+per-run cost of unpacking 4-bit weights, and more of the step is cache traffic as
+context grows. It buys memory and nothing else, which is what the export measured and
+this does not change.
 
 ## Reproducing
 

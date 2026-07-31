@@ -83,10 +83,9 @@ matrix multiplies that quantisation changes.
 ### The precision ordering depends on the phase
 
 A decoder has a second shape to compare on, and it gives a different answer.
-`scripts/profile_decode.py` measures a decode step -- one token against a filled
-cache -- which is a matrix-vector product rather than a matrix-matrix one, and is
-bound by the bandwidth to read the weights rather than by arithmetic. Moving a
-quarter of the bytes helps there:
+`scripts/profile_decode.py` measures a decode step -- one token against a filled cache
+-- which is a much lower-arithmetic-intensity shape than a 128-token encoder pass, and
+there moving a quarter of the weight bytes helps:
 
 | Precision | TPOT at 128 cached | at 512 | at 960 | vs FP32 |
 | --- | --- | --- | --- | --- |
@@ -94,16 +93,29 @@ quarter of the bytes helps there:
 | `int8` | 3.60 ms | 5.79 ms | 8.45 ms | 0.75x to 0.89x |
 | `int4` | 11.56 ms | 13.85 ms | 16.63 ms | 1.74x to 2.39x |
 
-So **INT8 is not dominated on the decoder.** It is faster on prefill and 11-25%
-faster on decode, at 0.61x the size for 0.06 perplexity. On this model it wins on
-every axis, and the earlier finding stands unchanged as what it always was: a
-statement about an encoder at sequence length 128, not about a precision.
+So **INT8 is not dominated on the decoder.** It is faster on prefill and 11-25% faster
+on decode, at 0.61x the size for 0.06 perplexity. That is the claim, and it is worth
+not inflating: INT8 does not dominate either. INT4 is smaller, at 367 MB against 399,
+and FP32 is more accurate, at 31.307 perplexity against 31.371, so all three sit on the
+decoder's frontier and what INT8 wins is speed. The earlier finding stands unchanged as
+what it always was: a statement about an encoder at sequence length 128, not about a
+precision.
 
-INT4 stays dominated, but its penalty shrinks from 4.8x on prefill to 1.7x on
-decode. Same explanation from the other side -- the unpacking cost is fixed per
-matrix multiply while the bandwidth saving grows in relative terms as the
-arithmetic per weight falls, so decode recovers part of what prefill loses. Not
-enough to matter, and INT4 still buys memory and nothing else.
+It is also not one experiment with one variable. The encoder and decoder measurements
+differ in model, in shape, and in the recipe itself -- per-tensor across the whole
+encoder graph, against per-channel over `MatMul` and `Gemm` with the output projection
+excluded for the decoder, for the reason two sections down. So the reversal shows that
+the encoder conclusion does not generalise; it does not identify which of the three
+differences produced it, and the shape explanation alone cannot, since INT8 also wins
+the 256-token chunked prefill. [`benchmarks.md`](benchmarks.md) carries the one split
+the measurement does isolate: precision moves the cache-independent part of a decode
+step and leaves the per-cached-token part alone.
+
+INT4 stays dominated on speed, but its penalty shrinks from 4.8x on prefill to 1.7x on
+decode. Consistent with the same split -- the unpacking cost is fixed per matrix
+multiply, so it lands on the constant part of the step, and the constant part is a
+smaller share of a long-context decode than of a prefill. Not enough to matter, and
+INT4 still buys memory and nothing else.
 
 The lesson is the one this page opens with, one level further in. A quantisation
 result is a statement about a configuration; it is also a statement about a
@@ -113,10 +125,15 @@ result is a statement about a configuration; it is also a statement about a
 
 Both were found by disbelieving the first result rather than recording it.
 
+Both are ratios from an earlier, smaller scoring configuration whose unquantised
+baseline read 26.8 rather than the 31.307 in the table above. They are comparable with
+each other and not with that table; what they establish is the size of the effect, not
+a perplexity for any variant that ships.
+
 **Leave the output projection in float.** It maps the hidden state onto 50257
 vocabulary entries, so its error lands directly on the distribution being scored.
 Quantising it to symmetric 4-bit and nothing else measured perplexity of **1265**
-against 26.8. Both quantisers here exclude it.
+against that 26.8 baseline. Both quantisers here exclude it.
 
 **GPT-2's linear layers export as `Gemm`, not `MatMul`.** PyTorch implements them
 as `Conv1D`, and `MatMulNBitsQuantizer` only rewrites `MatMul`. Left alone, INT4
@@ -128,9 +145,10 @@ is exact at alpha = beta = 1 with no transpose and is asserted bitwise lossless 
 among them, export as `MatMul` and need no rewrite.
 
 The first INT8 attempt was per-tensor and quantised the output projection: 44.4
-perplexity against 26.8. Per-channel scales with the projection left in float cost
-0.06. A quantisation result is a statement about a configuration, not about a
-precision.
+perplexity against the same 26.8 baseline. Per-channel scales with the projection left
+in float cost 0.06 against the 32-window baseline. A quantisation result is a statement
+about a configuration, not about a precision — which is also why the INT8 recipe here
+and the encoder's are not the same experiment run twice.
 
 ## Quantising for the right architecture
 

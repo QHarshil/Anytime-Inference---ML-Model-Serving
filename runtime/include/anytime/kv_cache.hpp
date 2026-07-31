@@ -151,8 +151,11 @@ struct SequenceCache {
 // Both source and destination are contiguous within a (head, block) pair, so this
 // is one memcpy per pair rather than per token: `kv_heads * ceil(length /
 // block_tokens)` copies of up to `block_tokens * head_dim` floats. At GPT-2's
-// geometry with 64-token blocks that is 16 KiB a copy, which is large enough to
-// run at memory bandwidth.
+// geometry with 64-token blocks that is 16 KiB a copy, which is large enough that
+// the block structure costs nothing measurable: gathering 70.8 MB this way takes
+// 1.044 ms against 1.049 ms for a single flat memcpy of the same bytes on this
+// host. Not near the host's peak bandwidth -- one thread does not reach that --
+// but at the rate one thread copies.
 void gather(const BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind,
             int length, float* dest);
 

@@ -49,21 +49,31 @@ noise.
 ### The decoder is two measurements, not one
 
 GPT-2 124M through the block-allocated KV cache. A 1024-token prompt is prefilled in
-chunks of 256; TPOT is measured against 960 cached tokens, where a decode step costs
-the most.
+chunks of 256; TPOT and the gather share are measured against 960 cached tokens, where
+a decode step costs the most. Perplexity is WikiText-2 over 32,736 tokens.
 
-| Precision | Size | TTFT | TPOT | TTFT / TPOT | Cost of block accounting |
-| --- | --- | --- | --- | --- | --- |
-| `fp32` | 653 MB | 372 ms | 9.54 ms | 39.0x | 11.1% |
-| `int8` | 399 MB | 346 ms | 8.45 ms | 40.9x | 12.6% |
-| `int4` | 367 MB | 1772 ms | 16.63 ms | 106.6x | 6.5% |
+| Precision | Size | Perplexity | TTFT | TPOT | TTFT / TPOT | Gather + scatter |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fp32` | 653 MB | 31.307 | 372 ms | 9.54 ms | 39.0x | 11.1% |
+| `int8` | 399 MB | 31.371 | 346 ms | 8.45 ms | 40.9x | 12.6% |
+| `int4` | 367 MB | 32.866 | 1772 ms | 16.63 ms | 106.6x | 6.5% |
 
-INT8 wins on every axis here, which contradicts the encoder finding on the same host
-and does not overturn it: a decode step is a matrix-vector product bound by weight
-bandwidth, and an encoder at sequence length 128 is not. The arena is not a speedup
-and is not offered as one — feeding the graph's own `present` tensors back costs no
-gather at all. What blocks buy is an occupancy number a policy can act on, and the
-last column is what that costs.
+INT8 is the variant to serve here, and it does not dominate: it is fastest in both
+phases, but INT4 is smaller and FP32 is 0.06 perplexity better. It also reverses the
+encoder finding on this host, where INT8 was strictly slower, and reversing is not
+overturning — model, shape and quantisation recipe all differ between the two
+measurements, so what it shows is that the encoder conclusion does not generalise, not
+which difference caused that.
+
+What the fitted cost model does isolate is narrower and more useful. Precision moves
+the cache-independent part of a decode step — 4.18 ms at FP32 against 2.83 at INT8 —
+and barely touches the part that grows with the cache, 5.65 against 5.84 µs per cached
+token. That is why INT8's lead narrows from 25% at 128 cached tokens to 11% at 960:
+the part it shrinks is a shrinking share of the step.
+
+The arena is not a speedup and is not offered as one — feeding the graph's own
+`present` tensors straight back costs no gather at all. What blocks buy is an occupancy
+number a policy can act on, and the last column is what that costs.
 
 Full tables, methodology, and host details: [`docs/benchmarks.md`](docs/benchmarks.md).
 
