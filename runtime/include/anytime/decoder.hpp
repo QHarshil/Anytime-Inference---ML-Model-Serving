@@ -1,10 +1,10 @@
 // Decoder-only inference over a block-allocated KV cache.
 //
 // Splits a generation into the two phases that have almost nothing in common. On
-// this host, GPT-2 124M at FP32 prefills a 1024-token prompt in 434 ms and then
-// emits each following token in 8.8 ms: a factor of 49. Reporting one latency for
-// both would describe neither, which is why prefill and decode are separate calls
-// returning separate timings.
+// this host, GPT-2 124M at FP32 prefills a 1024-token prompt in 372 ms and then
+// emits each following token in 9.5 ms at full context: a factor of 39. Reporting
+// one latency for both would describe neither, which is why prefill and decode are
+// separate calls returning separate timings.
 //
 // The cache is a host-side block allocator; see kv_cache.hpp for why a stock
 // exported decoder admits nothing else. This class is the mechanical half of the
@@ -13,11 +13,11 @@
 // it reasons about: src/anytime_serving/serving/kv_admission.py.
 //
 // Prefill runs in chunks by default because that measured faster as well as
-// smaller. One pass over 1024 tokens took 444.9 ms and allocated 206 MB of logits
-// the sampler never reads; four passes of 256 took 372.7 ms, 0.838x, with a 51 MB
+// smaller. One pass over 1024 tokens took 433.6 ms and allocated 206 MB of logits
+// the sampler never reads; four passes of 256 took 372.2 ms, 0.858x, with a 51 MB
 // peak. The redundant re-reads of the growing past cost less than the full-window
-// attention and that discarded allocation. Chunk boundaries also give the scheduler
-// a preemption point inside a long prefill, which P4 needs.
+// attention and that discarded allocation. Chunk boundaries also give a scheduler a
+// preemption point inside a long prefill, which continuous batching needs.
 
 #ifndef ANYTIME_DECODER_HPP
 #define ANYTIME_DECODER_HPP
@@ -37,8 +37,9 @@
 
 namespace anytime {
 
-// Prefill chunk width, in tokens. 256 is four blocks at the default block size and
-// measured fastest of 128, 256, 512 and one pass; see the file comment.
+// Prefill chunk width, in tokens. 256 is four blocks at the default block size, and
+// of 128, 256, 512 and one pass it measured fastest at FP32 and INT4 and tied with
+// 128 at INT8; see the file comment.
 constexpr int kDefaultPrefillChunkTokens = 256;
 
 // Token positions per block. 64 keeps a GPT-2 block at 4.5 MiB, so a 1024-token

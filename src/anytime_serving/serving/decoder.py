@@ -12,8 +12,9 @@ would put the accounting somewhere other than where the runtime is. A missing
 extension is therefore an error rather than a slower path.
 
 TTFT and TPOT are reported separately because they are not the same measurement. On
-this host GPT-2 FP32 prefills a 1024-token prompt in 372.7 ms and then emits each
-token in 8.8 ms, a factor of 42. A single latency figure would describe neither.
+this host GPT-2 FP32 prefills a 1024-token prompt in 372.2 ms and then emits each
+token in 9.5 ms at full context, a factor of 39. A single latency figure would
+describe neither.
 
 Preemption
 ----------
@@ -22,7 +23,7 @@ Preemption
 history and carries on. The output is token-identical to an uninterrupted run --
 asserted in `tests/test_decoder_session.py` on both the synthetic graph and GPT-2 --
 which is what makes eviction a scheduling decision rather than a correctness bug. It
-is not free: recomputing a 960-token sequence costs about 350 ms against an 8.6 ms
+is not free: recomputing a 960-token sequence costs about 340 ms against a 9.5 ms
 decode step, which is why `kv_admission.BlockAdmission` weighs slack against
 recompute before naming a victim.
 """

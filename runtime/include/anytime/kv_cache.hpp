@@ -14,9 +14,10 @@
 // straight back into the next run costs no gather at all and is the fastest thing
 // available. What blocks buy is accounting: a fixed arena whose occupancy is
 // known, so admission can refuse a sequence it cannot hold and eviction can pick a
-// victim on evidence. On this host that accounting costs about 15% of a decode step
-// at full context, which `scripts/profile_decode.py` measures against the
-// no-gather reference rather than assuming.
+// victim on evidence. On this host that accounting costs 4-6% of a decode step at
+// 128 cached tokens and 11-13% at 960, at FP32 and INT8; the INT4 share is smaller
+// only because the step it is a share of is slower. `scripts/profile_decode.py`
+// measures it against the no-gather reference rather than assuming it.
 //
 // Two invariants of the exported graph are load-bearing here, both measured rather
 // than assumed:

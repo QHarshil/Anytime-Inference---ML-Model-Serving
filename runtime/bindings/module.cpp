@@ -325,9 +325,9 @@ PYBIND11_MODULE(anytime_runtime, module) {
              py::arg("sequence_id"), py::arg("tokens"),
              py::arg("chunk_tokens") = anytime::kDefaultPrefillChunkTokens,
              "Run a prompt through the graph, filling the cache.\n\n"
-             "Chunked by default: one pass over 1024 GPT-2 tokens measured 444.9 ms "
+             "Chunked by default: one pass over 1024 GPT-2 tokens measured 433.6 ms "
              "and allocated 206 MB of logits the sampler never reads, while four "
-             "passes of 256 measured 372.7 ms with a 51 MB peak. Pass "
+             "passes of 256 measured 372.2 ms with a 51 MB peak. Pass "
              "chunk_tokens=0 for a single pass.")
         .def("decode",
              [](anytime::DecoderSession& self, const std::string& sequence_id,
