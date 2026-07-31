@@ -8,8 +8,9 @@ compute the same thing while making the arena's occupancy a number somebody can
 admit or evict against.
 
 Both loops are written here so a test can run one against the other. Same discipline
-as P1, where the in-process engine was validated against the subprocess worker it
-replaced before that worker was deleted.
+that put the in-process engine against the subprocess worker it replaced before that
+worker was deleted: validate the replacement against the thing it replaces, while
+both still exist.
 
 `reference_generate` is parametrised over how the graph is run, so the same loop
 serves two references: the in-process engine, which isolates the gather because it

@@ -89,7 +89,8 @@ Two consequences worth stating:
   scheduling decision rather than a correctness bug.
 
 There is no continuous batching yet, so one sequence is in flight at a time and the
-decoder path is not wired into `AdaptiveServer`. That is what P4 adds.
+decoder path is not wired into `AdaptiveServer`. That is what the batching scheduler
+adds.
 
 ## Why the split
 
@@ -144,6 +145,28 @@ Variants of the same task can declare different graph inputs: DistilBERT takes
 send the union and the runtime keeps the subset its graph declares. The C++
 engine and the Python reference backend implement identical filtering, and a
 request missing a declared input is an error rather than a silent wrong answer.
+
+## What "Stage 1" and "Stage 2" refer to
+
+These pages date findings against two rewrites, and the labels are used often enough
+to be worth defining once.
+
+**Stage 1** made the existing design correct. It replaced the single-server
+queueing model with M/M/c, which had been understating pool capacity by the worker
+count and shedding traffic the pool could serve; replaced numbers that had been
+written down with numbers measured on this host; added CI; and deleted scaffolding
+that fed nothing. Inference ran in a pool of C++ subprocesses speaking
+line-delimited JSON.
+
+**Stage 2** is the current one. It moved inference in-process as a pybind11
+extension, validated against the subprocess worker before deleting it, then added a
+decoder path: GPT-2 exported with its KV cache in the graph signature at three
+precisions, a block-allocated arena for that cache, and admission and eviction
+against the arena's occupancy. Continuous batching is the part still outstanding.
+
+Unrelated sense, same word: `models/cascade.py` and the `experiments/` pipeline call
+the two models of a cascade "stage 1" and "stage 2" — the cheap model, then the
+accurate one if its confidence is too low. Nothing to do with the above.
 
 ## Further reading
 

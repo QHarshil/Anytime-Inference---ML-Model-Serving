@@ -208,12 +208,12 @@ helps -- and there INT8 wins:
 | `int4` | 11.56 ms | 13.85 ms | 16.63 ms | 1.74x to 2.39x |
 
 INT8 leads by 25% at 128 cached tokens and 11% at 960; the advantage narrows as cache
-reads take a larger share of the step. With P2's +0.063 perplexity at 0.61x the graph
-size, INT8 is the better decode variant on this host on every axis.
+reads take a larger share of the step. At +0.063 perplexity for 0.61x the graph size,
+INT8 is the better decode variant on this host on every axis.
 
 INT4 is still dominated, but the penalty shrinks from 4.8x on prefill to 1.7x on
 decode, in the same direction and for the same reason. It buys memory and nothing
-else, which is the P2 finding unchanged.
+else, which is what the export measured and this does not change.
 
 ## Reproducing
 
