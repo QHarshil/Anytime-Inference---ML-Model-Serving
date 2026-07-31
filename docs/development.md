@@ -99,18 +99,21 @@ apart. See [`../runtime/README.md`](../runtime/README.md).
 
 ```text
 src/anytime_serving/
-  serving/        load monitor, admission control, selector, runtime client, server
+  serving/        load monitor, admission control, selector, runtime client,
+                  server, and the decoder path: decoder client, KV admission
   planner/        offline deadline-aware planner and baselines
   models/         model zoo, cascade evaluator, quantisation helpers
   evaluation/     statistical analysis, Pareto frontiers, real inference
   profiler/       offline latency and accuracy profilers
   utils/          io, logging, metrics, visualisation
   workloads/      synthetic Poisson and bursty trace generators
-runtime/          C++ engine and pybind11 bindings (built by pip install)
+runtime/          C++ engine, KV arena, and pybind11 bindings (built by pip install)
 scripts/          export, profiling, load sweep, demo
 experiments/      offline profiling and statistical evaluation pipeline
+training/         fine-tuning entry points; not needed to serve or benchmark
 configs/          serving.yaml: the measured frontier the planner reads
-docs/             architecture, planner, runtime, quantisation, benchmarks
+data/             dataset download helper; nothing here is versioned
+docs/             the six pages this one belongs to, and img/ for their figures
 tests/            unit, integration, engine-parity, and import-boundary tests
 ```
 
@@ -122,14 +125,36 @@ tests/            unit, integration, engine-parity, and import-boundary tests
 python scripts/export_onnx.py --task text     # models/, encoder variants
 python scripts/export_decoder.py              # models/, decoder variants + results/decoder_profiles.json
 python scripts/profile_variants.py            # results/variant_profiles.json, configs/serving.yaml
+python scripts/profile_decode.py              # results/decode_profiles.json
 python scripts/run_load_sweep.py              # results/load_sweep.csv, docs/img/
 ```
 
-`export_decoder.py` needs the `research` extra and Python 3.13 or 3.14. On 3.14 it
-applies a small shim to optimum before exporting: CPython 3.14 made
-`functools.partial` a descriptor, and optimum holds its decoder config factories
-as class-level partials, so they bind `self` and fail. See
-`apply_partial_descriptor_shim` for the detail. Encoder export is unaffected.
+`decoder_profiles.json` and `decode_profiles.json` are different files by one
+letter: the first is what the export measured about each precision (size,
+perplexity), the second is what the profiler measured about serving it (TTFT,
+TPOT, the fitted cache cost).
+
+### Exporting the decoder needs a dependency set the extra does not pin
+
+`export_decoder.py` needs the `research` extra, and that is not sufficient. The
+ONNX exporter moved out of `optimum` into `optimum-onnx`, so `optimum 2.2.0` has
+no `optimum.exporters.onnx` at all, while `optimum-onnx 0.1.0` requires
+`optimum~=2.1.0` and `transformers<4.58`. The only self-consistent set is:
+
+```bash
+pip install "optimum==2.1.0" "optimum-onnx==0.1.0" "transformers==4.57.*"
+```
+
+The `research` extra asks for `optimum>=1.20` and does not mention
+`optimum-onnx`, so a fresh resolve lands on 2.2.0 and the export fails on an
+import. That is what CI resolves, which is why nothing in CI exports anything and
+why every decoder test builds a synthetic graph instead (`tests/conftest.py`).
+
+On Python 3.14 the script also applies a shim to optimum before exporting, and it
+is a no-op below that: CPython 3.14 made `functools.partial` a descriptor, and
+optimum holds its decoder config factories as class-level partials, so they bind
+`self` and fail. See `apply_partial_descriptor_shim`. Encoder export is
+unaffected, which is why `export_onnx.py` never broke.
 
 Figures referenced by the docs are committed under `docs/img/`.
 

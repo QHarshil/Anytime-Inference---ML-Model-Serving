@@ -89,3 +89,75 @@ frontier are offered to the planner: a variant that is both slower and less
 accurate than another is never the right choice. See
 [`quantization.md`](quantization.md) for how the frontier is determined and why
 it is host-specific.
+
+## The second admission decision, for decoding
+
+Everything above is about time. There is a second admission controller,
+`BlockAdmission` in `serving/kv_admission.py`, and it is about memory. The two
+share no code and answer different questions, because an encoder request occupies
+a worker for one service time while a decoding sequence occupies KV blocks for
+hundreds of steps.
+
+### Block-granular, because there is no admit-and-see
+
+A sequence needing `t` token positions needs `ceil(t * safety_factor /
+block_tokens)` blocks out of an arena fixed at construction, and either they exist
+or they do not. Admitting one the arena cannot hold does not degrade gracefully the
+way an over-full queue does; it means evicting somebody later, at a moment nobody
+chose. So the requirement is computed up front and the answer is yes or no.
+
+The arena is deliberately fixed. A pool that grew on demand would make occupancy
+something to observe rather than something to decide about, and the decision is the
+point. See [`runtime.md`](runtime.md) for why it is a block allocator and not paged
+attention.
+
+### Eviction is priced in deadline slack
+
+Preemption here is preempt-and-recompute: the victim's blocks are released, its
+tokens are kept, and resuming re-runs its whole history. Output is token-identical
+either way, which is what makes eviction a scheduling decision rather than a
+correctness bug, but it is not free. On GPT-2 a 960-token sequence recomputes in
+about 340 ms against a 9.5 ms decode step.
+
+So the currency is slack: how much deadline is left once the work still owed is
+allowed for.
+
+```text
+slack_ms      = (deadline_at - now) * 1000 - decode_span_ms(cached, remaining)
+recompute_ms  = prefill_per_token_ms * cached_tokens
+surviving_ms  = slack_ms - recompute_ms
+```
+
+Candidates are ordered by harm rather than by benefit:
+
+1. **Sequences that will miss regardless** go first, most-missed first. Their
+   blocks are pure gain, because what would be lost is already lost.
+2. **Then sequences that survive their own recompute**, most surviving slack first,
+   and more blocks first where that ties. Freeing the same room from fewer victims
+   means fewer recomputes.
+3. **Everything else is withheld.** A sequence with slack now and none after a
+   recompute would be converted from a deadline it can meet into one it cannot,
+   which is worse than refusing the newcomer.
+
+This is not an optimum. Freeing a shortfall from the fewest possible victims is a
+packing problem, and solving it would sometimes reach for a sequence with a tighter
+deadline than a greedy pass would. Ordering by harm is the property worth keeping.
+
+### The cost model is fitted, not written down
+
+`CacheCost` carries no defaults, for the reason the whole project exists: Stage 1's
+headline result was invalid because a service time was carried in from somewhere it
+did not apply. A decode step's cost is linear in cached tokens rather than constant,
+so it is two parameters, and `scripts/profile_decode.py` fits them from
+measurements on the host that will run them. The recompute rate is fitted from the
+chunked prefill path specifically, because that is the width a resume actually runs
+at; taking it from the single-pass sweep beside it overstated every recompute by
+13%. Fitted values are in [`benchmarks.md`](benchmarks.md).
+
+### Not yet wired into the server
+
+`AdaptiveServer` does not serve decoding traffic. There is no batching anywhere in
+the repository, so one sequence decodes at a time, and a decode request holding a
+worker for hundreds of steps would starve the encoder pool it shares. The policy and
+the arena are both exercised by `DecoderClient` and by their tests; joining them to
+the serving harness needs the batching scheduler first.

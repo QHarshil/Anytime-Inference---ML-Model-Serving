@@ -123,9 +123,13 @@ session.release("seq")  # blocks back; tokens are the caller's
   decode step at 128 cached tokens and 11% at 960.
 - **Only the new tail is scattered back.** That rests on `present` beginning with the
   `past` it was given, which is verified once per sequence and raises on mismatch.
-- **One arena per session.** The policy half lives in
-  `src/anytime_serving/serving/kv_admission.py`; consolidating to one shared arena
-  across a batch is what the scheduler will need.
+- **One arena per session, shared by every sequence in it.** `open` registers a
+  sequence and takes its blocks from the same pool as every other, so several
+  sequences are already accounted against one fixed budget. What is not shared is
+  the session: the Python pool holds one per worker slot. A scheduler that gathers
+  several sequences into a single run needs one session driving one arena instead,
+  which is a change to the concurrency model rather than to the allocator. The
+  policy half lives in `src/anytime_serving/serving/kv_admission.py`.
 
 ## Tests
 
@@ -133,6 +137,17 @@ session.release("seq")  # blocks back; tokens are the caller's
 replaces on a graph with real arithmetic in it, and asserts they agree bitwise.
 `ANYTIME_REQUIRE_BACKENDS` turns a missing backend from a skip into a failure, so
 the comparison cannot decay into a backend checked against itself.
+
+That bitwise assertion is worth reading precisely, because it does not generalise.
+This extension links its own ONNX Runtime SDK and the wheel ships a separate build
+of the same version, so on x86-64 the two can dispatch to different MLAS kernels.
+A 4x4 matmul with a bias and a Relu gives them nothing to disagree about, and the
+assertion is kept there because it catches tensor-path corruption sharply. The
+decoder fixture's reduction does give them something to disagree about, measured at
+around seven float32 ULP, so those comparisons are held to token identity plus
+float32 agreement instead. Within one instance -- the same session with its cache
+held two ways -- bitwise is the right bar and stays. See the same distinction in
+[`../docs/runtime.md`](../docs/runtime.md).
 
 `tests/test_kv_cache.py` and `tests/test_decoder_session.py` cover the decoder path
 against the contiguous cache it replaces, on the synthetic graph in
