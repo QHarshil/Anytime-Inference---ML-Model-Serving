@@ -126,6 +126,7 @@ jobs:
             tests/test_decoder_session.py \
             tests/test_decoder_client.py \
             tests/test_kv_admission.py \
+            tests/test_batch_scheduler.py \
             tests/test_profile_decode.py \
             tests/test_import_boundaries.py
 

@@ -301,6 +301,18 @@ class DecoderClient:
     def default_chunk_tokens(self) -> int:
         return int(self._default_chunk)
 
+    @property
+    def reserves_full_generation(self) -> bool:
+        """Whether a sequence's whole projected generation is reserved up front.
+
+        The batch scheduler requires this. With it, a resident sequence always has
+        room for the tokens it still owes, so a batched decode step cannot run out of
+        blocks part way through; without it, a step over eight sequences could
+        exhaust the arena on behalf of any of them and the scheduler would have to
+        unpick which.
+        """
+        return self._reserve_full_generation
+
     def occupancy(self) -> Occupancy:
         return Occupancy(
             capacity_blocks=self.capacity_blocks,
@@ -334,6 +346,20 @@ class DecoderClient:
     def tokens(self, request_id: str) -> list[int]:
         """Prompt plus everything emitted, which is what a recompute re-runs."""
         return list(self._lookup(request_id).tokens)
+
+    def request(self, request_id: str) -> GenerationRequest:
+        """The request as submitted, including its stop tokens and token budget."""
+        return self._lookup(request_id).request
+
+    def at_context_limit(self, request_id: str) -> bool:
+        """Whether another token would run past what the model was trained for.
+
+        Public because a scheduler decides when a sequence stops, and this is not
+        derivable from the graph: GPT-2's position table is an initializer rather than
+        a declared shape, so exceeding it surfaces as an out-of-bounds Gather from
+        inside ONNX Runtime.
+        """
+        return self._at_context_limit(self._lookup(request_id))
 
     def emitted(self, request_id: str) -> list[int]:
         return list(self._lookup(request_id).emitted)

@@ -1,6 +1,7 @@
 """Online serving control plane: load monitor, admission control, runtime client."""
 
 from .admission import AdmissionDecision, MMcAdmissionController, erlang_b, erlang_c
+from .batch_scheduler import ContinuousBatchScheduler, SchedulerStats, SchedulerStep
 from .decoder import (
     DecoderClient,
     GenerationRecord,
@@ -53,4 +54,7 @@ __all__ = [
     "GenerationRequest",
     "Occupancy",
     "StepRecord",
+    "ContinuousBatchScheduler",
+    "SchedulerStats",
+    "SchedulerStep",
 ]
