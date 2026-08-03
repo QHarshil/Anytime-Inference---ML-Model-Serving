@@ -123,6 +123,23 @@ PyStepResult make_step_result(anytime::StepResult&& result) {
     return wrapped;
 }
 
+// What a batched decode step returns. The rows carry no timings of their own; see
+// the class docstring for why splitting one Run between them would be an invention.
+struct PyBatchStepResult {
+    std::vector<PyStepResult> rows;
+    anytime::StepTimings timings;
+};
+
+PyBatchStepResult make_batch_step_result(anytime::BatchStepResult&& result) {
+    PyBatchStepResult wrapped;
+    wrapped.rows.reserve(result.rows.size());
+    for (anytime::StepResult& row : result.rows) {
+        wrapped.rows.push_back(make_step_result(std::move(row)));
+    }
+    wrapped.timings = result.timings;
+    return wrapped;
+}
+
 py::tuple run_engine(anytime::Engine& engine, const std::string& variant,
                      const py::dict& feeds) {
     // Built while the GIL is held. `retained` keeps every numpy buffer alive
@@ -250,8 +267,12 @@ PYBIND11_MODULE(anytime_runtime, module) {
         "because the point is not to assume it is free. run_ms is time inside "
         "Session::Run, matching what Engine.run reports, so the two are "
         "comparable. verify_ms is non-zero only on the step that checks the "
-        "present-prefix invariant, once per sequence.")
+        "present-prefix invariant, once per sequence. pad_ms is non-zero only for a "
+        "batched step, where rows shorter than the batch's longest are right-padded "
+        "and the padding is cleared; it scales with the batch's length variance "
+        "rather than with its size.")
         .def_readonly("gather_ms", &anytime::StepTimings::gather_ms)
+        .def_readonly("pad_ms", &anytime::StepTimings::pad_ms)
         .def_readonly("run_ms", &anytime::StepTimings::run_ms)
         .def_readonly("scatter_ms", &anytime::StepTimings::scatter_ms)
         .def_readonly("verify_ms", &anytime::StepTimings::verify_ms)
@@ -269,6 +290,23 @@ PYBIND11_MODULE(anytime_runtime, module) {
                       "Tokens in the cache after this step.")
         .def_readonly("runs", &PyStepResult::runs,
                       "Graph invocations. Greater than one for a chunked prefill.");
+
+    py::class_<PyBatchStepResult>(module, "BatchStepResult",
+        "Result of one batched decode step: one row per sequence, one set of "
+        "timings for the step.\n\n"
+        "The timings are not per sequence and are not divided by the batch size. "
+        "The rows share a single Session::Run, so attributing part of it to one of "
+        "them would produce a number that reads as per-sequence and is not; "
+        "len(rows) is the divisor for an average, stated as an average.\n\n"
+        "Batching a decode step pays, and how much depends on how full the caches "
+        "are. Measured on GPT-2 at FP32, Run alone, batch 8 against eight separate "
+        "runs: 2.79x at 128 cached tokens, 1.72x at 512 and 1.36x at 960. Only the "
+        "cache-independent term of a decode step amortises across a batch; the "
+        "per-cached-token term is per sequence.")
+        .def_readonly("rows", &PyBatchStepResult::rows,
+                      "One StepResult per sequence, in the order they were given.")
+        .def_readonly("timings", &PyBatchStepResult::timings,
+                      "Timings for the whole step, not for any one row.");
 
     py::class_<anytime::DecoderSession>(module, "DecoderSession",
         "Decoder-only inference over a block-allocated KV cache.\n\n"
@@ -340,5 +378,26 @@ PYBIND11_MODULE(anytime_runtime, module) {
                  return make_step_result(std::move(result));
              },
              py::arg("sequence_id"), py::arg("token"),
-             "Extend a sequence by one token, reading the cache for the rest.");
+             "Extend a sequence by one token, reading the cache for the rest.")
+        .def("decode_batch",
+             [](anytime::DecoderSession& self, const std::vector<std::string>& sequence_ids,
+                const std::vector<std::int64_t>& tokens) {
+                 anytime::BatchStepResult result;
+                 {
+                     py::gil_scoped_release release;
+                     result = self.decode_batch(sequence_ids, tokens);
+                 }
+                 return make_batch_step_result(std::move(result));
+             },
+             py::arg("sequence_ids"), py::arg("tokens"),
+             "Extend each sequence by one token, in a single graph invocation.\n\n"
+             "Decode only. The graph takes one sequence dimension as well as one "
+             "past_sequence_length, so a prefill chunk and a decode step cannot "
+             "share a run without padding the decode row out to the chunk width; a "
+             "scheduler over this alternates rather than fusing.\n\n"
+             "Rows are right-padded to the longest past in the batch, with a "
+             "per-row attention_mask and true absolute position_ids. Every sequence "
+             "must be open and non-empty and no id may repeat. Blocks are all or "
+             "nothing: a batch that does not fit raises CacheExhausted with the "
+             "arena untouched.");
 }

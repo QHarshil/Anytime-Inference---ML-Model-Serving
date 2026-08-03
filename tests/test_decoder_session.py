@@ -318,6 +318,205 @@ def test_prefill_needs_at_least_one_token(decoder_graph):
         session.prefill("a", [])
 
 
+# --- batched decode ----------------------------------------------------------
+#
+# The bar here is token identity plus float32 agreement, not bitwise, and that is a
+# deliberate weakening. Batching changes the GEMM shape, which can change which MLAS
+# kernel runs and therefore the order a reduction accumulates in. Measured on this
+# host every configuration below came out bitwise equal, and asserting that is
+# exactly the mistake `Hold cross-build comparisons to float32` was fixing: bitwise
+# held on arm64 and reddened every x86-64 job. What the assertion has to catch is a
+# row reading the wrong offset or padding leaking into the cache, and the fixture
+# moves those by 6e-02 to 4e-01 relative -- four orders above the bound below.
+
+
+def _prefilled(graph, names, lengths, *, num_blocks=256, slack=8):
+    """Open and prefill one sequence per name, each with a distinct prompt.
+
+    `slack` is how many token positions beyond the prompt each sequence reserves.
+    Zero means every sequence sits exactly at its reservation, so the next decode
+    step has to take a block -- which is how the all-or-nothing test arranges a
+    batch that cannot fit without any single row being at fault.
+    """
+    session = _session(graph, num_blocks=num_blocks)
+    prompts = {}
+    for index, (name, length) in enumerate(zip(names, lengths, strict=True)):
+        prompt = [(index * 7 + step) % (VOCAB - 2) + 1 for step in range(length)]
+        prompts[name] = prompt
+        assert session.open(name, length + slack) is True
+        session.prefill(name, prompt, chunk_tokens=0)
+    return session, prompts
+
+
+@pytest.mark.parametrize(
+    "lengths",
+    [
+        pytest.param([6, 6, 6, 6], id="uniform"),
+        pytest.param([13, 9, 5, 2], id="mixed"),
+        pytest.param([17, 1], id="one-long-one-minimal"),
+        pytest.param([8], id="batch-of-one"),
+    ],
+)
+def test_a_batched_decode_step_matches_the_same_sequences_run_alone(decoder_graph, lengths):
+    """The claim batching rests on, across the length spreads that pad differently.
+
+    Uniform lengths pad nothing. A mixed batch right-pads three of four rows, and the
+    one-long-one-minimal case pads sixteen of seventeen positions, which is where an
+    offset that confused the row's own length with the batch's width shows up.
+
+    Four steps rather than one: the first step's logits would agree even if the new
+    KV were scattered to the wrong index, because that write is only read back on the
+    step after. Continuing is what makes the cache itself the thing under test.
+    """
+    names = [f"s{i}" for i in range(len(lengths))]
+    batched, prompts = _prefilled(decoder_graph, names, lengths)
+    solo, _ = _prefilled(decoder_graph, [f"t{i}" for i in range(len(lengths))], lengths)
+
+    feed = [(index * 3 + 5) % (VOCAB - 2) + 1 for index in range(len(lengths))]
+    for step in range(4):
+        result = batched.decode_batch(names, feed)
+        assert len(result.rows) == len(lengths)
+        for index, name in enumerate(names):
+            alone = solo.decode(f"t{index}", feed[index])
+            got = np.asarray(result.rows[index].logits)
+            want = np.asarray(alone.logits)
+            assert int(np.argmax(got)) == int(np.argmax(want)), (
+                f"step {step}, row {index}: batched and sequential picked different tokens"
+            )
+            np.testing.assert_allclose(
+                got,
+                want,
+                rtol=CROSS_BUILD_RTOL,
+                atol=CROSS_BUILD_ATOL,
+                err_msg=f"step {step}, row {index} differs by more than float32 accumulation error",
+            )
+            assert result.rows[index].length == len(prompts[name]) + step + 1
+            assert alone.length == result.rows[index].length
+        feed = [int(np.argmax(np.asarray(row.logits))) % (VOCAB - 2) + 1 for row in result.rows]
+
+
+def test_padding_is_cleared_rather_than_left_from_the_previous_step(decoder_graph):
+    """A long batch first, then a short one reusing the same staging buffers.
+
+    The buffers are reused across steps and only grow, so after a wide batch the
+    region a narrow one right-pads holds the earlier batch's KV. The fixture reduces
+    its whole `present` unmasked, so anything left there reaches the logits: if this
+    agrees with the same sequences run alone, the padding was cleared.
+    """
+    names = ["a", "b", "c", "d"]
+    session, _ = _prefilled(decoder_graph, names, [20, 18, 16, 14])
+    session.decode_batch(names, [2, 3, 4, 5])
+
+    short = ["p", "q"]
+    batched, prompts = _prefilled(decoder_graph, short, [9, 3])
+    # Same session, so the buffers a wide batch grew are the ones this narrow batch
+    # right-pads into.
+    for name, length in zip(short, [9, 3], strict=True):
+        prompt = prompts[name]
+        assert session.open(name, length + 8) is True
+        session.prefill(name, prompt, chunk_tokens=0)
+    reused = session.decode_batch(short, [7, 11])
+    fresh = batched.decode_batch(short, [7, 11])
+
+    for index in range(len(short)):
+        got = np.asarray(reused.rows[index].logits)
+        want = np.asarray(fresh.rows[index].logits)
+        assert int(np.argmax(got)) == int(np.argmax(want))
+        np.testing.assert_allclose(got, want, rtol=CROSS_BUILD_RTOL, atol=CROSS_BUILD_ATOL)
+
+
+def test_padding_costs_nothing_when_every_row_is_the_same_length(decoder_graph):
+    """pad_ms is reported apart from gather_ms because they scale with different things.
+
+    A uniform batch pads no positions at all, so the clear has nothing to do. This
+    asserts the accounting, not a duration: the two are timed separately so that a
+    slow step says which of the two it was paying for.
+    """
+    names = ["a", "b", "c"]
+    session, _ = _prefilled(decoder_graph, names, [7, 7, 7])
+    uniform = session.decode_batch(names, [2, 3, 4])
+    assert uniform.timings.pad_ms == 0.0
+
+    spread, _ = _prefilled(decoder_graph, ["x", "y", "z"], [30, 6, 2])
+    varied = spread.decode_batch(["x", "y", "z"], [2, 3, 4])
+    assert varied.timings.pad_ms > 0.0
+
+
+def test_the_batch_reports_one_set_of_timings_and_no_per_row_ones(decoder_graph):
+    """The rows share a Run, so a per-row total would be an invented number."""
+    names = ["a", "b"]
+    session, _ = _prefilled(decoder_graph, names, [5, 5])
+    result = session.decode_batch(names, [2, 3])
+
+    assert result.timings.run_ms > 0.0
+    assert result.timings.total_ms >= result.timings.run_ms
+    for row in result.rows:
+        assert row.runs == 1
+        assert row.timings.run_ms == 0.0
+        assert row.timings.total_ms == 0.0
+
+
+def test_a_sequence_may_not_appear_twice_in_one_batch(decoder_graph):
+    """Both rows would scatter into the same blocks and the second would win."""
+    session, _ = _prefilled(decoder_graph, ["a", "b"], [5, 5])
+    with pytest.raises(ValueError, match="appears twice"):
+        session.decode_batch(["a", "b", "a"], [1, 2, 3])
+
+
+def test_a_batch_needs_one_token_per_sequence(decoder_graph):
+    session, _ = _prefilled(decoder_graph, ["a", "b"], [5, 5])
+    with pytest.raises(ValueError, match="one token is emitted per sequence"):
+        session.decode_batch(["a", "b"], [1])
+
+
+def test_an_empty_batch_raises(decoder_graph):
+    session, _ = _prefilled(decoder_graph, ["a"], [5])
+    with pytest.raises(ValueError, match="at least one sequence"):
+        session.decode_batch([], [])
+
+
+def test_a_batch_containing_an_unprefilled_sequence_raises(decoder_graph):
+    session, _ = _prefilled(decoder_graph, ["a"], [5])
+    session.open("b", 16)
+    with pytest.raises(RuntimeError, match="empty cache"):
+        session.decode_batch(["a", "b"], [1, 2])
+
+
+def test_a_batch_containing_an_unknown_sequence_raises(decoder_graph):
+    session, _ = _prefilled(decoder_graph, ["a"], [5])
+    with pytest.raises(RuntimeError, match="unknown sequence"):
+        session.decode_batch(["a", "ghost"], [1, 2])
+
+
+def test_a_batch_that_does_not_fit_reserves_nothing(decoder_graph):
+    """All or nothing, so a refused batch leaves the arena exactly as it was.
+
+    Reserving row by row and failing part way would leave the earlier rows holding
+    blocks for a step that never runs, and the caller with no way to know which.
+    """
+    exhausted = load_extension().CacheExhausted
+    names = ["a", "b", "c"]
+    # Sixteen tokens at four per block is exactly four blocks, reserved with no
+    # slack, so every row needs a fifth block to take another token: a shortfall of
+    # three against the two that are free. Two is enough for either of the first two
+    # rows alone, so this fails as a batch rather than because any one row is
+    # individually impossible.
+    session, _ = _prefilled(decoder_graph, names, [16, 16, 16], num_blocks=14, slack=0)
+    assert session.free_blocks == 2
+
+    before_free = session.free_blocks
+    before_held = {name: session.blocks_held(name) for name in names}
+    before_length = {name: session.length(name) for name in names}
+
+    with pytest.raises(exhausted, match="Nothing was reserved"):
+        session.decode_batch(names, [1, 2, 3])
+
+    assert session.free_blocks == before_free
+    for name in names:
+        assert session.blocks_held(name) == before_held[name]
+        assert session.length(name) == before_length[name]
+
+
 # --- on the real graph, where it is on disk ---------------------------------
 
 

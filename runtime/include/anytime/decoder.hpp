@@ -57,8 +57,16 @@ constexpr int kDefaultBlockTokens = 64;
 // on the first step includes sizing the staging buffers, and `verify_ms` is non-zero
 // only on the one step that checks the present-prefix invariant. A per-step
 // distribution shows each as a single outlier, which is what it is.
+//
+// `pad_ms` is only ever non-zero for a batched step, and it is timed rather than
+// inferred. Right-padding every row to the batch's longest past means clearing the
+// difference, so the cost is set by the batch's length variance rather than by its
+// size: eight sequences of equal length pad nothing, and one long sequence beside
+// seven short ones pads almost as many token positions as it copies. Measuring it
+// inside the same run as the gather keeps it off the wrong side of a subtraction.
 struct StepTimings {
     double gather_ms = 0.0;
+    double pad_ms = 0.0;
     double run_ms = 0.0;
     double scatter_ms = 0.0;
     double verify_ms = 0.0;
@@ -81,6 +89,25 @@ struct StepResult {
     int length = 0;
     // Graph invocations. Greater than one for a chunked prefill.
     int runs = 0;
+};
+
+// Result of one batched decode step: one row of logits per sequence, and a single
+// set of timings for the whole step.
+//
+// The timings are deliberately not per sequence. The rows share one `Session::Run`,
+// so there is no honest way to attribute part of it to one of them; dividing by the
+// batch size would produce a number that looks per-sequence and is not. `rows` is
+// the divisor a caller needs to form an average and say so.
+//
+// Batching a decode step is worth doing, and how much is worth doing depends on how
+// full the caches are. Measured on GPT-2 at FP32, `Run` alone, batch 8 against eight
+// separate runs: 2.79x at 128 cached tokens, 1.72x at 512 and 1.36x at 960. The
+// fitted split in scripts/profile_decode.py says why the curve decays. Only the
+// cache-independent term amortises across a batch; the per-cached-token term is per
+// sequence and grows with the batch's total cache.
+struct BatchStepResult {
+    std::vector<StepResult> rows;
+    StepTimings timings;
 };
 
 class DecoderSession {
@@ -122,6 +149,24 @@ public:
                        int chunk_tokens = kDefaultPrefillChunkTokens);
     // Extends the sequence by one token, reading the cache for everything before it.
     StepResult decode(const std::string& id, std::int64_t token);
+    // Extends each of `ids` by the matching token, in one graph invocation.
+    //
+    // Decode only. A prefill chunk and a decode step cannot share a `Run`: the graph
+    // takes one `sequence` dimension as well as one `past_sequence_length`, so a
+    // 256-token chunk and a one-token step are not merely a wasteful pairing, they
+    // are unrepresentable without padding the decode row out to the chunk width.
+    // Fusing them is what a flattened varlen layout and custom kernels buy, and a
+    // stock exported graph has neither. A scheduler over this alternates instead.
+    //
+    // Rows are right-padded to the longest past in the batch. Every sequence must be
+    // open and non-empty, and no id may repeat -- two rows of one sequence would
+    // scatter twice into the same blocks and the second write would win.
+    //
+    // All or nothing on blocks. The whole batch's shortfall is checked against the
+    // pool before any row takes a block, so a batch that cannot fit throws
+    // CacheExhausted with the arena untouched rather than part way through.
+    BatchStepResult decode_batch(const std::vector<std::string>& ids,
+                                 const std::vector<std::int64_t>& tokens);
 
 private:
     SequenceCache& lookup(const std::string& id);

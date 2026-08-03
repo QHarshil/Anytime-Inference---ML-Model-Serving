@@ -128,16 +128,22 @@ const float* BlockPool::block(std::uint32_t index) const {
 }
 
 void gather(const BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind,
-            int length, float* dest) {
+            int length, float* dest, int dest_row_tokens) {
     const KvGeometry& geometry = pool.geometry();
     check_layer(geometry, layer);
     if (length < 0) {
         throw std::invalid_argument("gather length must not be negative");
     }
+    if (dest_row_tokens < length) {
+        throw std::invalid_argument("gather destination row holds " +
+                                    std::to_string(dest_row_tokens) +
+                                    " token position(s), which cannot take " +
+                                    std::to_string(length) + " gathered token(s)");
+    }
     check_span(geometry, sequence, length);
-    if (length == 0) {
+    if (dest_row_tokens == 0) {
         // A prefill from cold. The graph accepts zero-length past tensors, so
-        // there is nothing to copy and nothing to complain about.
+        // there is nothing to copy, nothing to pad, and nothing to complain about.
         return;
     }
     if (dest == nullptr) {
@@ -147,7 +153,7 @@ void gather(const BlockPool& pool, const SequenceCache& sequence, int layer, KvK
     const std::size_t slab = slab_offset(geometry, layer, kind);
     const std::size_t head_dim = static_cast<std::size_t>(geometry.head_dim);
     const std::size_t block_stride = static_cast<std::size_t>(geometry.block_tokens) * head_dim;
-    const std::size_t dest_stride = static_cast<std::size_t>(length) * head_dim;
+    const std::size_t dest_stride = static_cast<std::size_t>(dest_row_tokens) * head_dim;
 
     for (int head = 0; head < geometry.kv_heads; ++head) {
         float* out = dest + static_cast<std::size_t>(head) * dest_stride;
@@ -165,19 +171,49 @@ void gather(const BlockPool& pool, const SequenceCache& sequence, int layer, KvK
     }
 }
 
-void scatter(BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind, int start,
-             int count, const float* present, int present_length) {
+void zero_pad(const KvGeometry& geometry, float* dest, int length, int dest_row_tokens) {
+    if (length < 0) {
+        throw std::invalid_argument("zero_pad length must not be negative");
+    }
+    if (dest_row_tokens < length) {
+        throw std::invalid_argument("zero_pad row holds " + std::to_string(dest_row_tokens) +
+                                    " token position(s), fewer than the " +
+                                    std::to_string(length) + " said to be filled");
+    }
+    const int pad_tokens = dest_row_tokens - length;
+    if (pad_tokens == 0) {
+        return;
+    }
+    if (dest == nullptr) {
+        throw std::invalid_argument("zero_pad needs a destination buffer");
+    }
+
+    const std::size_t head_dim = static_cast<std::size_t>(geometry.head_dim);
+    const std::size_t dest_stride = static_cast<std::size_t>(dest_row_tokens) * head_dim;
+    const std::size_t bytes = static_cast<std::size_t>(pad_tokens) * head_dim * sizeof(float);
+    for (int head = 0; head < geometry.kv_heads; ++head) {
+        std::memset(dest + static_cast<std::size_t>(head) * dest_stride +
+                        static_cast<std::size_t>(length) * head_dim,
+                    0, bytes);
+    }
+}
+
+void scatter(BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind,
+             int dest_start, int count, const float* present, int present_length,
+             int source_start) {
     const KvGeometry& geometry = pool.geometry();
     check_layer(geometry, layer);
-    if (start < 0 || count < 0) {
-        throw std::invalid_argument("scatter start and count must not be negative");
+    if (dest_start < 0 || count < 0 || source_start < 0) {
+        throw std::invalid_argument(
+            "scatter offsets and count must not be negative");
     }
-    if (start + count > present_length) {
-        throw std::invalid_argument("scatter would read position " + std::to_string(start + count) +
+    if (source_start + count > present_length) {
+        throw std::invalid_argument("scatter would read position " +
+                                    std::to_string(source_start + count) +
                                     " of a present tensor holding " +
                                     std::to_string(present_length));
     }
-    check_span(geometry, sequence, start + count);
+    check_span(geometry, sequence, dest_start + count);
     if (count == 0) {
         return;
     }
@@ -189,21 +225,25 @@ void scatter(BlockPool& pool, const SequenceCache& sequence, int layer, KvKind k
     const std::size_t head_dim = static_cast<std::size_t>(geometry.head_dim);
     const std::size_t block_stride = static_cast<std::size_t>(geometry.block_tokens) * head_dim;
     const std::size_t present_stride = static_cast<std::size_t>(present_length) * head_dim;
-    const int end = start + count;
+    const int end = dest_start + count;
 
     for (int head = 0; head < geometry.kv_heads; ++head) {
         const float* source = present + static_cast<std::size_t>(head) * present_stride;
-        int token = start;
+        int token = dest_start;
         while (token < end) {
             const std::size_t block = static_cast<std::size_t>(token / geometry.block_tokens);
             const int offset = token % geometry.block_tokens;
             // Consecutive positions are contiguous in both the block and the
-            // present tensor, so a run inside one block is a single copy.
+            // present tensor, so a run inside one block is a single copy. The two
+            // sides advance together but from different origins, which is why the
+            // read is offset by source_start - dest_start.
             const int run = std::min(geometry.block_tokens - offset, end - token);
             float* out = pool.block(sequence.blocks[block]) + slab +
                          static_cast<std::size_t>(head) * block_stride +
                          static_cast<std::size_t>(offset) * head_dim;
-            std::memcpy(out, source + static_cast<std::size_t>(token) * head_dim,
+            std::memcpy(out,
+                        source + static_cast<std::size_t>(token - dest_start + source_start) *
+                                     head_dim,
                         static_cast<std::size_t>(run) * head_dim * sizeof(float));
             token += run;
         }

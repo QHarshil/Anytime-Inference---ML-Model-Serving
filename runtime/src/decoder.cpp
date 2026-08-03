@@ -265,8 +265,10 @@ StepResult DecoderSession::step(const std::string& id, SequenceCache& sequence,
         if (buffer.size() < wanted) {
             buffer.resize(wanted);
         }
+        // One sequence, so the row is exactly as wide as its past and there is no
+        // padding to clear.
         gather(*pool_, sequence, static_cast<int>(slot / 2), static_cast<KvKind>(slot % 2),
-               past_len, buffer.data());
+               past_len, buffer.data(), past_len);
     }
     const auto gather_end = Clock::now();
 
@@ -292,8 +294,14 @@ StepResult DecoderSession::step(const std::string& id, SequenceCache& sequence,
     }
 
     if (has_attention_mask_) {
-        // Every cached position is attended to. Eviction here drops a whole
-        // sequence rather than part of one, so there is no hole to mask out.
+        // All ones, because on this path every cached position is attended to:
+        // one sequence, so its past is exactly as wide as its length, and eviction
+        // drops a whole sequence rather than part of one. There is no hole here.
+        //
+        // That is a property of running one sequence, not of the design. A batch
+        // shares one past_sequence_length, so a row shorter than the longest is
+        // right-padded and the padding is precisely a hole; decode_batch builds a
+        // per-row mask for that reason.
         attention_mask_.assign(static_cast<std::size_t>(total), 1);
         TensorView mask;
         mask.data = attention_mask_.data();
@@ -365,8 +373,10 @@ StepResult DecoderSession::step(const std::string& id, SequenceCache& sequence,
     const auto scatter_start = Clock::now();
     for (std::size_t slot = 0; slot < halves; ++slot) {
         const float* present = outputs[present_outputs_[slot]].GetTensorData<float>();
+        // Unbatched, so the new KV sits at the same index in `present` as it does
+        // in the blocks and the two offsets coincide.
         scatter(*pool_, sequence, static_cast<int>(slot / 2), static_cast<KvKind>(slot % 2),
-                past_len, count, present, total);
+                past_len, count, present, total, past_len);
     }
     sequence.length = total;
     const auto scatter_end = Clock::now();
@@ -440,6 +450,269 @@ StepResult DecoderSession::decode(const std::string& id, std::int64_t token) {
                                  " has an empty cache; prefill a prompt before decoding");
     }
     return step(id, sequence, &token, 1);
+}
+
+BatchStepResult DecoderSession::decode_batch(const std::vector<std::string>& ids,
+                                             const std::vector<std::int64_t>& tokens) {
+    const auto step_start = Clock::now();
+
+    if (ids.empty()) {
+        throw std::invalid_argument("decode_batch needs at least one sequence");
+    }
+    if (ids.size() != tokens.size()) {
+        throw std::invalid_argument("decode_batch got " + std::to_string(ids.size()) +
+                                    " sequence id(s) and " + std::to_string(tokens.size()) +
+                                    " token(s); one token is emitted per sequence");
+    }
+
+    const std::size_t batch = ids.size();
+    std::vector<SequenceCache*> rows;
+    rows.reserve(batch);
+    std::set<std::string> seen;
+    int max_past = 0;
+    for (const std::string& id : ids) {
+        if (!seen.insert(id).second) {
+            throw std::invalid_argument(
+                "sequence " + id +
+                " appears twice in one batch. Both rows would scatter into the same blocks "
+                "and the second write would win, so the cache would hold one of the two "
+                "tokens and the other would be lost silently.");
+        }
+        SequenceCache& sequence = lookup(id);
+        if (sequence.length == 0) {
+            throw std::runtime_error("sequence " + id +
+                                     " has an empty cache; prefill a prompt before decoding");
+        }
+        rows.push_back(&sequence);
+        max_past = std::max(max_past, sequence.length);
+    }
+
+    // Every row grows by one token, so the whole batch's shortfall is known before
+    // any of it is taken. Reserving row by row and failing part way would leave the
+    // earlier rows holding blocks for a step that never runs.
+    std::size_t shortfall = 0;
+    for (std::size_t b = 0; b < batch; ++b) {
+        const std::size_t needed = geometry_.blocks_for(rows[b]->length + 1);
+        if (needed > rows[b]->blocks.size()) {
+            shortfall += needed - rows[b]->blocks.size();
+        }
+    }
+    if (shortfall > pool_->free_blocks()) {
+        throw CacheExhausted(
+            "a batch of " + std::to_string(batch) + " sequence(s) needs " +
+            std::to_string(shortfall) + " more block(s), and " +
+            std::to_string(pool_->free_blocks()) + " of " +
+            std::to_string(pool_->capacity_blocks()) +
+            " are free. Nothing was reserved: evict a sequence, or decode a smaller batch.");
+    }
+    std::vector<int> past_len;
+    past_len.reserve(batch);
+    for (std::size_t b = 0; b < batch; ++b) {
+        reserve(ids[b], *rows[b], rows[b]->length + 1);
+        past_len.push_back(rows[b]->length);
+    }
+
+    const int total = max_past + 1;
+    const std::size_t halves = static_cast<std::size_t>(geometry_.layers) * 2;
+    const std::size_t row_floats = static_cast<std::size_t>(geometry_.kv_heads) *
+                                   static_cast<std::size_t>(max_past) *
+                                   static_cast<std::size_t>(geometry_.head_dim);
+    // The floor keeps data() a real address even when every row is empty, which the
+    // unbatched path needs for the same reason.
+    const std::size_t wanted = std::max<std::size_t>(row_floats * batch, 1);
+
+    // A batch whose rows are all the same length pads nothing, and then the clearing
+    // pass should cost exactly nothing rather than the price of walking every row to
+    // discover there is nothing to do. Deciding once keeps pad_ms an honest zero in
+    // that case instead of a small number that invites being explained.
+    bool needs_pad = false;
+    for (std::size_t b = 0; b < batch; ++b) {
+        if (past_len[b] < max_past) {
+            needs_pad = true;
+            break;
+        }
+    }
+
+    double gather_ms = 0.0;
+    double pad_ms = 0.0;
+    for (std::size_t slot = 0; slot < halves; ++slot) {
+        std::vector<float>& buffer = past_buffers_[slot];
+        if (buffer.size() < wanted) {
+            buffer.resize(wanted);
+        }
+        const int layer = static_cast<int>(slot / 2);
+        const KvKind kind = static_cast<KvKind>(slot % 2);
+
+        // Copy and clear are timed apart because they scale with different things:
+        // the copy with the real tokens in the batch, the clear with its length
+        // variance. Both passes stay inside this slot so the buffer is still warm.
+        const auto gather_start = Clock::now();
+        for (std::size_t b = 0; b < batch; ++b) {
+            gather(*pool_, *rows[b], layer, kind, past_len[b], buffer.data() + row_floats * b,
+                   max_past);
+        }
+        const auto gather_end = Clock::now();
+        gather_ms += elapsed_ms(gather_start, gather_end);
+        if (needs_pad) {
+            for (std::size_t b = 0; b < batch; ++b) {
+                zero_pad(geometry_, buffer.data() + row_floats * b, past_len[b], max_past);
+            }
+            pad_ms += elapsed_ms(gather_end, Clock::now());
+        }
+    }
+
+    std::vector<const char*> input_names;
+    std::vector<Ort::Value> inputs;
+    input_names.reserve(model_->input_names().size());
+    inputs.reserve(model_->input_names().size());
+
+    TensorView ids_view;
+    ids_view.data = tokens.data();
+    ids_view.shape = {static_cast<int>(batch), 1};
+    ids_view.dtype = DType::Int64;
+    input_names.push_back("input_ids");
+    inputs.push_back(borrow_as_tensor(ids_view, memory_));
+
+    for (std::size_t slot = 0; slot < halves; ++slot) {
+        TensorView past;
+        past.data = past_buffers_[slot].data();
+        past.shape = {static_cast<int>(batch), geometry_.kv_heads, max_past, geometry_.head_dim};
+        past.dtype = DType::Float32;
+        input_names.push_back(past_input_names_[slot].c_str());
+        inputs.push_back(borrow_as_tensor(past, memory_));
+    }
+
+    if (has_attention_mask_) {
+        // One row per sequence: 1 over the tokens it actually holds, 0 over the
+        // padding that only exists because the batch shares one
+        // past_sequence_length, and 1 for the token being emitted. The padding sits
+        // between the two, which is why this is no longer the all-ones vector the
+        // unbatched path builds.
+        attention_mask_.assign(batch * static_cast<std::size_t>(total), 0);
+        for (std::size_t b = 0; b < batch; ++b) {
+            std::int64_t* row = attention_mask_.data() + b * static_cast<std::size_t>(total);
+            std::fill(row, row + past_len[b], std::int64_t{1});
+            row[max_past] = 1;
+        }
+        TensorView mask;
+        mask.data = attention_mask_.data();
+        mask.shape = {static_cast<int>(batch), total};
+        mask.dtype = DType::Int64;
+        input_names.push_back("attention_mask");
+        inputs.push_back(borrow_as_tensor(mask, memory_));
+    }
+
+    if (has_position_ids_) {
+        // True absolute positions, so a padded row's new token is placed where the
+        // sequence says rather than where the batch's width would put it.
+        position_ids_.resize(batch);
+        for (std::size_t b = 0; b < batch; ++b) {
+            position_ids_[b] = past_len[b];
+        }
+        TensorView positions;
+        positions.data = position_ids_.data();
+        positions.shape = {static_cast<int>(batch), 1};
+        positions.dtype = DType::Int64;
+        input_names.push_back("position_ids");
+        inputs.push_back(borrow_as_tensor(positions, memory_));
+    }
+
+    if (inputs.size() != model_->input_names().size()) {
+        throw std::runtime_error(
+            "built " + std::to_string(inputs.size()) + " feed(s) for a graph declaring " +
+            std::to_string(model_->input_names().size()) +
+            ". A decoder input beyond input_ids, the past tensors, attention_mask and "
+            "position_ids is not handled; running on a partial feed would produce wrong "
+            "logits silently.");
+    }
+
+    std::vector<const char*> output_names;
+    output_names.reserve(model_->output_names().size());
+    for (const std::string& name : model_->output_names()) {
+        output_names.push_back(name.c_str());
+    }
+
+    const auto run_start = Clock::now();
+    std::vector<Ort::Value> outputs =
+        model_->session().Run(Ort::RunOptions{nullptr}, input_names.data(), inputs.data(),
+                              inputs.size(), output_names.data(), output_names.size());
+    const auto run_end = Clock::now();
+
+    const std::size_t present_row_floats = static_cast<std::size_t>(geometry_.kv_heads) *
+                                           static_cast<std::size_t>(total) *
+                                           static_cast<std::size_t>(geometry_.head_dim);
+
+    double verify_ms = 0.0;
+    bool verified_any = false;
+    const auto verify_start = Clock::now();
+    for (std::size_t b = 0; b < batch; ++b) {
+        if (prefix_verified_.find(ids[b]) != prefix_verified_.end()) {
+            continue;
+        }
+        verified_any = true;
+        for (std::size_t slot = 0; slot < halves; ++slot) {
+            const float* present =
+                outputs[present_outputs_[slot]].GetTensorData<float>() + present_row_floats * b;
+            if (!prefix_matches(*pool_, *rows[b], static_cast<int>(slot / 2),
+                                static_cast<KvKind>(slot % 2), past_len[b], present, total)) {
+                throw std::runtime_error(
+                    "graph output " + past_input_names_[slot] +
+                    "'s present tensor does not begin with the past it was given for sequence " +
+                    ids[b] +
+                    ", so this cache cannot append only the new tail. The block allocator "
+                    "assumes the graph concatenates; this one does not.");
+            }
+        }
+        prefix_verified_.insert(ids[b]);
+    }
+    if (verified_any) {
+        verify_ms = elapsed_ms(verify_start, Clock::now());
+    }
+
+    const auto scatter_start = Clock::now();
+    for (std::size_t slot = 0; slot < halves; ++slot) {
+        const float* base = outputs[present_outputs_[slot]].GetTensorData<float>();
+        for (std::size_t b = 0; b < batch; ++b) {
+            // The row's new KV is at present index max_past, because that is how wide
+            // the batch made its past. Its home in the blocks is past_len[b].
+            scatter(*pool_, *rows[b], static_cast<int>(slot / 2), static_cast<KvKind>(slot % 2),
+                    past_len[b], 1, base + present_row_floats * b, total, max_past);
+        }
+    }
+    for (std::size_t b = 0; b < batch; ++b) {
+        rows[b]->length = past_len[b] + 1;
+    }
+    const auto scatter_end = Clock::now();
+
+    const auto logits_info = outputs[logits_output_].GetTensorTypeAndShapeInfo();
+    const std::vector<int64_t> logits_shape = logits_info.GetShape();
+    if (logits_shape.size() != 3 || logits_shape[0] != static_cast<int64_t>(batch) ||
+        logits_shape[1] != 1 || logits_shape[2] <= 0) {
+        throw std::runtime_error("logits came back with an unexpected shape; [" +
+                                 std::to_string(batch) + ", 1, vocab] is expected");
+    }
+    const std::size_t vocab = static_cast<std::size_t>(logits_shape[2]);
+    const float* logits = outputs[logits_output_].GetTensorData<float>();
+
+    BatchStepResult result;
+    result.rows.reserve(batch);
+    for (std::size_t b = 0; b < batch; ++b) {
+        StepResult row;
+        // Per-row timings stay zero on purpose. The rows share one Run, so splitting
+        // it between them would invent a number; the batch's timings are on the
+        // BatchStepResult and `rows.size()` is the divisor for an average.
+        row.logits.assign(logits + b * vocab, logits + (b + 1) * vocab);
+        row.length = rows[b]->length;
+        row.runs = 1;
+        result.rows.push_back(std::move(row));
+    }
+    result.timings.gather_ms = gather_ms;
+    result.timings.pad_ms = pad_ms;
+    result.timings.run_ms = elapsed_ms(run_start, run_end);
+    result.timings.scatter_ms = elapsed_ms(scatter_start, scatter_end);
+    result.timings.verify_ms = verify_ms;
+    result.timings.total_ms = elapsed_ms(step_start, Clock::now());
+    return result;
 }
 
 }  // namespace anytime

@@ -11,17 +11,34 @@ optimum-exported decoder declares -- `input_ids`, `past_key_values.{i}.{key,valu
 `attention_mask` and `position_ids` in, `logits` and `present.{i}.{key,value}` out --
 at a size that runs in microseconds.
 
-Three properties make it a real test rather than a shape-checker:
+Four properties make it a real test rather than a shape-checker:
 
 - **Every cached position reaches the logits.** Each layer reduces its whole
   `present` tensor into the hidden state, so a gather that drops, duplicates or
-  misplaces any token position changes the output.
+  misplaces any token position changes the output. That reduction is deliberately
+  *not* masked, which is what makes padding left in a reused staging buffer visible
+  as a wrong answer rather than absorbed.
 - **Layers and the two halves are not interchangeable.** Each layer scales its keys
   and values by a distinct constant, so reading layer 4's slab where layer 3's was
   meant, or a value where a key belonged, is visible rather than silently plausible.
 - **`position_ids` and `attention_mask` are wired in.** A decode step that offset
   its positions wrongly, or sized its mask to the wrong total, changes the logits
   instead of being ignored.
+- **The mask reaches the cache as well as the logits.** A second reduction weights
+  `present` by the mask along the token axis. The plain mask term above only sees a
+  row's mask *weight*, so it cannot tell a right-padded mask from a left-padded one
+  of the same weight -- which is exactly the mistake a batched row invites, since
+  its real tokens sit at [0, len) while a careless implementation masks [max-len,
+  max). Weighting the cache by the mask makes the two differ.
+
+Both reductions are needed, and neither is redundant. Measured against a padded
+batch, the unmasked one alone misses a same-weight mask in the wrong columns, and
+the masked one alone misses padding leaking out of the buffer, because masked
+garbage multiplies to zero. Together they catch all four failures: leaked padding, a
+mask of the wrong weight, a mask of the right weight in the wrong place, and a row
+whose KV landed at the wrong offset. Neither makes a cache entry depend on what
+follows it, so chunk-invariant prefill stays testable -- the mask is applied to the
+reduction, never to the `present` the cache is scattered from.
 
 `build_decoder_graph` also produces the malformed variants the rejection tests need:
 a graph with no cache in its signature, one whose cache dimensions are dynamic, one
@@ -105,6 +122,9 @@ def build_decoder_graph(
             np.array([0, 0, kv_heads, head_dim], dtype=np.int64), "shape_heads"
         ),
         numpy_helper.from_array(np.array([0, 1, -1], dtype=np.int64), "shape_summary"),
+        # [batch, total] -> [batch, 1, total, 1], so the mask broadcasts over a
+        # present tensor's heads and head dimension.
+        numpy_helper.from_array(np.array([0, 1, -1, 1], dtype=np.int64), "shape_mask4"),
     ]
 
     nodes = [
@@ -136,6 +156,14 @@ def build_decoder_graph(
         nodes.append(helper.make_node("Cast", ["new_kv"], ["new_kv_cache"], to=cache_type))
     else:
         nodes.append(helper.make_node("Identity", ["new_kv"], ["new_kv_cache"]))
+
+    # The mask again, this time shaped to weight a present tensor along the token
+    # axis. In the cache's own dtype, so the Mul below does not mix types.
+    nodes.append(helper.make_node("Reshape", ["mask_f", "shape_mask4"], ["mask_4d_f"]))
+    if double_cache:
+        nodes.append(helper.make_node("Cast", ["mask_4d_f"], ["mask_4d"], to=cache_type))
+    else:
+        nodes.append(helper.make_node("Identity", ["mask_4d_f"], ["mask_4d"]))
 
     outputs = [
         helper.make_tensor_value_info("logits", TensorProto.FLOAT, ["batch", "sequence", vocab])
@@ -191,6 +219,25 @@ def build_decoder_graph(
             merged = f"accumulated.{layer}.{kind}"
             nodes.append(helper.make_node("Add", [accumulated, flat], [merged]))
             accumulated = merged
+
+            # The same reduction, weighted by the mask along the token axis. Applied
+            # to a copy for the reduce only -- `present` itself is untouched, so what
+            # gets cached for a position still does not depend on the mask, and
+            # chunked prefill stays invariant.
+            masked = f"masked.{layer}.{kind}"
+            nodes.append(helper.make_node("Mul", [present, "mask_4d"], [masked]))
+            mreduced = f"mreduced.{layer}.{kind}"
+            nodes.append(helper.make_node("ReduceSum", [masked, "axis_2"], [mreduced], keepdims=0))
+            if double_cache:
+                nodes.append(
+                    helper.make_node("Cast", [mreduced], [mreduced + ".f"], to=TensorProto.FLOAT)
+                )
+                mreduced = mreduced + ".f"
+            mflat = f"msummary.{layer}.{kind}"
+            nodes.append(helper.make_node("Reshape", [mreduced, "shape_summary"], [mflat]))
+            mmerged = f"maccumulated.{layer}.{kind}"
+            nodes.append(helper.make_node("Add", [accumulated, mflat], [mmerged]))
+            accumulated = mmerged
 
     nodes.append(helper.make_node("MatMul", [accumulated, "projection"], ["logits"]))
 

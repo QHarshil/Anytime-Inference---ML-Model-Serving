@@ -145,8 +145,20 @@ struct SequenceCache {
 };
 
 // Copies `length` token positions of one (layer, kind) out of the sequence's
-// blocks into `dest`, laid out as the graph's `[1, kv_heads, length, head_dim]`
-// input expects.
+// blocks into `dest`, laid out as one row of the graph's `[batch, kv_heads,
+// dest_row_tokens, head_dim]` input expects.
+//
+// `dest_row_tokens` is the destination's token stride per head, which is not the
+// same as `length` once more than one sequence shares a run. The graph takes a
+// single `past_sequence_length` for the whole batch, so every row is as wide as the
+// longest and a shorter one is right-padded: real KV at [0, length), padding at
+// [length, dest_row_tokens). `dest` points at this row's slab, and the caller
+// advances it by `kv_heads * dest_row_tokens * head_dim` per row.
+//
+// This writes [0, length) only. Clearing the rest is `zero_pad` below, kept separate
+// so that the two costs can be timed apart: the copy scales with the real tokens in
+// the batch and the clear scales with its length variance, and a single number over
+// both would hide which one a slow step was paying for.
 //
 // Both source and destination are contiguous within a (head, block) pair, so this
 // is one memcpy per pair rather than per token: `kv_heads * ceil(length /
@@ -157,18 +169,41 @@ struct SequenceCache {
 // host. Not near the host's peak bandwidth -- one thread does not reach that --
 // but at the rate one thread copies.
 void gather(const BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind,
-            int length, float* dest);
+            int length, float* dest, int dest_row_tokens);
 
-// Copies `count` new token positions, starting at position `start`, out of a
-// `present` tensor shaped `[1, kv_heads, present_length, head_dim]` and into the
-// sequence's blocks.
+// Clears positions [length, dest_row_tokens) of one right-padded row, across every
+// head, for one (layer, kind).
+//
+// The staging buffers are reused across steps, so that region holds some earlier
+// step's KV rather than anything neutral. On GPT-2 leaving it is measurably harmless
+// -- a batched row comes out bitwise equal to the same sequence run alone whether
+// the padding is zeroed or filled with garbage, because the exported mask drops
+// masked positions exactly -- but that is a property of one export's attention
+// rather than of the runtime. Clearing makes "padding cannot leak" something the
+// synthetic fixture can fail on, which is the difference between a test and a claim.
+void zero_pad(const KvGeometry& geometry, float* dest, int length, int dest_row_tokens);
+
+// Copies `count` new token positions out of one row of a `present` tensor shaped
+// `[batch, kv_heads, present_length, head_dim]` and into the sequence's blocks.
+//
+// Source and destination offsets are separate, and that is not a convenience. In an
+// unbatched run they coincide: the new KV sits at `present` index `dest_start`,
+// which is also where it belongs in the blocks. Under a right-padded batch they do
+// not. Row b's past occupies [0, max_past) whatever its true length, so its new KV
+// lands at `present` index `max_past` while its home in the blocks is index
+// `length_b`. One index cannot serve both sides, and the failure if it tried would
+// be silent: a well-shaped copy of the wrong tokens.
+//
+// `present` points at this row's slab and `present_length` is the row's token
+// stride, so the caller advances by `kv_heads * present_length * head_dim` per row.
 //
 // Only the tail is copied. The prefix of `present` is bitwise equal to the `past`
 // that produced it, which is already in the blocks, so rewriting it would move
 // tens of megabytes to no effect. `prefix_matches` below is what keeps that from
 // being an assumption.
-void scatter(BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind, int start,
-             int count, const float* present, int present_length);
+void scatter(BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind,
+             int dest_start, int count, const float* present, int present_length,
+             int source_start);
 
 // Whether the first `length` positions of `present` equal what the blocks hold for
 // this (layer, kind). Bitwise: these are the same bytes by construction, so any
