@@ -439,3 +439,154 @@ def test_the_logits_a_step_returns_are_the_next_token_distribution(decoder_graph
         assert first.token is not None
         assert first.cached_tokens == len(PROMPT) + 1
         assert np.isfinite(client.states()[0].cached_tokens)
+
+
+# --- driving prefill and decode from outside --------------------------------
+#
+# The scheduler needs both halves of a step under its own control: chunks it can
+# interleave, and a decode step over several sequences at once. These cover the
+# client's side of that, against the single-sequence path they have to agree with.
+
+
+@pytest.mark.parametrize("width", [0, 3, 4, 8])
+def test_driving_the_chunks_matches_letting_prefill_drive_them(decoder_graph, width):
+    """Same generation either way. A width of 0 collapses to a single pass."""
+    with _client(decoder_graph) as driven, _client(decoder_graph) as internal:
+        driven.admit(_request(max_new_tokens=4, request_id="a"))
+        chunks = []
+        while (record := driven.prefill_chunk("a", chunk_tokens=width)) is not None:
+            chunks.append(record)
+        assert chunks, "a prompt should take at least one chunk"
+        assert all(record.phase == "prefill" for record in chunks)
+        assert chunks[-1].cached_tokens == len(PROMPT)
+        # Exhausted, so the scheduler knows to move it to the decode phase.
+        assert driven.prefill_chunk("a", chunk_tokens=width) is None
+
+        internal.admit(_request(max_new_tokens=4, request_id="a"))
+        internal.prefill("a", chunk_tokens=width)
+
+        for _ in range(4):
+            assert driven.emit("a").token == internal.emit("a").token
+
+
+def test_a_batched_decode_step_emits_what_the_sequences_would_alone(decoder_graph):
+    """The whole point, at the client level rather than the session's.
+
+    Prompts of different lengths so the batch is right-padded, which is where a row
+    reading the wrong offset would show up.
+    """
+    prompts = {"a": PROMPT, "b": PROMPT[:5], "c": PROMPT[:3]}
+    with (
+        _client(decoder_graph, num_blocks=64) as batched,
+        _client(decoder_graph, num_blocks=64) as alone,
+    ):
+        for client in (batched, alone):
+            for name, prompt in prompts.items():
+                client.admit(
+                    GenerationRequest(
+                        prompt=prompt,
+                        max_new_tokens=4,
+                        deadline_ms=10_000.0,
+                        request_id=name,
+                    )
+                )
+                client.prefill(name)
+
+        for _ in range(4):
+            records = batched.emit_batch(list(prompts))
+            expected = [alone.emit(name).token for name in prompts]
+            assert [record.token for record in records] == expected
+
+        for name in prompts:
+            assert batched.emitted(name) == alone.emitted(name)
+
+
+def test_a_batched_step_reports_what_each_sequence_waited_not_a_share_of_it(decoder_graph):
+    """Latency is the step's duration; throughput is batch_size over it.
+
+    Dividing the duration by the batch would understate what any one sequence
+    experienced -- all three waited for the same Run.
+    """
+    with _client(decoder_graph, num_blocks=64) as client:
+        for name in ("a", "b", "c"):
+            client.admit(_request(max_new_tokens=2, request_id=name))
+            client.prefill(name)
+        records = client.emit_batch(["a", "b", "c"])
+
+    assert len(records) == 3
+    assert {record.batch_size for record in records} == {3}
+    # One Run shared, so the durations are identical rather than apportioned.
+    assert len({record.total_ms for record in records}) == 1
+    assert records[0].total_ms > 0.0
+    assert all(record.runs == 1 for record in records)
+
+
+def test_an_unbatched_step_reports_a_batch_size_of_one(decoder_graph):
+    with _client(decoder_graph) as client:
+        client.admit(_request(max_new_tokens=2, request_id="a"))
+        assert client.prefill("a").batch_size == 1
+        assert client.emit("a").batch_size == 1
+
+
+def test_a_readmitted_sequence_recomputes_in_chunks_and_stays_token_identical(decoder_graph):
+    """Preemption through the scheduler's path rather than through `resume`.
+
+    `resume` recomputes in one call. A scheduler readmits and then drives the
+    recompute as chunks, so it can interleave other sequences' decode steps into a
+    long history. The output has to be the same either way, and the same as never
+    having been preempted.
+    """
+    clean_tokens = []
+    with _client(decoder_graph, num_blocks=64) as clean:
+        clean.admit(_request(max_new_tokens=6, request_id="a"))
+        clean.prefill("a")
+        clean_tokens = [clean.emit("a").token for _ in range(6)]
+
+    with _client(decoder_graph, num_blocks=64) as client:
+        client.admit(_request(max_new_tokens=6, request_id="a"))
+        client.prefill("a")
+        emitted = [client.emit("a").token for _ in range(3)]
+
+        client.preempt("a")
+        assert client.readmit("a") is True
+        recomputed = []
+        while (record := client.prefill_chunk("a", chunk_tokens=3)) is not None:
+            recomputed.append(record)
+        assert recomputed, "a preempted sequence has a history to re-run"
+        assert all(record.phase == "recompute" for record in recomputed)
+
+        emitted += [client.emit("a").token for _ in range(3)]
+
+    assert emitted == clean_tokens
+
+
+def test_readmit_refuses_when_the_arena_cannot_hold_the_sequence(decoder_graph):
+    """Refusing is an answer. The scheduler decides what to do about it."""
+    with _client(decoder_graph, num_blocks=4) as client:
+        client.admit(_request(max_new_tokens=2, request_id="a"))
+        client.prefill("a")
+        client.preempt("a")
+        assert client.admit(_request(max_new_tokens=2, request_id="b")).admit is True
+        assert client.readmit("a") is False
+
+
+def test_readmitting_a_resident_sequence_raises(decoder_graph):
+    with _client(decoder_graph) as client:
+        client.admit(_request(request_id="a"))
+        with pytest.raises(RuntimeError, match="was not preempted"):
+            client.readmit("a")
+
+
+def test_prefill_chunk_on_a_preempted_sequence_raises(decoder_graph):
+    with _client(decoder_graph) as client:
+        client.admit(_request(request_id="a"))
+        client.prefill("a")
+        client.preempt("a")
+        with pytest.raises(RuntimeError, match="readmit it first"):
+            client.prefill_chunk("a")
+
+
+def test_an_empty_batch_raises(decoder_graph):
+    with _client(decoder_graph) as client:
+        with pytest.raises(ValueError, match="at least one request"):
+            client.emit_batch([])

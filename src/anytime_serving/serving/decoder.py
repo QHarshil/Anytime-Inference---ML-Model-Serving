@@ -85,7 +85,19 @@ class StepRecord:
 
     The phases are broken out rather than summed because the gather is the price of
     block accounting and reporting only a total would hide it. `verify_ms` is
-    non-zero on the one step per sequence that checks the present-prefix invariant.
+    non-zero on the one step per sequence that checks the present-prefix invariant,
+    and `pad_ms` only on a batched step, where rows shorter than the batch's longest
+    are right-padded and the padding is cleared.
+
+    `batch_size` is how many sequences shared the graph invocation this record
+    describes. It is 1 for everything except a batched decode step, and it is here
+    because it is what separates two different numbers that a single field could not
+    carry. For a sequence in a batch of eight taking 50 ms, the durations above are
+    its real latency -- it genuinely waited 50 ms for its token, and dividing by
+    eight would understate what it experienced. Throughput is the other direction:
+    eight tokens came out in that 50 ms. Latency is the duration, throughput is
+    `batch_size` over the duration, and neither is derivable from the other without
+    this field.
     """
 
     request_id: str
@@ -98,6 +110,8 @@ class StepRecord:
     scatter_ms: float
     verify_ms: float
     total_ms: float
+    pad_ms: float = 0.0
+    batch_size: int = 1
 
 
 @dataclass(frozen=True)
@@ -203,6 +217,10 @@ class _Sequence:
     finished: bool = False
     preemptions: int = 0
     recompute_ms: float = 0.0
+    # Whether the tokens still to be cached are being re-run after a preemption
+    # rather than run for the first time. Only affects how a step is labelled: the
+    # work is identical, which is why one code path does both.
+    recomputing: bool = False
 
     @property
     def remaining(self) -> int:
@@ -431,6 +449,112 @@ class DecoderClient:
             raise RuntimeError(f"request {request_id} holds no blocks; resume it first")
         return self._run_prefill(sequence, "prefill", chunk_tokens)
 
+    def prefill_chunk(
+        self, request_id: str, *, chunk_tokens: int | None = None
+    ) -> StepRecord | None:
+        """Advance the cached prefix by one chunk, or return None when it is complete.
+
+        `prefill` runs every chunk before returning, so nothing else can happen in
+        between. A scheduler needs the chunks one at a time, because the chunk
+        boundary is where a resident sequence can get a turn: driving a whole prompt
+        stalls every other sequence for its duration, 372 ms on GPT-2 at FP32 against
+        93 ms for one 256-token chunk.
+
+        A fresh prompt and a preempted sequence's history go through here identically.
+        Both are "run the tokens this sequence holds that are not cached yet", and the
+        only difference is what the step is called, so there is one path rather than
+        two that could drift apart.
+        """
+        sequence = self._lookup(request_id)
+        if not sequence.resident:
+            raise RuntimeError(f"request {request_id} holds no blocks; readmit it first")
+
+        cached = int(self._session.length(request_id))
+        if cached >= len(sequence.tokens):
+            sequence.recomputing = False
+            return None
+
+        width = self._default_chunk if chunk_tokens is None else chunk_tokens
+        if width <= 0:
+            width = len(sequence.tokens) - cached
+        chunk = sequence.tokens[cached : cached + width]
+
+        phase = "recompute" if sequence.recomputing else "prefill"
+        result = self._session.extend(request_id, chunk)
+        sequence.logits = np.asarray(result.logits)
+        record = self._record(request_id, phase, None, result)
+        if phase == "recompute":
+            sequence.recompute_ms += record.total_ms
+        if int(self._session.length(request_id)) >= len(sequence.tokens):
+            sequence.recomputing = False
+        return record
+
+    def readmit(self, request_id: str) -> bool:
+        """Take blocks back for a preempted sequence without running anything.
+
+        `resume` reopens and recomputes in one call, which is what a caller driving
+        one sequence wants. A scheduler wants the two apart, so that the recompute
+        goes through `prefill_chunk` like any other prefill and can be interleaved.
+
+        Returns False when the arena cannot supply the blocks, which is the same
+        answer `admit` gives and for the same reason: it is a scheduling fact, not a
+        failure.
+        """
+        sequence = self._lookup(request_id)
+        if sequence.resident:
+            raise RuntimeError(f"request {request_id} was not preempted")
+        wanted = self._reserve_tokens(len(sequence.tokens), sequence.remaining)
+        if not self._session.open(request_id, wanted):
+            return False
+        sequence.resident = True
+        sequence.recomputing = True
+        return True
+
+    def emit_batch(self, request_ids: Sequence[str]) -> list[StepRecord]:
+        """Emit one token for each sequence, in a single graph invocation.
+
+        Every record carries the whole step's timings rather than a share of them,
+        because that is what each sequence actually waited. See `StepRecord` on why
+        `batch_size` travels with them.
+        """
+        ids = list(request_ids)
+        if not ids:
+            raise ValueError("emit_batch needs at least one request")
+
+        sequences = []
+        tokens = []
+        for request_id in ids:
+            sequence = self._lookup(request_id)
+            if sequence.logits is None:
+                raise RuntimeError(
+                    f"request {request_id} has no logits to sample; prefill or resume it first"
+                )
+            if not sequence.resident:
+                raise RuntimeError(f"request {request_id} holds no blocks; readmit it first")
+            sequences.append(sequence)
+            tokens.append(int(np.argmax(sequence.logits)))
+
+        result = self._session.decode_batch(ids, tokens)
+
+        records = []
+        for request_id, sequence, token, row in zip(
+            ids, sequences, tokens, result.rows, strict=True
+        ):
+            sequence.emitted.append(token)
+            sequence.tokens.append(token)
+            sequence.logits = np.asarray(row.logits)
+            records.append(
+                self._record(
+                    request_id,
+                    "decode",
+                    token,
+                    row,
+                    timings=result.timings,
+                    batch_size=len(ids),
+                )
+            )
+        return records
+
     def emit(self, request_id: str) -> StepRecord:
         """Emit one token and extend the cache by it.
 
@@ -584,17 +708,29 @@ class DecoderClient:
         return self._record(sequence.request.request_id, phase, None, result)
 
     @staticmethod
-    def _record(request_id: str, phase: str, token: int | None, result: Any) -> StepRecord:
-        timings = result.timings
+    def _record(
+        request_id: str,
+        phase: str,
+        token: int | None,
+        result: Any,
+        *,
+        timings: Any = None,
+        batch_size: int = 1,
+    ) -> StepRecord:
+        # `timings` is passed separately for a batched step, where the rows carry none
+        # of their own: one Run happened and it belongs to all of them.
+        measured = result.timings if timings is None else timings
         return StepRecord(
             request_id=request_id,
             phase=phase,
             token=token,
             cached_tokens=int(result.length),
             runs=int(result.runs),
-            gather_ms=float(timings.gather_ms),
-            run_ms=float(timings.run_ms),
-            scatter_ms=float(timings.scatter_ms),
-            verify_ms=float(timings.verify_ms),
-            total_ms=float(timings.total_ms),
+            gather_ms=float(measured.gather_ms),
+            run_ms=float(measured.run_ms),
+            scatter_ms=float(measured.scatter_ms),
+            verify_ms=float(measured.verify_ms),
+            total_ms=float(measured.total_ms),
+            pad_ms=float(measured.pad_ms),
+            batch_size=batch_size,
         )
