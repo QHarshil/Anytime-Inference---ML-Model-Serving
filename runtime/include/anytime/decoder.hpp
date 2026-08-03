@@ -147,6 +147,21 @@ public:
     // below zero runs it in one pass.
     StepResult prefill(const std::string& id, const std::vector<std::int64_t>& tokens,
                        int chunk_tokens = kDefaultPrefillChunkTokens);
+    // Runs `tokens` through the graph, appending to whatever the sequence already
+    // holds. Prefill's inner step, exposed on its own.
+    //
+    // `prefill` loops over the chunks itself and refuses a sequence that is not
+    // empty, which is right for a caller that wants a prompt run and nothing
+    // interleaved. A scheduler wants the opposite: the chunk boundary is the point
+    // where a long prefill can be interrupted, so it drives the chunks and decides
+    // what happens between them. Without this a resident sequence stalls for a whole
+    // prompt rather than for one chunk -- 372 ms against 93 ms on GPT-2 at FP32, at
+    // the 256-token default.
+    //
+    // Unlike `prefill` this reserves per chunk rather than for the whole prompt, so a
+    // prompt too large for the arena fails part way through instead of before it
+    // starts. A scheduler is expected to have asked admission first.
+    StepResult extend(const std::string& id, const std::vector<std::int64_t>& tokens);
     // Extends the sequence by one token, reading the cache for everything before it.
     StepResult decode(const std::string& id, std::int64_t token);
     // Extends each of `ids` by the matching token, in one graph invocation.

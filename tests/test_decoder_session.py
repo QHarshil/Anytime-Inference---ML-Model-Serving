@@ -318,6 +318,66 @@ def test_prefill_needs_at_least_one_token(decoder_graph):
         session.prefill("a", [])
 
 
+# --- driving prefill a chunk at a time ---------------------------------------
+
+
+@pytest.mark.parametrize("width", [3, 4, 7])
+def test_extend_chunk_by_chunk_matches_prefill_driving_its_own_chunks(decoder_graph, width):
+    """A scheduler drives the chunks; prefill drives them itself. Same cache either way.
+
+    This is what makes the chunk boundary usable as a preemption point: if advancing a
+    prompt from outside produced a different cache from advancing it inside, a
+    scheduler could not interleave without changing the answer.
+
+    Compared through the step after, not just on the prefill's own logits, so the
+    cache is what is being checked rather than one output row.
+    """
+    inside = _session(decoder_graph)
+    inside.open("a", 64)
+    expected = inside.prefill("a", PROMPT, chunk_tokens=width)
+
+    outside = _session(decoder_graph)
+    outside.open("a", 64)
+    last = None
+    runs = 0
+    for start in range(0, len(PROMPT), width):
+        last = outside.extend("a", PROMPT[start : start + width])
+        runs += 1
+
+    assert last is not None
+    assert runs == expected.runs
+    assert last.length == expected.length == len(PROMPT)
+    np.testing.assert_array_equal(last.logits, expected.logits)
+
+    for token in (11, 12, 13):
+        np.testing.assert_array_equal(
+            outside.decode("a", token).logits, inside.decode("a", token).logits
+        )
+
+
+def test_extend_continues_a_sequence_that_prefill_would_refuse(decoder_graph):
+    """prefill refuses a non-empty sequence; extend is how a chunk after the first runs."""
+    session = _session(decoder_graph)
+    session.open("a", 64)
+    session.extend("a", PROMPT[:4])
+    with pytest.raises(RuntimeError, match="already holds"):
+        session.prefill("a", PROMPT[4:])
+    assert session.extend("a", PROMPT[4:]).length == len(PROMPT)
+
+
+def test_extend_needs_at_least_one_token(decoder_graph):
+    session = _session(decoder_graph)
+    session.open("a", 64)
+    with pytest.raises(ValueError, match="at least one token"):
+        session.extend("a", [])
+
+
+def test_extend_on_an_unknown_sequence_raises(decoder_graph):
+    session = _session(decoder_graph)
+    with pytest.raises(RuntimeError, match="unknown sequence"):
+        session.extend("ghost", [1, 2])
+
+
 # --- batched decode ----------------------------------------------------------
 #
 # The bar here is token identity plus float32 agreement, not bitwise, and that is a

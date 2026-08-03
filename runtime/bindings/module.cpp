@@ -367,6 +367,26 @@ PYBIND11_MODULE(anytime_runtime, module) {
              "and allocated 206 MB of logits the sampler never reads, while four "
              "passes of 256 measured 372.2 ms with a 51 MB peak. Pass "
              "chunk_tokens=0 for a single pass.")
+        .def("extend",
+             [](anytime::DecoderSession& self, const std::string& sequence_id,
+                const std::vector<std::int64_t>& tokens) {
+                 anytime::StepResult result;
+                 {
+                     py::gil_scoped_release release;
+                     result = self.extend(sequence_id, tokens);
+                 }
+                 return make_step_result(std::move(result));
+             },
+             py::arg("sequence_id"), py::arg("tokens"),
+             "Run tokens through the graph, appending to what the sequence holds.\n\n"
+             "Prefill's inner step. prefill() loops over the chunks itself and "
+             "refuses a non-empty sequence, which is what a caller wanting a whole "
+             "prompt run needs. A scheduler needs the chunks driven from outside, "
+             "because the chunk boundary is where a long prefill can be interrupted: "
+             "otherwise a resident sequence stalls for a whole prompt rather than "
+             "for one chunk, 372 ms against 93 ms on GPT-2 at FP32.\n\n"
+             "Reserves per chunk rather than for the whole prompt, so ask admission "
+             "before driving a prompt through this.")
         .def("decode",
              [](anytime::DecoderSession& self, const std::string& sequence_id,
                 std::int64_t token) {

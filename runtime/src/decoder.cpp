@@ -443,6 +443,15 @@ StepResult DecoderSession::prefill(const std::string& id, const std::vector<std:
     return total;
 }
 
+StepResult DecoderSession::extend(const std::string& id,
+                                  const std::vector<std::int64_t>& tokens) {
+    SequenceCache& sequence = lookup(id);
+    if (tokens.empty()) {
+        throw std::invalid_argument("extend needs at least one token");
+    }
+    return step(id, sequence, tokens.data(), static_cast<int>(tokens.size()));
+}
+
 StepResult DecoderSession::decode(const std::string& id, std::int64_t token) {
     SequenceCache& sequence = lookup(id);
     if (sequence.length == 0) {
