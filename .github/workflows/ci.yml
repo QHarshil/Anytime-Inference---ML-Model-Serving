@@ -128,6 +128,8 @@ jobs:
             tests/test_kv_admission.py \
             tests/test_batch_scheduler.py \
             tests/test_profile_decode.py \
+            tests/test_profile_batching.py \
+            tests/test_decode_sweep.py \
             tests/test_import_boundaries.py
 
   engine:
