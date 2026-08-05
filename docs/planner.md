@@ -156,10 +156,26 @@ chunked prefill path specifically, because that is the width a resume actually r
 at; taking it from the single-pass sweep beside it overstated every recompute by
 13%. Fitted values are in [`benchmarks.md`](benchmarks.md).
 
+### What eviction is worth under load
+
+The policy is exercised under an open-loop arrival sweep in
+[`benchmarks.md`](benchmarks.md), and the result is not the one the eviction cost
+alone would suggest. Preempt-and-recompute is expensive, and below saturation a
+scheduler that never evicts is slightly ahead. Past saturation the ordering reverses:
+holding a small resident set and making the rest wait beats admitting everybody and
+sharing every decode step between them, because a decode step's cost grows with the
+number of sequences in it. At 1.3x capacity the preempting policy met both service
+targets for 73% of requests against 14% for the same batch width over an arena large
+enough never to evict.
+
+Read that as a statement about *concurrency control*, not about eviction being cheap.
+The arena size is what limits how many sequences are resident, and admission is what
+enforces it; the 140 preemptions it took to hold that line are a cost, not a feature.
+
 ### Not yet wired into the server
 
-`AdaptiveServer` does not serve decoding traffic. There is no batching anywhere in
-the repository, so one sequence decodes at a time, and a decode request holding a
-worker for hundreds of steps would starve the encoder pool it shares. The policy and
-the arena are both exercised by `DecoderClient` and by their tests; joining them to
-the serving harness needs the batching scheduler first.
+`AdaptiveServer` still does not serve decoding traffic. A decode request holds a
+worker for hundreds of steps and would starve the encoder pool it shares, and
+reconciling the two is separate work. What has changed is that the decoder lane now
+has its own scheduler: `ContinuousBatchScheduler` runs many generations over one
+arena, consulting this policy for who is resident.

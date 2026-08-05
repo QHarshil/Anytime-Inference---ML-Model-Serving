@@ -17,8 +17,8 @@ A second lane decodes. GPT-2 is exported with its KV cache in the graph signatur
 that cache is held in a fixed arena of blocks, so admission can refuse a sequence it
 cannot hold and eviction can pick a victim on evidence rather than on hope. Time to
 first token and time per output token are 39x apart at FP32, so they are never
-reported as one number. There is no batching across requests yet, and the decoder
-lane is not wired into the server.
+reported as one number. A continuous batching scheduler runs many generations over that
+one arena; the decoder lane is not yet wired into the server itself.
 
 ![Measured serving behaviour vs offered load](docs/img/load_sweep.png)
 
@@ -74,6 +74,20 @@ the part it shrinks is a shrinking share of the step.
 The arena is not a speedup and is not offered as one — feeding the graph's own
 `present` tensors straight back costs no gather at all. What blocks buy is an occupancy
 number a policy can act on, and the last column is what that costs.
+
+### Batching buys less throughput than expected, and a great deal of fairness
+
+Batching decode steps is worth 3.1x the tokens per second at 128 cached tokens and only
+1.4x at 960, because only the cache-independent part of a step amortises across a batch
+while the rest is per sequence. At FP32 a batch of two is a small *loss*.
+
+Under load the picture is different, and better. Against an open-loop Poisson arrival
+stream, batching holds time to first token near its unloaded value while one-at-a-time
+decoding collapses — at 80% of measured capacity, p95 TTFT is 0.8 s batched against
+9.0 s serial, for 24x the goodput. Past saturation the policy that also *limits*
+concurrency wins again by as much: 73% of requests met both service targets at 1.3x
+capacity, against 14% for the same batch width over an arena large enough never to
+evict.
 
 Full tables, methodology, and host details: [`docs/benchmarks.md`](docs/benchmarks.md).
 

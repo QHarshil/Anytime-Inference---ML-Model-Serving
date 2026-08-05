@@ -99,12 +99,17 @@ struct StepResult {
 // batch size would produce a number that looks per-sequence and is not. `rows` is
 // the divisor a caller needs to form an average and say so.
 //
-// Batching a decode step is worth doing, and how much is worth doing depends on how
-// full the caches are. Measured on GPT-2 at FP32, `Run` alone, batch 8 against eight
-// separate runs: 2.79x at 128 cached tokens, 1.72x at 512 and 1.36x at 960. The
-// fitted split in scripts/profile_decode.py says why the curve decays. Only the
-// cache-independent term amortises across a batch; the per-cached-token term is per
-// sequence and grows with the batch's total cache.
+// Batching a decode step is worth doing, and how much depends on how full the caches
+// are. Measured through the scheduler that drives this, GPT-2 at FP32, batch 8 against
+// the same eight sequences stepped one at a time: 2.32x at 128 cached tokens, 1.52x at
+// 512 and 1.25x at 960. Only the cache-independent term of a step amortises across a
+// batch; the per-cached-token term is per sequence and grows with the batch's total
+// cache, which is why the curve decays.
+//
+// Two things not to infer from that. A batch of two is slower than two separate steps
+// at FP32, so the curve is not monotone from one. And the gain falls short of what the
+// split alone predicts, by more than the gather, the padding and the scatter together
+// account for. scripts/profile_batching.py measures all of it.
 struct BatchStepResult {
     std::vector<StepResult> rows;
     StepTimings timings;

@@ -137,6 +137,41 @@ Two properties of the exported graph are load-bearing and neither is assumed:
   verified once per sequence and raises on mismatch. Falling back to a full-present
   scatter would keep running while silently changing what a decode step costs.
 
+## Decoding several sequences in one run
+
+`DecoderSession::decode_batch` takes a list of sequence ids and one new token each, and
+runs them together. The arena already held many sequences; what this adds is putting
+several of them into one `Run`.
+
+The graph takes one `past_sequence_length` for the whole batch, so rows of unequal
+length have to be made equal. The past is **right-padded**: real KV at `[0, len_b)`,
+padding at `[len_b, max_past)`. `position_ids` stay each row's true absolute positions
+and `attention_mask` is 1 over `[0, len_b)`, 0 over the padding, and 1 for the new
+token. Right rather than left padding because the arena stores a sequence's blocks in
+order and a left-padded row would need every block shifted.
+
+Three consequences, each measured rather than assumed:
+
+- **`scatter` needs separate source and destination offsets.** With the past padded to
+  `max_past`, row `b`'s new KV lands at `present` index `max_past` and not at `len_b`.
+  `gather` likewise needs a destination row stride. A single index serving both sides
+  is the shape of bug that produces plausible timings and wrong tokens.
+- **The padding is zeroed, and that is timed separately.** `zero_pad` is not folded
+  into `gather` precisely so `StepTimings.pad_ms` can be read on its own. It is cheap
+  -- about 1 ms clearing a 4:1 length spread across eight rows at 960 cached tokens --
+  and it is not where the cost of unequal lengths lands. See
+  [`benchmarks.md`](benchmarks.md).
+- **GPT-2 tolerates garbage padding bitwise**, because the exported mask drops masked
+  positions exactly, so zeroing is belt and braces on *that* graph. It is still done.
+  The staging buffers are reused between steps, and the alternative is trusting one
+  export's masking rather than making "padding cannot leak" a test.
+
+The assertion for a batched step is **token identity**, plus float32 agreement at 1e-5
+rather than bitwise. Changing the batch dimension changes the GEMM shape and may change
+which MLAS kernel runs, which is the same trap as comparing two builds bitwise. Batched
+and sequential decode did measure bitwise-equal on GPT-2 here, and the tests still do
+not assert it, because that is a property of this host rather than of the code.
+
 ## Behaviour
 
 - **Tensors are borrowed, not copied.** Inputs point into the numpy buffer;

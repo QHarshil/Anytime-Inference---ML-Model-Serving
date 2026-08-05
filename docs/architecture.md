@@ -51,8 +51,15 @@ extension, following the same split:
 
 ```text
                 +-----------------------------------+
-  generations   | BlockAdmission                    |
-      --------> |   blocks needed vs blocks free    |
+  generations   | ContinuousBatchScheduler          |
+      --------> |   one prefill chunk, or one       |
+                |   batched decode step, per turn   |
+                +----------------+------------------+
+                                 |  what fits, and who to evict for it
+                                 v
+                +-----------------------------------+
+                | BlockAdmission                    |
+                |   blocks needed vs blocks free    |
                 |   eviction ordered by deadline    |
                 |   slack, priced against recompute |
                 +----------------+------------------+
@@ -88,9 +95,36 @@ Two consequences worth stating:
   absorb that. Output is token-identical either way, which is what makes it a
   scheduling decision rather than a correctness bug.
 
-There is no continuous batching yet, so one sequence is in flight at a time and the
-decoder path is not wired into `AdaptiveServer`. That is what the batching scheduler
-adds.
+The decoder path is still not wired into `AdaptiveServer`: a decode request holds a
+worker for hundreds of steps, and reconciling that with the encoder harness is separate
+work.
+
+### The scheduler alternates, because the graph will not let it fuse
+
+The graph takes one `sequence` dimension as well as one `past_sequence_length`. So a
+mixed prefill/decode batch is not merely wasteful, it is unrepresentable: a 256-token
+prefill chunk and a one-token decode step cannot share a `Run` without padding the
+decode row out to 256. vLLM and SARATHI fuse the two with a flattened varlen layout and
+custom kernels; a stock exported graph has neither.
+
+`ContinuousBatchScheduler` therefore **alternates**. Each iteration is one prefill
+chunk or one batched decode step, never both. That is a consequence of the graph rather
+than a preference, and it makes chunk width the central tuning knob: while a chunk
+runs, every resident sequence waits.
+
+The trade is measurable and measured. At the 256-token default, over six generations
+sharing one arena, a sequence that was already decoding went a median 27 ms and at most
+192 ms between tokens, against a 76 ms prefill chunk and a 23 ms decode step. Raising
+`prefill_chunks_per_decode` from 1 to 4 -- which reaches first tokens sooner because
+prefill runs further ahead -- moved those to 40 ms and 244 ms. Both figures are `fp32`;
+at `int4`, where a chunk is 428 ms, the worst gap is 790 ms at 1 chunk and 1145 ms at 4.
+
+Two things that gap is *not*. It is not purely the chunk: with more sequences resident
+than the batch is wide, a sequence can also miss a turn to round-robin, and the recorded
+number is the honest "longest a decoding sequence went without a token" rather than an
+attribution. And it is not a lower bound on jitter for a well-sized deployment -- it is
+what one particular schedule did, and the arena in that trace held every sequence, so
+nothing was waiting on memory.
 
 ## Why the split
 
@@ -161,8 +195,8 @@ line-delimited JSON.
 **Stage 2** is the current one. It moved inference in-process as a pybind11
 extension, validated against the subprocess worker before deleting it, then added a
 decoder path: GPT-2 exported with its KV cache in the graph signature at three
-precisions, a block-allocated arena for that cache, and admission and eviction
-against the arena's occupancy. Continuous batching is the part still outstanding.
+precisions, a block-allocated arena for that cache, admission and eviction against the
+arena's occupancy, and a continuous batching scheduler over all of it.
 
 Unrelated sense, same word: `models/cascade.py` and the `experiments/` pipeline call
 the two models of a cascade "stage 1" and "stage 2" — the cheap model, then the
@@ -176,9 +210,10 @@ declines it, or stands in for it.
 
 - **[Orca](https://www.usenix.org/conference/osdi22/presentation/yu)** (Yu et al.,
   OSDI '22) introduced iteration-level scheduling: admit and retire sequences
-  between decode steps rather than between whole batches. That is the scheduler the
-  decoder path does not have yet, and the reason the arena and its admission policy
-  were built before it.
+  between decode steps rather than between whole batches. `ContinuousBatchScheduler`
+  is that, over the arena and admission policy built for it. What it does not take
+  from Orca is the selective batching of a fused prefill/decode iteration, for the
+  graph reason above.
 - **[PagedAttention](https://arxiv.org/abs/2309.06180)** (Kwon et al., SOSP '23)
   pages KV across non-contiguous blocks by handing attention a block table. This
   repository does not do that and, over a stock exported graph, cannot — the

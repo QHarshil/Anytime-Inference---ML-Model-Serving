@@ -274,6 +274,232 @@ per-run cost of unpacking 4-bit weights, and more of the step is cache traffic a
 context grows. It buys memory and nothing else, which is what the export measured and
 this does not change.
 
+## Batching a decode step: a throughput win that decays with the cache
+
+`scripts/profile_batching.py` measures this through `ContinuousBatchScheduler`, which
+is the thing that would do it in service. An earlier round of these numbers was taken
+by calling `Engine.run` with hand-assembled batch tensors, and it overstated the result
+by about 20% at short context because it left out the gather, the padding, the scatter
+and the scheduler. Those numbers are gone; these replace them.
+
+Speedup is against the same sequences stepped **one at a time at the same cached
+length**, through the same scheduler — not against nothing, and not against a batch
+divided by its width. A batched step's duration is what every sequence in it waited.
+
+| Batch | `fp32` 128 | 512 | 960 | `int8` 128 | 512 | 960 | `int4` 128 | 512 | 960 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 0.92x | 0.93x | 0.91x | 1.20x | 1.10x | 1.05x | 1.15x | 1.14x | 1.12x |
+| 4 | 1.52x | 1.27x | 1.11x | 1.75x | 1.35x | 1.16x | 2.08x | 1.65x | 1.56x |
+| 8 | 2.32x | 1.52x | 1.25x | 2.25x | 1.46x | 1.22x | 2.89x | 2.16x | 1.78x |
+| 16 | 2.87x | 1.68x | 1.33x | **2.50x** | **1.51x** | **1.24x** | 3.43x | 2.39x | **1.93x** |
+| 32 | **3.09x** | **1.76x** | **1.37x** | 2.43x | 1.49x | 1.21x | **3.75x** | **2.49x** | 1.92x |
+
+In tokens per second, `fp32` runs 202 at batch 1 and 624 at batch 32 with 128 cached
+tokens; at 960 cached it runs 100 and 138.
+
+**The gain decays with cache occupancy, which is what the fitted split predicts.** Only
+the cache-independent term of a decode step can be shared across a batch; the
+per-cached-token term is per sequence, because each sequence reads its own cache. So the
+more cache there is, the less of a step is amortisable. INT4 gains most at full context
+— 1.9x against FP32's 1.4x — because its cache-independent term is the largest share of
+its step, which is the same fitted split that explains its prefill penalty.
+
+**Four things the curve says that the prediction did not.**
+
+- **A batch of two is a loss at FP32**, at every occupancy: 0.92x, 0.93x, 0.91x. Two
+  sequences in one step cost more than two separate steps. INT8 and INT4 gain slightly
+  at two, so this is specific to the FP32 path.
+- **Returns stop by batch 16 for FP32 and INT8.** INT8 is *slower* at 32 than at 16 at
+  all three occupancies. Only INT4, whose step is dominated by the shared term, is still
+  gaining at 32.
+- **Measured always falls short of predicted**, by 40-45% at short context and 15-20%
+  at long. The shortfall is inside `Session::Run` rather than in the gather, the padding
+  or the scheduler, all three of which are timed separately and add up to a small
+  fraction of it.
+- **A per-row constant does not explain the shortfall either.** Fitting
+  `shared + per_row × B + per_token × B × L` over every point leaves worst-case errors
+  of 21-29%, and fitting it on batches of 4 and above and extrapolating down puts batch
+  1 off the line in *opposite directions* for FP32 and INT8. So the honest statement is
+  that the split predicts the shape — the decay with occupancy, and INT4 gaining most —
+  and does not predict the level. A likely mechanism is that a batch-1 decode step takes
+  a different kernel from a batched one, which would make the denominator of every
+  speedup here unusually fast; that is consistent with the batch-2 loss and is **not
+  measured**, so it is offered as a hypothesis and not as a finding.
+
+![Speedup against batch width per cache occupancy, and measured against predicted](img/batch_scaling.png)
+
+### Right-padding costs a third of a step, and it is not the zeroing
+
+A batch runs at its longest row. Three regimes at batch 8 and 960 cached tokens, `fp32`,
+where the spread and the uniform-mean regime hold the same mean so the difference
+between them is variance alone:
+
+| Rows | Step | Graph run | Gather | Zeroing |
+| --- | --- | --- | --- | --- |
+| all 960 | 64.31 ms | 54.36 ms | 10.02 ms | 0.12 ms |
+| spread 240-960, mean 600 | 59.80 ms | 52.60 ms | 6.37 ms | 1.02 ms |
+| all 600 | 43.12 ms | 36.07 ms | 6.37 ms | 0.16 ms |
+
+Length variance costs **16.7 ms on a 43.1 ms step, 39%**, and of that 16.5 ms is the
+graph running every row at 960 positions instead of 600 while 0.9 ms is clearing the
+padding. The gather is identical between those two regimes, as it must be: they hold
+the same number of real tokens.
+
+So `pad_ms` is the cheap part and bucketing by length would be worth roughly the whole
+16.7 ms, up to a ceiling of 21.2 ms — the difference between a batch of the mean length
+and a batch of the longest. INT8 and INT4 measure the same effect at 45% and 29% of
+their steps. The same cost appears again under load, where it takes about a quarter of
+capacity; see below.
+
+### Reproducibility, and what moved between two runs
+
+The whole measurement was run twice, about 30 minutes apart, with a 28-minute load
+sweep in between so the second run started from a warmer machine. Absolute step times
+moved by at most 8.5% and speedups by at most 9.2%, the largest on INT4 at 960 cached
+tokens where a batch of 32 read 2.12x and then 1.92x. Every qualitative statement above
+held in both: the FP32 batch-2 loss, the decay with occupancy, INT8 peaking at 16, and
+INT4 gaining most at full context. **Prefer the ratios to the milliseconds**, and treat
+a difference under 10% between any two runs on this host as noise.
+
+Two figures worth quoting for what they cross-check rather than for themselves. Refitting
+the cost split from this script's own batch-1 points gives FP32 4.176 ms + 6.010 µs per
+cached token, against the 4.181 ms + 5.654 µs `profile_decode.py` fitted independently
+in a different session — the constant term agrees to 0.1%. And the scheduler's own
+overhead, the wall time around `step()` beyond what the runtime reports, is 0.05 to
+0.79 ms per step across all 54 points, so the Python control loop is not what any of
+this measures.
+
+### What alternating costs a sequence that is already decoding
+
+A prefill chunk and a decode step cannot share a run over this graph, for the reason in
+[`architecture.md`](architecture.md), so the scheduler alternates and a resident
+sequence waits while somebody else's prompt is being read. Six generations over one
+arena at batch width 4, `fp32`:
+
+| Chunks per decode step | Gap between a sequence's tokens, median | worst | Prefill chunk | Decode step |
+| --- | --- | --- | --- | --- |
+| 1 | 27.4 ms | 192.0 ms | 76.2 ms | 22.8 ms |
+| 4 | 39.9 ms | 244.4 ms | 75.3 ms | 26.6 ms |
+
+At `int4` a chunk is 428 ms and the worst gap is 790 ms at one chunk per decode step,
+1145 ms at four.
+
+The worst gap is larger than one chunk plus one step, and the reason is not only
+prefill: this trace has six sequences resident against a batch width of four, so a
+sequence can also miss a turn to round-robin. The figure records what was measured —
+the longest a decoding sequence went without a token — rather than attributing it.
+
+![One schedule over time, at two settings of the alternation knob](img/alternation.png)
+
+## Batching under load: fairness is the larger half of the result
+
+The mechanism above is one measurement; what a scheduler does to traffic is another.
+`scripts/run_decode_sweep.py` drives `ContinuousBatchScheduler` with an **open-loop
+Poisson arrival stream** at a swept rate, the same shape as the encoder load sweep and
+for the same reason: a closed-loop burst measures a makespan and cannot show a
+saturation knee or a queueing tail, and the tail is what a scheduler is judged on.
+
+Load is a fraction of *measured* capacity — the 3.59 completions/s the batched policy
+sustains with a full backlog, measured before the sweep rather than derived from a
+service time. GPT-2 FP32, 256-token prompts, 64 generated, 150 requests per point, and
+all three policies see the same arrivals and the same prompts.
+
+| Policy | Arena holds | Batch width |
+| --- | --- | --- |
+| `serial` | 1 sequence | 1 |
+| `batched-8` | 8 sequences | 8 |
+| `batched-8-preempting` | 4 sequences | 8, so `BlockAdmission` must evict |
+
+Attainment counts a request only if it finished **and** met both targets: 500 ms to
+first token and 50 ms a token. Those are stated absolutely rather than derived from the
+unloaded measurement (86 ms and 6.1 ms here), because a target set at a multiple of what
+one sequence achieves alone is a target defined by the absence of batching, which
+batching would then fail by construction.
+
+| ρ | TTFT p95, serial | batched | preempting | Attainment, serial | batched | preempting |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.40 | 1034 ms | **168 ms** | 179 ms | 76.0% | **100.0%** | 98.7% |
+| 0.60 | 2356 ms | **207 ms** | 649 ms | 32.7% | **98.7%** | 94.0% |
+| 0.80 | 8972 ms | **792 ms** | 10126 ms | 4.7% | **93.3%** | 86.0% |
+| 0.95 | 18712 ms | **1182 ms** | 16435 ms | 3.3% | 66.7% | **84.0%** |
+| 1.10 | 24223 ms | **2214 ms** | 19979 ms | 2.0% | 34.0% | **79.3%** |
+| 1.30 | 29688 ms | **6655 ms** | 24296 ms | 1.3% | 14.0% | **73.3%** |
+
+![Latency, attainment and goodput against offered load, three scheduling policies](img/decode_sweep.png)
+
+Three things worth separating out of that table.
+
+**Serial decoding collapses immediately, and the throughput result understates why.**
+Its time per output token is the best of the three at every load — 5.6 to 6.0 ms,
+flat, because it never shares a step with anybody. It fails anyway: by ρ = 0.8 its p95
+time to first token is 9.0 seconds against a 500 ms target. Its own capacity is about
+1.3 requests/s, so it is already past saturation at the lowest point of a sweep scaled
+to the batched policy. Goodput at ρ = 0.8 is 2.38 requests/s batched against 0.10
+serial, a factor of 24, and essentially all of that is queueing rather than speed.
+
+**Batching trades time per output token for time to first token, and the trade is
+worth it until saturation.** As load rises the batch fills — mean decode batch goes
+from 1.5 at ρ = 0.4 to 6.9 at ρ = 1.3 — and each sequence's tokens arrive further
+apart, 12.3 ms to 25.4 ms. That is the mechanism from the section above running in
+reverse: a decode step's cost grows with the number of sequences in it, so a fuller
+batch is slower per step for every member of it.
+
+**Past saturation, limiting concurrency beats sharing.** This is the result that was
+not predicted. The preempting policy is slightly *worse* below ρ = 0.8 — eviction is
+not free, and it paid 9 to 132 preemptions to hold a resident set of four — and then
+it wins by increasingly large margins: 79% attainment against 34% at ρ = 1.1, and 73%
+against 14% at ρ = 1.3. Its time per output token stays near 17 ms while the
+unconstrained batch degrades to 25 ms, because it never lets more than four sequences
+into a step.
+
+The cost is a bimodal distribution rather than a uniformly better one. Its *median*
+time to first token stays at 126 ms at every load while its p95 runs to 24 seconds:
+most requests are served promptly and a tail waits a very long time. That is what
+admission control does, and whether it is the right shape depends on whether the tail
+is a queue or a dropped request — here it is a queue, because nothing is shed.
+
+### Prompt and generation length move capacity more than any of this
+
+Measured at ρ = 0.95 under `batched-8`, each shape against its own measured capacity:
+
+| Prompt | Generated | Capacity | TTFT p95 | TPOT p95 | Attainment | Output |
+| --- | --- | --- | --- | --- | --- | --- |
+| 128 | 64 | 5.17 rps | 948 ms | 19.8 ms | 78.7% | 278 tok/s |
+| 256 | 64 | 3.53 rps | 1220 ms | 26.1 ms | 76.0% | 192 tok/s |
+| 512 | 64 | 2.02 rps | 1907 ms | 40.4 ms | 68.0% | 112 tok/s |
+| 896 | 64 | 1.21 rps | 3889 ms | 64.1 ms | 10.7% | 66 tok/s |
+| 256 | 192 | 1.30 rps | 5238 ms | 31.3 ms | 56.0% | 204 tok/s |
+
+Capacity falls 4.3x between a 128-token prompt and an 896-token one, and at 896 the
+50 ms per-token target is missed outright: a batch of eight at that occupancy cannot
+step faster than 64 ms. The last row is the other axis — three times the generated
+tokens is the highest output rate in the table and the worst but one attainment,
+because every request holds its blocks three times as long.
+
+**Length variance costs about a quarter of capacity.** Prompts drawn from
+`{64, 192, 320, 448}` have the same 253-token mean as the fixed 256-token workload and
+sustain 2.72 requests/s against 3.53, with p95 time per output token of 66.0 ms against
+26.1. That is the right-padding cost from the section above, under load: the batch runs
+at its longest row, so one long prompt slows every sequence sharing the step with it.
+It is the strongest argument here for length-bucketed batching, and it is measured
+rather than assumed.
+
+### What is weak about these numbers
+
+- **Attainment near the knee is the noisiest thing on this page.** The sweep measures
+  ρ = 0.95 under `batched-8` twice — once in the main sweep and once as the first row
+  of the shape table — and the two read 66.7% and 76.0% about ten minutes apart. Treat
+  differences of that size as noise, and the ordering between policies, which is much
+  larger, as the result.
+- **150 requests a point** supports p50 and p95. The p99 in
+  `results/decode_sweep.json` is six samples from the tail and is recorded rather than
+  reported.
+- **One precision.** The sweep is FP32 only. It answers a scheduling question, and the
+  precision comparison is the section above.
+- Every per-request row is in `results/decode_sweep_requests.csv`, so attainment at a
+  different pair of targets, or any other percentile, can be recomputed without
+  measuring again.
+
 ## Reproducing
 
 ```bash
@@ -283,7 +509,16 @@ python scripts/run_load_sweep.py              # sweep load, write CSV and figure
 python scripts/export_decoder.py              # export GPT-2, measure perplexity
 python scripts/profile_decode.py              # measure TTFT and TPOT
 python scripts/plot_decode_profiles.py        # draw the three decoder figures
+python scripts/profile_batching.py            # measure batch scaling and padding
+python scripts/run_decode_sweep.py            # sweep load through the scheduler
+python scripts/plot_batching.py               # draw the three batching figures
 ```
+
+`profile_batching.py` takes about 25 minutes for three precisions and
+`run_decode_sweep.py` about 28 for one, most of it spent deliberately idle while the
+arrival process waits. `run_decode_sweep.py` reads the fitted cost model out of
+`results/decode_profiles.json`, so `profile_decode.py` has to have run first; it says
+so rather than substituting coefficients.
 
 The last step draws from `results/decode_profiles.json` and measures nothing, so a
 figure can be redrawn without re-measuring. That separation is the point: runs drift by
@@ -307,8 +542,11 @@ latency is reported as percentiles over repeated passes rather than as single fi
 - Absolute service times drift with thermal state by a few percent, which is why
   they are reported as a median over passes with the range attached. Ratios between
   variants are steadier than absolutes.
-- Batch size is fixed at 1. There is no batching across requests yet, so these
-  numbers describe one request in flight per worker.
+- **The encoder path still has no batching**: one request in flight per worker, so
+  every number in the variant frontier and load sweep sections describes batch size 1.
+  Batching exists on the decoder path only.
+- The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
+  are measured through different harnesses and their capacities are not comparable.
 - Attainment for `accurate-only` above ρ = 0.9 is conditioned on a small admitted
   sample and should not be read as a quality signal.
 

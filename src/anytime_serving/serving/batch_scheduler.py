@@ -28,13 +28,20 @@ stops improving and the per-run overhead starts telling. Wider chunks do the rev
 What batching is worth
 ----------------------
 
-Measured on GPT-2 at FP32, `Run` alone, batch 8 against eight separate runs: 2.79x at
-128 cached tokens, 1.72x at 512, 1.36x at 960. The gain decays with cache occupancy
-because only the cache-independent term of a decode step amortises across a batch,
-while the per-cached-token term is per sequence and grows with the batch's total
-cache. So batching is a real throughput win at short contexts and a modest one at
-full context, and this scheduler's other job -- deciding who waits -- matters more at
-the long end than the short one.
+Measured through this scheduler on GPT-2 at FP32, against the same sequences stepped
+one at a time: at batch 8, 2.32x the tokens per second at 128 cached tokens, 1.52x at
+512, 1.25x at 960; at batch 32, 3.09x / 1.76x / 1.37x. The gain decays with cache
+occupancy because only the cache-independent term of a decode step amortises across a
+batch, while the per-cached-token term is per sequence and grows with the batch's total
+cache.
+
+So the throughput win is real, modest at full context, and it stops: returns flatten by
+batch 16 at FP32 and INT8, and a batch of *two* is slower at FP32 than two separate
+steps. Which means this scheduler's other job -- deciding who waits -- is the larger
+half of what it is for. Under an open-loop arrival sweep, batching holds time to first
+token near its unloaded value where one-at-a-time decoding collapses: 24x the goodput at
+80% of measured capacity. Past saturation, the configuration that additionally *limits*
+how many sequences are resident wins again by as much. `docs/benchmarks.md` has both.
 
 Fairness is the part admission already owned
 --------------------------------------------
