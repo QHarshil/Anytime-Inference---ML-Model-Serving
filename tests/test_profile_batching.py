@@ -323,6 +323,10 @@ def test_a_measured_point_is_a_batched_decode_step_of_the_width_it_claims(decode
     assert point.cached_tokens == 8
     assert point.step.p50_ms > 0.0
     assert point.tokens_per_s > 0.0
+    # The wall clock around a call cannot be shorter than the call says it took. This
+    # read negative at the widest batch when the overhead was the difference of two
+    # differently-pooled medians rather than a per-step difference.
+    assert point.scheduler_overhead_p50_ms >= 0.0
     # Assembling three sequences costs the first one three tokens, then two more are
     # measured, so it has emitted at least five.
     assert len(emitted) >= 5

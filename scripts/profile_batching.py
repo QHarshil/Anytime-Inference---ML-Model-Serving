@@ -141,7 +141,9 @@ class ScalingPoint:
 
     `scheduler_overhead_p50_ms` is the wall time around `step()` minus the duration
     the runtime reported for the invocation inside it -- the Python scheduler's own
-    cost, measured rather than assumed to be negligible.
+    cost, measured rather than assumed to be negligible. Differenced per step and then
+    taken as a median, not the difference of two medians: the second cannot be
+    negative and the first can, which is how the mistake announced itself.
     """
 
     batch_size: int
@@ -373,6 +375,7 @@ def _measure_steps(
         "run": [],
         "scatter": [],
         "wall": [],
+        "overhead": [],
         "cached_min": [],
         "cached_max": [],
     }
@@ -400,6 +403,14 @@ def _measure_steps(
         samples["run"].append(record.run_ms)
         samples["scatter"].append(record.scatter_ms)
         samples["wall"].append(wall_ms)
+        # Paired, per step, rather than one aggregate minus another. Taking the median
+        # of the wall times and subtracting the median of the durations mixes two
+        # aggregations -- a pooled median against a median of per-pass medians -- and
+        # they disagree by more than the quantity being measured when the passes drift.
+        # It produced a negative overhead at the widest batch, which is not a thing that
+        # can happen: the wall clock around a call cannot be shorter than what the call
+        # reports taking.
+        samples["overhead"].append(wall_ms - record.total_ms)
         cached = [row.cached_tokens for row in step.records]
         samples["cached_min"].append(float(min(cached)))
         samples["cached_max"].append(float(max(cached)))
@@ -467,7 +478,6 @@ def measure_scaling_point(
             )
 
     step = Spread.of([statistics.median(sample["total"]) for sample in per_pass])
-    wall = statistics.median(_pooled(per_pass, "wall"))
     return (
         ScalingPoint(
             batch_size=batch_size,
@@ -480,7 +490,7 @@ def measure_scaling_point(
             gather_p50_ms=round(statistics.median(_pooled(per_pass, "gather")), 3),
             run_p50_ms=round(statistics.median(_pooled(per_pass, "run")), 3),
             scatter_p50_ms=round(statistics.median(_pooled(per_pass, "scatter")), 4),
-            scheduler_overhead_p50_ms=round(wall - step.p50_ms, 4),
+            scheduler_overhead_p50_ms=round(statistics.median(_pooled(per_pass, "overhead")), 4),
             steps_per_pass=steps,
         ),
         emitted,
