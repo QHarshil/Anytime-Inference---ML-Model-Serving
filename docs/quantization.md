@@ -62,15 +62,21 @@ signature and measures each precision against
 through the serving path, over 32,736 tokens in 32 non-overlapping 1024-token
 windows.
 
-| Precision | Size | vs FP32 | Perplexity | Delta | Prefill p50 |
+| Precision | Size | vs FP32 | Perplexity | Delta | Prefill p50, one thread |
 | --- | --- | --- | --- | --- | --- |
 | `fp32` | 653 MB | 1.000 | 31.307 | -- | 450 ms |
 | `int8` | 399 MB | 0.611 | 31.371 | +0.063 | 415 ms |
 | `int4` | 367 MB | 0.563 | 32.866 | +1.559 | 1837 ms |
 
+The prefill column is measured by `export_decoder.py` in its own single-threaded ONNX
+Runtime session, and it is left that way because it is what the export measured. **It
+is not the served configuration**, which runs eight intra-op threads and reads very
+differently for INT4; [`benchmarks.md`](benchmarks.md) has that. Perplexity and size
+are properties of the graph and do not depend on either.
+
 INT8 is nearly free in quality terms, costing 0.06 perplexity for a 39% smaller
-graph, and is marginally faster. INT4 costs 1.56 perplexity and runs **4.1x
-slower** than FP32. That is the encoder finding again, and worse: on this host the
+graph, and is marginally faster. INT4 costs 1.56 perplexity and, **on one thread**,
+runs 4.1x slower than FP32. That is the encoder finding again, and worse: on this host the
 [`MatMulNBits`](https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html#quantize-to-int4uint4)
 operator that 4-bit weights are folded into has no tuned kernel, so they are
 unpacked to float on every matrix multiply and the arithmetic happens at full width
@@ -89,11 +95,11 @@ there moving a quarter of the weight bytes helps:
 
 | Precision | TPOT at 128 cached | at 512 | at 960 | vs FP32 |
 | --- | --- | --- | --- | --- |
-| `fp32` | 4.83 ms | 7.22 ms | 9.54 ms | 1.000x |
-| `int8` | 3.60 ms | 5.79 ms | 8.45 ms | 0.75x to 0.89x |
-| `int4` | 11.56 ms | 13.85 ms | 16.63 ms | 1.74x to 2.39x |
+| `fp32` | 5.12 ms | 6.66 ms | 8.15 ms | 1.000x |
+| `int8` | 3.58 ms | 5.38 ms | 7.22 ms | 0.70x to 0.89x |
+| `int4` | 4.53 ms | 6.24 ms | 7.22 ms | 0.88x to 0.94x |
 
-So **INT8 is not dominated on the decoder.** It is faster on prefill and 11-25% faster
+So **INT8 is not dominated on the decoder.** It is faster on prefill and 11-28% faster
 on decode, at 0.61x the size for 0.06 perplexity. That is the claim, and it is worth
 not inflating: INT8 does not dominate either. INT4 is smaller, at 367 MB against 399,
 and FP32 is more accurate, at 31.307 perplexity against 31.371, so all three sit on the
@@ -111,11 +117,16 @@ the 256-token chunked prefill. [`benchmarks.md`](benchmarks.md) carries the one 
 the measurement does isolate: precision moves the cache-independent part of a decode
 step and leaves the per-cached-token part alone.
 
-INT4 stays dominated on speed, but its penalty shrinks from 4.8x on prefill to 1.7x on
-decode. Consistent with the same split -- the unpacking cost is fixed per matrix
-multiply, so it lands on the constant part of the step, and the constant part is a
-smaller share of a long-context decode than of a prefill. Not enough to matter, and
-INT4 still buys memory and nothing else.
+INT4's speed penalty turned out to be mostly about thread count rather than about the
+format. Unpacking 4-bit weights is a fixed cost per matrix multiply, so it lands on the
+constant part of a step -- and it is ordinary arithmetic, which a thread pool divides
+well. With the decoder session on eight threads its fitted constant falls from 10.76 ms
+to 4.28 ms and it decodes *faster* than FP32 at every cache occupancy, having been 1.7x
+to 2.4x slower on one. It still loses on prefill and still costs 1.559 perplexity.
+
+That is worth stating carefully, because it is the second time on this page that a
+quantisation "result" turned out to be a statement about something other than the
+format: first the shape, now the thread count.
 
 The lesson is the one this page opens with, one level further in. A quantisation
 result is a statement about a configuration; it is also a statement about a

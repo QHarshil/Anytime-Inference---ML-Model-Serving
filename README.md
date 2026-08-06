@@ -54,9 +54,9 @@ a decode step costs the most. Perplexity is WikiText-2 over 32,736 tokens.
 
 | Precision | Size | Perplexity | TTFT | TPOT | TTFT / TPOT | Gather + scatter |
 | --- | --- | --- | --- | --- | --- | --- |
-| `fp32` | 653 MB | 31.307 | 372 ms | 9.54 ms | 39.0x | 11.1% |
-| `int8` | 399 MB | 31.371 | 346 ms | 8.45 ms | 40.9x | 12.6% |
-| `int4` | 367 MB | 32.866 | 1772 ms | 16.63 ms | 106.6x | 6.5% |
+| `fp32` | 653 MB | 31.307 | 286 ms | 8.15 ms | 35.1x | 14.2% |
+| `int8` | 398 MB | 31.371 | 265 ms | 7.22 ms | 36.7x | 16.3% |
+| `int4` | 367 MB | 32.866 | 360 ms | 7.22 ms | 49.8x | 16.6% |
 
 INT8 is the variant to serve here, and it does not dominate: it is fastest in both
 phases, but INT4 is smaller and FP32 is 0.06 perplexity better. It also reverses the
@@ -66,28 +66,29 @@ measurements, so what it shows is that the encoder conclusion does not generalis
 which difference caused that.
 
 What the fitted cost model does isolate is narrower and more useful. Precision moves
-the cache-independent part of a decode step — 4.18 ms at FP32 against 2.83 at INT8 —
-and barely touches the part that grows with the cache, 5.65 against 5.84 µs per cached
-token. That is why INT8's lead narrows from 25% at 128 cached tokens to 11% at 960:
+the cache-independent part of a decode step — 4.71 ms at FP32 against 3.06 at INT8 —
+and barely touches the part that grows with the cache, 3.62 against 4.37 µs per cached
+token. That is why INT8's lead narrows from 28% at 128 cached tokens to 11% at 960:
 the part it shrinks is a shrinking share of the step.
 
 The arena is not a speedup and is not offered as one — feeding the graph's own
 `present` tensors straight back costs no gather at all. What blocks buy is an occupancy
 number a policy can act on, and the last column is what that costs.
 
-### Batching buys less throughput than expected, and a great deal of fairness
+### Batching buys throughput that decays with the cache, and a great deal of fairness
 
-Batching decode steps is worth 3.1x the tokens per second at 128 cached tokens and only
-1.4x at 960, because only the cache-independent part of a step amortises across a batch
-while the rest is per sequence. At FP32 a batch of two is a small *loss*.
+Batching decode steps is worth 3.5x the tokens per second at 128 cached tokens and
+1.7x at 960, because only the cache-independent part of a step amortises across a batch
+while the rest is per sequence. Batching and threading compound: a batch of one is a
+skinny GEMV with little for a thread pool to divide, so the same points read 3.1x and
+1.4x with the decoder session pinned to one thread.
 
 Under load the picture is different, and better. Against an open-loop Poisson arrival
 stream, batching holds time to first token near its unloaded value while one-at-a-time
-decoding collapses — at 80% of measured capacity, p95 TTFT is 0.8 s batched against
-9.0 s serial, for 24x the goodput. Past saturation the policy that also *limits*
-concurrency wins again by as much: 73% of requests met both service targets at 1.3x
-capacity, against 14% for the same batch width over an arena large enough never to
-evict.
+decoding collapses — at 80% of measured capacity, p95 TTFT is 0.53 s batched against
+20.2 s serial. Past saturation the policy that also *limits* concurrency wins again by
+as much: 71% of requests met both service targets at 1.3x capacity, against 13% for the
+same batch width over an arena large enough never to evict.
 
 Full tables, methodology, and host details: [`docs/benchmarks.md`](docs/benchmarks.md).
 

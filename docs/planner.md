@@ -119,7 +119,7 @@ Preemption here is preempt-and-recompute: the victim's blocks are released, its
 tokens are kept, and resuming re-runs its whole history. Output is token-identical
 either way, which is what makes eviction a scheduling decision rather than a
 correctness bug, but it is not free. On GPT-2 a 960-token sequence recomputes in
-about 340 ms against a 9.5 ms decode step.
+about 261 ms against an 8.1 ms decode step.
 
 So the currency is slack: how much deadline is left once the work still owed is
 allowed for.
@@ -165,7 +165,7 @@ scheduler that never evicts is slightly ahead. Past saturation the ordering reve
 holding a small resident set and making the rest wait beats admitting everybody and
 sharing every decode step between them, because a decode step's cost grows with the
 number of sequences in it. At 1.3x capacity the preempting policy met both service
-targets for 73% of requests against 14% for the same batch width over an arena large
+targets for 71% of requests against 13% for the same batch width over an arena large
 enough never to evict.
 
 Read that as a statement about *concurrency control*, not about eviction being cheap.

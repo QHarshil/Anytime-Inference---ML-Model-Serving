@@ -100,16 +100,23 @@ struct StepResult {
 // the divisor a caller needs to form an average and say so.
 //
 // Batching a decode step is worth doing, and how much depends on how full the caches
-// are. Measured through the scheduler that drives this, GPT-2 at FP32, batch 8 against
-// the same eight sequences stepped one at a time: 2.32x at 128 cached tokens, 1.52x at
-// 512 and 1.25x at 960. Only the cache-independent term of a step amortises across a
-// batch; the per-cached-token term is per sequence and grows with the batch's total
-// cache, which is why the curve decays.
+// are. Measured through the scheduler that drives this, GPT-2 at FP32 with the session
+// on eight threads, batch 8 against the same eight sequences stepped one at a time:
+// 3.00x at 128 cached tokens, 2.15x at 512 and 1.67x at 960. Only the
+// cache-independent term of a step amortises across a batch; the per-cached-token term
+// is per sequence and grows with the batch's total cache, which is why the curve
+// decays.
 //
-// Two things not to infer from that. A batch of two is slower than two separate steps
-// at FP32, so the curve is not monotone from one. And the gain falls short of what the
-// split alone predicts, by more than the gather, the padding and the scatter together
-// account for. scripts/profile_batching.py measures all of it.
+// Thread count is part of that measurement rather than beside it. At one intra-op
+// thread the same points read 2.32x / 1.52x / 1.25x, because a batch-1 decode is a
+// skinny GEMV with little for a thread pool to divide while a wide batch is a real
+// GEMM: batching supplies the parallelism threading then exploits, and the two
+// compound. serving/decoder.py sets the count and records why.
+//
+// One thing not to infer: the gain falls short of what the split alone predicts, by
+// more than the gather, the padding and the scatter together account for.
+// scripts/profile_batching.py measures all of it, and docs/benchmarks.md says plainly
+// that the shortfall is unexplained.
 struct BatchStepResult {
     std::vector<StepResult> rows;
     StepTimings timings;

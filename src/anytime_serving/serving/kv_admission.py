@@ -17,8 +17,8 @@ worse moment.
 **Eviction** picks the sequence that can most afford to be interrupted. Preemption
 here is preempt-and-recompute: the victim's blocks are released and its tokens are
 kept, so resuming it means re-running its whole history. That cost is real. On GPT-2
-a 960-token sequence recomputes in about 340 ms against a 9.5 ms decode step, so
-evicting the wrong sequence spends 35 steps' worth of somebody else's budget.
+a 960-token sequence recomputes in about 261 ms against an 8.1 ms decode step, so
+evicting the wrong sequence spends 32 steps' worth of somebody else's budget.
 
 So the currency is slack: how much of a sequence's deadline is left after allowing
 for the work it still has to do. A victim is only eligible if it survives its own
@@ -31,10 +31,10 @@ Costs are measured, not assumed
 
 `CacheCost` carries no defaults. Stage 1's headline result was invalid because a
 service time was carried over from somewhere it did not apply, and a decode cost is
-just as host-specific: on this machine GPT-2 FP32 steps in 4.83 ms at 128 cached
-tokens and 9.54 ms at 960. A single scalar would be wrong at one end or the other,
+just as host-specific: on this machine GPT-2 FP32 steps in 5.12 ms at 128 cached
+tokens and 8.15 ms at 960. A single scalar would be wrong at one end or the other,
 so the decode cost is linear in cached tokens, which fits those measurements to
-within 0.14 ms. `scripts/profile_decode.py` produces the coefficients.
+within 0.09 ms. `scripts/profile_decode.py` produces the coefficients.
 """
 
 from __future__ import annotations
@@ -54,9 +54,9 @@ class CacheCost:
     """What a decode step and a recompute cost, on this host, for this model.
 
     ``decode_ms`` is linear in the number of cached tokens rather than constant,
-    because a decode step re-reads the whole cache: measured 4.83 ms at 128 tokens,
-    7.22 at 512 and 9.54 at 960, which a line through them reproduces within
-    0.14 ms.
+    because a decode step re-reads the whole cache: measured 5.12 ms at 128 tokens,
+    6.66 at 512 and 8.15 at 960, which a line through them reproduces within
+    0.09 ms.
 
     ``prefill_ms`` is linear too, which is the coarser of the two. Prefill is mildly
     superlinear -- 0.280 ms per token at 128, 0.364 at 1024 -- so the single fitted

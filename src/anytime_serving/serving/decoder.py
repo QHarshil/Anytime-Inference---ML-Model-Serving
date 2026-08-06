@@ -12,8 +12,8 @@ would put the accounting somewhere other than where the runtime is. A missing
 extension is therefore an error rather than a slower path.
 
 TTFT and TPOT are reported separately because they are not the same measurement. On
-this host GPT-2 FP32 prefills a 1024-token prompt in 372.2 ms and then emits each
-token in 9.5 ms at full context, a factor of 39. A single latency figure would
+this host GPT-2 FP32 prefills a 1024-token prompt in 285.5 ms and then emits each
+token in 8.1 ms at full context, a factor of 35. A single latency figure would
 describe neither.
 
 Threads
@@ -32,7 +32,7 @@ Preemption
 history and carries on. The output is token-identical to an uninterrupted run --
 asserted in `tests/test_decoder_session.py` on both the synthetic graph and GPT-2 --
 which is what makes eviction a scheduling decision rather than a correctness bug. It
-is not free: recomputing a 960-token sequence costs about 340 ms against a 9.5 ms
+is not free: recomputing a 960-token sequence costs about 261 ms against an 8.1 ms
 decode step, which is why `kv_admission.BlockAdmission` weighs slack against
 recompute before naming a victim.
 """
@@ -512,7 +512,7 @@ class DecoderClient:
         `prefill` runs every chunk before returning, so nothing else can happen in
         between. A scheduler needs the chunks one at a time, because the chunk
         boundary is where a resident sequence can get a turn: driving a whole prompt
-        stalls every other sequence for its duration, 372 ms on GPT-2 at FP32 against
+        stalls every other sequence for its duration, 286 ms on GPT-2 at FP32 against
         93 ms for one 256-token chunk.
 
         A fresh prompt and a preempted sequence's history go through here identically.

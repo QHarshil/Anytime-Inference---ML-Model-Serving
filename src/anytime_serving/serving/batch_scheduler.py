@@ -28,20 +28,26 @@ stops improving and the per-run overhead starts telling. Wider chunks do the rev
 What batching is worth
 ----------------------
 
-Measured through this scheduler on GPT-2 at FP32, against the same sequences stepped
-one at a time: at batch 8, 2.32x the tokens per second at 128 cached tokens, 1.52x at
-512, 1.25x at 960; at batch 32, 3.09x / 1.76x / 1.37x. The gain decays with cache
-occupancy because only the cache-independent term of a decode step amortises across a
-batch, while the per-cached-token term is per sequence and grows with the batch's total
-cache.
+Measured through this scheduler on GPT-2 at FP32 with the decoder session on eight
+threads, against the same sequences stepped one at a time: at batch 8, 3.00x the tokens
+per second at 128 cached tokens, 2.15x at 512, 1.67x at 960; at batch 32, 3.47x / 2.26x
+/ 1.71x. The gain decays with cache occupancy because only the cache-independent term of
+a decode step amortises across a batch, while the per-cached-token term is per sequence
+and grows with the batch's total cache.
 
-So the throughput win is real, modest at full context, and it stops: returns flatten by
-batch 16 at FP32 and INT8, and a batch of *two* is slower at FP32 than two separate
-steps. Which means this scheduler's other job -- deciding who waits -- is the larger
-half of what it is for. Under an open-loop arrival sweep, batching holds time to first
-token near its unloaded value where one-at-a-time decoding collapses: 24x the goodput at
-80% of measured capacity. Past saturation, the configuration that additionally *limits*
-how many sequences are resident wins again by as much. `docs/benchmarks.md` has both.
+Thread count belongs in that sentence rather than beside it. With the session pinned to
+one thread the same points read 2.32x / 1.52x / 1.25x at batch 8: a batch-1 decode is a
+skinny GEMV with little for a thread pool to divide, while a wide batch is a real GEMM,
+so batching supplies the parallelism that threading exploits and the two compound.
+
+So the throughput win is real and it stops: returns flatten by batch 16 at FP32 and
+INT8. Which means this scheduler's other job -- deciding who waits -- is still the
+larger half of what it is for. Under an open-loop arrival sweep, batching holds time to
+first token near its unloaded value where one-at-a-time decoding collapses, and past
+saturation the configuration that additionally *limits* how many sequences are resident
+wins again by as much: 71% of requests meeting their targets against 13%.
+`docs/benchmarks.md` has both, and the caveat that a batched-against-serial ratio is
+scaled to the batched policy's own capacity.
 
 Fairness is the part admission already owned
 --------------------------------------------
