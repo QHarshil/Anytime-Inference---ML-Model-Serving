@@ -81,7 +81,7 @@ logging.level = "INFO"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["venv", "runtime_cpp/build"]
+extend-exclude = ["venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "C4"]
