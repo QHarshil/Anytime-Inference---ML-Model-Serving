@@ -122,6 +122,11 @@ SHAPE_MATRIX = ((128, 64), (512, 64), (896, 64), (256, 192))
 # Requests spread over four prompt lengths with the same mean as the primary workload,
 # to put the padding cost from profile_batching.py under load.
 VARIANCE_LENGTHS = (64, 192, 320, 448)
+# Wall-clock ceiling for one point. Generous against the ~200s a slow point takes at
+# the default workload, tight enough that a mis-measured capacity fails in minutes
+# rather than overnight. See `drive` for why a point that overruns is failed rather
+# than truncated.
+DEFAULT_POINT_BUDGET_S = 900.0
 
 
 @dataclass
@@ -281,6 +286,7 @@ def drive(
     policy: str,
     utilisation: float,
     workload: str,
+    budget_s: float = DEFAULT_POINT_BUDGET_S,
 ) -> DriveResult:
     """Release each request at its arrival time and step the scheduler in between.
 
@@ -291,6 +297,14 @@ def drive(
 
     While nothing is resident the driver sleeps to the next arrival rather than
     spinning, so an idle interval costs wall time and not CPU.
+
+    `budget_s` bounds how long one point may take. A point's duration is
+    `requests / (utilisation * capacity)` and capacity is *measured*, so a capacity
+    that comes out low makes the arrival window grow without anything noticing: one
+    run took 9h34m against a 28-minute predecessor because of it. Exceeding the
+    budget raises rather than truncating the point, because a partial point is a
+    latency distribution missing its slowest requests -- which is the half that
+    matters -- and reporting it would be worse than not measuring.
     """
     arrival_of: dict[str, float] = {}
     token_times: dict[str, list[float]] = defaultdict(list)
@@ -305,6 +319,15 @@ def drive(
     submitted = 0
     while submitted < len(requests) or not scheduler.idle():
         elapsed = (time.perf_counter() - origin) * 1000.0
+        if elapsed > budget_s * 1000.0:
+            raise SystemExit(
+                f"{policy} at rho={utilisation} on {workload} exceeded its "
+                f"{budget_s:.0f}s budget with {submitted}/{len(requests)} submitted "
+                f"and {scheduler.waiting} waiting. A point's length is "
+                f"requests / (rho * measured capacity), so a capacity measured far "
+                f"below the truth stretches it without bound. Re-measure capacity, or "
+                f"raise --point-budget-s if this workload genuinely needs longer."
+            )
         while submitted < len(requests) and arrivals[submitted] * 1000.0 <= elapsed:
             request = requests[submitted]
             scheduler.submit(request)
@@ -692,6 +715,7 @@ def run_point(
     cost: CacheCost | None,
     seed: int,
     intra_op_threads: int = 1,
+    budget_s: float = DEFAULT_POINT_BUDGET_S,
 ) -> tuple[SweepRow, list[RequestOutcome], DriveResult]:
     """One policy at one utilisation, over its own fresh arena."""
     offered_rps = utilisation * capacity_rps
@@ -727,6 +751,7 @@ def run_point(
             policy=policy.name,
             utilisation=utilisation,
             workload=workload.label,
+            budget_s=budget_s,
         )
     row = summarise(
         result,
@@ -759,6 +784,15 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--block-tokens", type=int, default=DEFAULT_BLOCK_TOKENS)
     parser.add_argument("--max-context", type=int, default=DEFAULT_MAX_CONTEXT)
+    parser.add_argument(
+        "--point-budget-s",
+        type=float,
+        default=DEFAULT_POINT_BUDGET_S,
+        help=(
+            "Wall-clock ceiling for one point, after which the run fails rather than "
+            f"continuing (default {DEFAULT_POINT_BUDGET_S:.0f})"
+        ),
+    )
     parser.add_argument(
         "--intra-op-threads",
         type=int,
@@ -909,6 +943,7 @@ def main() -> int:
                 cost=cost,
                 seed=args.seed,
                 intra_op_threads=args.intra_op_threads,
+                budget_s=args.point_budget_s,
             )
             rows.append(row)
             outcomes.extend(per_request)
@@ -969,6 +1004,7 @@ def main() -> int:
                 cost=cost,
                 seed=args.seed,
                 intra_op_threads=args.intra_op_threads,
+                budget_s=args.point_budget_s,
             )
             shape_rows.append(row)
             outcomes.extend(per_request)
@@ -1019,6 +1055,7 @@ def main() -> int:
             cost=cost,
             seed=args.seed,
             intra_op_threads=args.intra_op_threads,
+            budget_s=args.point_budget_s,
         )
         shape_rows.append(row)
         outcomes.extend(per_request)

@@ -336,6 +336,69 @@ def test_the_driver_waits_for_an_arrival_rather_than_draining_a_backlog(decoder_
 
 
 @requires_extension
+def test_a_point_that_overruns_its_budget_fails_rather_than_running_on(decoder_graph):
+    """A point's length depends on a measured capacity, so it can grow without bound.
+
+    Duration is `requests / (rho * capacity)` and capacity is measured, not assumed.
+    A capacity that comes out far below the truth stretches the arrival window with
+    nothing to notice: one run took 9h34m against a 28-minute predecessor before it
+    was killed by hand. The budget turns that into a failure with a diagnostic.
+
+    Failing rather than truncating is deliberate. A truncated point is a latency
+    distribution missing its slowest requests, which is the half a scheduler is
+    judged on, so a short point would read *better* than an honest one.
+    """
+    with DecoderClient(
+        decoder_graph,
+        block_tokens=BLOCK_TOKENS,
+        num_blocks=32,
+        max_context_tokens=FIXTURE_CONTEXT,
+    ) as client:
+        scheduler = ContinuousBatchScheduler(client, max_batch_size=2)
+        workload = WorkloadSpec(label="fixed", prompt_tokens=8, max_new_tokens=2, requests=2)
+        with pytest.raises(SystemExit, match="exceeded its"):
+            drive(
+                scheduler,
+                build_requests(workload, vocab=FIXTURE_VOCAB, deadline_ms=1e6, seed=7),
+                # The second request arrives well past a budget of a tenth of a second.
+                [0.0, 5.0],
+                policy="batched-2",
+                utilisation=0.5,
+                workload="fixed",
+                budget_s=0.1,
+            )
+
+
+@requires_extension
+def test_a_point_inside_its_budget_is_untouched_by_the_guard(decoder_graph):
+    """The guard must not truncate an honest point, which is the failure that would hide.
+
+    Same shape as the overrun case with a budget the run comfortably meets, so a guard
+    that fired on elapsed time regardless would show up here rather than as quietly
+    missing requests in a sweep.
+    """
+    with DecoderClient(
+        decoder_graph,
+        block_tokens=BLOCK_TOKENS,
+        num_blocks=32,
+        max_context_tokens=FIXTURE_CONTEXT,
+    ) as client:
+        scheduler = ContinuousBatchScheduler(client, max_batch_size=2)
+        workload = WorkloadSpec(label="fixed", prompt_tokens=8, max_new_tokens=2, requests=2)
+        result = drive(
+            scheduler,
+            build_requests(workload, vocab=FIXTURE_VOCAB, deadline_ms=1e6, seed=7),
+            [0.0, 0.2],
+            policy="batched-2",
+            utilisation=0.5,
+            workload="fixed",
+            budget_s=60.0,
+        )
+    assert len(result.outcomes) == 2
+    assert all(outcome.completed for outcome in result.outcomes)
+
+
+@requires_extension
 def test_time_to_first_token_is_measured_from_arrival(decoder_graph):
     """Not from the start of the run, which is a different number for a late arrival.
 

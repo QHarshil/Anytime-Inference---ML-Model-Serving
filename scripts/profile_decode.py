@@ -53,7 +53,11 @@ from pathlib import Path
 
 import numpy as np
 
-from anytime_serving.serving.decoder import DecoderClient, GenerationRequest
+from anytime_serving.serving.decoder import (  # noqa: E402
+    DEFAULT_INTRA_OP_THREADS,
+    DecoderClient,
+    GenerationRequest,
+)
 from anytime_serving.serving.onnx_runtime import extension_available, load_extension
 from anytime_serving.utils.logger import get_logger
 
@@ -83,11 +87,28 @@ DEFAULT_BLOCK_TOKENS = 64
 # with room to grow, at 108 MB. The measurement is single-sequence, so a larger pool
 # would only mean a longer memset at startup.
 DEFAULT_BLOCKS = 24
-# How far time inside Session::Run may differ between the arena path and contiguous
-# KV before the run is failed. They run the same graph on the same shapes, so the only
-# reason to differ is scheduler noise. Same bound as profile_variants.py, chosen for
-# the same reason: loose enough not to fire on that, tight enough that anything
-# structural trips it.
+# How much *slower* the arena path may be inside Session::Run than contiguous KV before
+# the run is failed. Same bound as profile_variants.py, loose enough not to fire on
+# scheduler noise and tight enough that anything structural trips it.
+#
+# One-sided, and that is a correction rather than a loosening. The check used to be
+# two-sided on the premise that the two paths run the same graph on the same shapes, so
+# the only reason to differ was noise. That premise is false once the session is
+# threaded: measured over three runs, INT4 at 512 and 960 cached tokens comes out at
+# 0.83-0.88x, the arena being consistently *faster*, while the arena's own Run time is
+# stable to 2% and the contiguous side is the one that moves. The cause is where the
+# bytes were: the gather writes the staging buffer immediately before Run, leaving it
+# hot in cache, while the contiguous path feeds freshly allocated numpy arrays that are
+# cold. It shows at INT4 and not at FP32 or INT8 because INT4's weights are compressed,
+# so cache traffic is a much larger share of what the step reads.
+#
+# The direction that still means a fault is the arena being slower: identical shapes
+# cannot make the graph do more work, so extra time there would mean the arena is
+# handing it something other than what it looks like. Being faster has a measured
+# explanation, and token identity is asserted separately and unconditionally, so
+# failing on it would be failing on a cache effect. Widening the bound to 0.35 instead
+# would have hidden the asymmetry and let a genuine regression through in the other
+# direction.
 GRAPH_AGREEMENT_TOLERANCE = 0.15
 
 
@@ -150,8 +171,17 @@ class DecodeMeasurement:
     while the gather itself moved 0.03 ms.
 
     The contiguous path is still measured, for `graph_run_agreement`: both paths hand
-    the same graph the same shapes, so time inside Session::Run must match. If it does
-    not, the arena is feeding the graph something different from what it looks like.
+    the same graph the same shapes, so the arena cannot make Session::Run do more work.
+    If it takes materially longer, the arena is feeding the graph something different
+    from what it looks like.
+
+    The other direction is not a fault and is not treated as one. The arena comes out
+    0.83-0.88x at INT4 with a full cache, reproducibly, because the gather leaves the
+    staging buffer hot in cache while the contiguous path feeds cold, freshly allocated
+    numpy arrays. See `GRAPH_AGREEMENT_TOLERANCE`. This does not make the arena a
+    speedup -- `arena_cost_pct` is the honest statement of what it costs, and it is
+    positive -- it means the comparison is not the controlled experiment its name
+    suggests once the session is threaded.
     """
 
     precision: str
@@ -490,10 +520,17 @@ def profile_precision(
     block_tokens: int,
     num_blocks: int,
     max_context: int,
+    intra_op_threads: int,
 ) -> tuple[PrecisionProfile, list[str]]:
     """Every measurement for one precision. Returns it plus any divergences found."""
     extension = load_extension()
-    engine = extension.Engine([(precision, str(graph))])
+    # Same thread count as the session below. This engine is the contiguous-KV
+    # reference the arena is cross-checked against, and the check is on time inside
+    # Session::Run as well as on tokens -- so a reference running on a different
+    # number of threads makes the arena look 0.38-0.82x its cost and fails the run.
+    # Engine's own default is one thread, deliberately, because the encoder pool
+    # depends on it; it is the caller's job to match them here.
+    engine = extension.Engine([(precision, str(graph))], intra_op_threads=intra_op_threads)
     profile = PrecisionProfile(
         precision=precision,
         graph=graph.name,
@@ -507,6 +544,7 @@ def profile_precision(
         block_tokens=block_tokens,
         num_blocks=num_blocks,
         max_context_tokens=max_context,
+        intra_op_threads=intra_op_threads,
     ) as client:
         geometry = client.geometry
         # The width a resume would run at, which is what the recompute rate has to be
@@ -603,7 +641,7 @@ def profile_precision(
                         f"{pass_index}: the block-allocated cache emitted {mine[:6]} "
                         f"and contiguous KV emitted {theirs[:6]}"
                     )
-            if abs(measurement.graph_run_agreement - 1.0) > GRAPH_AGREEMENT_TOLERANCE:
+            if measurement.graph_run_agreement - 1.0 > GRAPH_AGREEMENT_TOLERANCE:
                 divergences.append(
                     f"  {precision} at {cached_tokens} cached tokens: Session::Run took "
                     f"{measurement.run_p50_ms:.3f} ms through the arena and "
@@ -637,12 +675,45 @@ def profile_precision(
     return profile, divergences
 
 
+def host_metadata(intra_op_threads: int) -> dict[str, object]:
+    """What the run was taken on, including the settings that change the numbers.
+
+    `intra_op_num_threads` is read from the run rather than written as a constant. It
+    was a hardcoded 1, which stayed true only for as long as the thread count could
+    not change; once it could, the field would have described a configuration this
+    file had not been measured under. The cost model fitted here is consumed by
+    `run_decode_sweep.py`, so a wrong thread count would not merely be a wrong
+    annotation -- it would have the admission policy reasoning about a different
+    machine from the one it is running on.
+    """
+    return {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+        "backend": "extension",
+        "onnxruntime": load_extension().onnxruntime_version(),
+        "intra_op_num_threads": intra_op_threads,
+        "batch_size": 1,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="gpt2", help="Model short name used in the graph paths")
     parser.add_argument("--model-dir", type=Path, default=Path("models/onnx"))
     parser.add_argument("--precisions", nargs="+", default=list(PRECISIONS), choices=PRECISIONS)
     parser.add_argument("--output", type=Path, default=Path("results/decode_profiles.json"))
+    parser.add_argument(
+        "--intra-op-threads",
+        type=int,
+        default=DEFAULT_INTRA_OP_THREADS,
+        help=(
+            "Threads ONNX Runtime may use inside one operator. Defaults to what the "
+            "serving path uses: the cost model fitted here is what run_decode_sweep.py "
+            "hands to BlockAdmission, and a model fitted under a different thread count "
+            f"describes a different machine (default {DEFAULT_INTRA_OP_THREADS})"
+        ),
+    )
     parser.add_argument(
         "--repeats",
         type=int,
@@ -718,6 +789,7 @@ def main() -> int:
             block_tokens=args.block_tokens,
             num_blocks=args.blocks,
             max_context=args.max_context,
+            intra_op_threads=args.intra_op_threads,
         )
         profiles.append(profile)
         divergences.extend(found)
@@ -736,15 +808,7 @@ def main() -> int:
         )
 
     payload = {
-        "host": {
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "python": platform.python_version(),
-            "backend": "extension",
-            "onnxruntime": load_extension().onnxruntime_version(),
-            "intra_op_num_threads": 1,
-            "batch_size": 1,
-        },
+        "host": host_metadata(args.intra_op_threads),
         "model": args.model,
         "measurement_passes": repeats,
         "decode_steps_per_pass": args.decode_steps,

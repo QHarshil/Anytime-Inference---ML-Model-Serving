@@ -20,9 +20,25 @@ from profile_decode import (  # noqa: E402
     PrefillMeasurement,
     Spread,
     fit_cache_cost,
+    host_metadata,
 )
 
 from anytime_serving.serving.kv_admission import CacheCost  # noqa: E402
+from anytime_serving.serving.onnx_runtime import extension_available  # noqa: E402
+
+
+@pytest.mark.skipif(not extension_available(), reason="anytime_runtime is not built")
+@pytest.mark.parametrize("threads", [1, 8])
+def test_the_recorded_host_reports_the_thread_count_the_fit_was_taken_under(threads):
+    """The fit here becomes BlockAdmission's cost model, so this field is load-bearing.
+
+    It was written as a literal 1, which stayed true only while the thread count could
+    not change. Once it could, a cost model fitted at eight threads and labelled as one
+    would have the eviction policy reasoning about a machine that does not exist --
+    against this project's own rule that a cost model is fitted from the configuration
+    it describes.
+    """
+    assert host_metadata(threads)["intra_op_num_threads"] == threads
 
 
 def _decode(cached_tokens: float, tpot_ms: float) -> DecodeMeasurement:
