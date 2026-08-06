@@ -81,7 +81,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from anytime_serving.serving.batch_scheduler import ContinuousBatchScheduler  # noqa: E402
-from anytime_serving.serving.decoder import DecoderClient, GenerationRequest  # noqa: E402
+from anytime_serving.serving.decoder import (  # noqa: E402
+    DEFAULT_INTRA_OP_THREADS,
+    DecoderClient,
+    GenerationRequest,
+)
 from anytime_serving.serving.kv_admission import BlockAdmission, CacheCost  # noqa: E402
 from anytime_serving.serving.onnx_runtime import extension_available, load_extension  # noqa: E402
 from anytime_serving.serving.server import poisson_arrivals  # noqa: E402
@@ -498,6 +502,24 @@ def _cost_model(path: Path, precision: str) -> CacheCost:
     )
 
 
+def host_metadata(intra_op_threads: int) -> dict[str, object]:
+    """What the run was taken on, including the settings that change the numbers.
+
+    `intra_op_num_threads` is read from the run rather than written as a constant. It
+    was a hardcoded 1 while the thread count was not configurable, and leaving it that
+    way once it was would have made every recorded artefact describe a configuration
+    it had not been measured under.
+    """
+    return {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+        "backend": "extension",
+        "onnxruntime": load_extension().onnxruntime_version(),
+        "intra_op_num_threads": intra_op_threads,
+    }
+
+
 def _client(
     graph: Path,
     *,
@@ -506,6 +528,7 @@ def _client(
     block_tokens: int,
     max_context: int,
     cost: CacheCost | None,
+    intra_op_threads: int = 1,
 ) -> DecoderClient:
     blocks = blocks_for(
         sequences=policy.resident_capacity, tokens_each=tokens_each, block_tokens=block_tokens
@@ -521,6 +544,7 @@ def _client(
         num_blocks=blocks,
         admission=admission,
         max_context_tokens=max_context,
+        intra_op_threads=intra_op_threads,
     )
 
 
@@ -532,6 +556,7 @@ def measure_reference(
     block_tokens: int,
     max_context: int,
     deadline_ms: float,
+    intra_op_threads: int = 1,
 ) -> tuple[float, float]:
     """Time to first token and time per output token for one request, alone.
 
@@ -548,6 +573,7 @@ def measure_reference(
         block_tokens=block_tokens,
         max_context=max_context,
         cost=None,
+        intra_op_threads=intra_op_threads,
     ) as client:
         requests = build_requests(
             WorkloadSpec(
@@ -590,6 +616,7 @@ def measure_capacity(
     max_context: int,
     deadline_ms: float,
     requests: int,
+    intra_op_threads: int = 1,
 ) -> float:
     """Completion rate with a full backlog: the capacity the sweep is expressed against.
 
@@ -606,6 +633,7 @@ def measure_capacity(
         block_tokens=block_tokens,
         max_context=max_context,
         cost=None,
+        intra_op_threads=intra_op_threads,
     ) as client:
         spec = WorkloadSpec(
             label="capacity",
@@ -627,10 +655,16 @@ def measure_capacity(
     return completed / max(result.makespan_s, 1e-9)
 
 
-def probe_vocabulary(graph: Path, *, block_tokens: int, max_context: int) -> int:
+def probe_vocabulary(
+    graph: Path, *, block_tokens: int, max_context: int, intra_op_threads: int = 1
+) -> int:
     """The width of the logits row, learned by running one throwaway prefill."""
     with DecoderClient(
-        graph, block_tokens=block_tokens, num_blocks=8, max_context_tokens=max_context
+        graph,
+        block_tokens=block_tokens,
+        num_blocks=8,
+        max_context_tokens=max_context,
+        intra_op_threads=intra_op_threads,
     ) as client:
         request_id = "vocab-probe"
         client.admit(
@@ -657,6 +691,7 @@ def run_point(
     tpot_slo_ms: float,
     cost: CacheCost | None,
     seed: int,
+    intra_op_threads: int = 1,
 ) -> tuple[SweepRow, list[RequestOutcome], DriveResult]:
     """One policy at one utilisation, over its own fresh arena."""
     offered_rps = utilisation * capacity_rps
@@ -682,6 +717,7 @@ def run_point(
         block_tokens=block_tokens,
         max_context=max_context,
         cost=cost,
+        intra_op_threads=intra_op_threads,
     ) as client:
         scheduler = ContinuousBatchScheduler(client, max_batch_size=policy.max_batch_size)
         result = drive(
@@ -723,6 +759,17 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--block-tokens", type=int, default=DEFAULT_BLOCK_TOKENS)
     parser.add_argument("--max-context", type=int, default=DEFAULT_MAX_CONTEXT)
+    parser.add_argument(
+        "--intra-op-threads",
+        type=int,
+        default=DEFAULT_INTRA_OP_THREADS,
+        help=(
+            "Threads ONNX Runtime may use inside one operator. Defaults to what the "
+            "serving path uses. Capacity is measured under the same setting as the "
+            "sweep, so a load fraction stays a fraction of what this configuration "
+            f"can actually do (default {DEFAULT_INTRA_OP_THREADS})"
+        ),
+    )
     parser.add_argument("--ttft-slo-ms", type=float, default=DEFAULT_TTFT_SLO_MS)
     parser.add_argument("--tpot-slo-ms", type=float, default=DEFAULT_TPOT_SLO_MS)
     parser.add_argument("--seed", type=int, default=0)
@@ -739,6 +786,8 @@ def main() -> int:
             "anytime_runtime is not available. Batched decoding is the extension, so "
             "there is nothing to sweep without it. Build it with:\n    pip install -e ."
         )
+    if args.intra_op_threads < 1:
+        raise SystemExit("--intra-op-threads must be at least 1")
 
     directory = args.model_dir / f"decoder_{args.model}_{args.precision}"
     if not directory.is_dir():
@@ -771,7 +820,12 @@ def main() -> int:
     # sequences the SLO does not care about.
     deadline_ms = args.ttft_slo_ms + args.new_tokens * args.tpot_slo_ms
     cost = _cost_model(args.decode_profiles, args.precision)
-    vocab = probe_vocabulary(graph, block_tokens=args.block_tokens, max_context=args.max_context)
+    vocab = probe_vocabulary(
+        graph,
+        block_tokens=args.block_tokens,
+        max_context=args.max_context,
+        intra_op_threads=args.intra_op_threads,
+    )
 
     policies = (
         PolicySpec("serial", max_batch_size=1, resident_capacity=1, use_admission=False),
@@ -806,6 +860,7 @@ def main() -> int:
         block_tokens=args.block_tokens,
         max_context=args.max_context,
         deadline_ms=deadline_ms,
+        intra_op_threads=args.intra_op_threads,
     )
     LOGGER.info(
         "Unloaded: %.1f ms to first token, %.2f ms a token. SLO is %.0f / %.0f ms, "
@@ -825,6 +880,7 @@ def main() -> int:
         max_context=args.max_context,
         deadline_ms=deadline_ms,
         requests=max(args.batch * 2, 8),
+        intra_op_threads=args.intra_op_threads,
     )
     LOGGER.info(
         "Capacity with a full backlog under %s: %.3f completions/s. Load below is a "
@@ -852,6 +908,7 @@ def main() -> int:
                 tpot_slo_ms=args.tpot_slo_ms,
                 cost=cost,
                 seed=args.seed,
+                intra_op_threads=args.intra_op_threads,
             )
             rows.append(row)
             outcomes.extend(per_request)
@@ -895,6 +952,7 @@ def main() -> int:
                 max_context=args.max_context,
                 deadline_ms=args.ttft_slo_ms + new_tokens * args.tpot_slo_ms,
                 requests=max(args.batch * 2, 8),
+                intra_op_threads=args.intra_op_threads,
             )
             row, per_request, _ = run_point(
                 graph,
@@ -910,6 +968,7 @@ def main() -> int:
                 tpot_slo_ms=args.tpot_slo_ms,
                 cost=cost,
                 seed=args.seed,
+                intra_op_threads=args.intra_op_threads,
             )
             shape_rows.append(row)
             outcomes.extend(per_request)
@@ -943,6 +1002,7 @@ def main() -> int:
             max_context=args.max_context,
             deadline_ms=deadline_ms,
             requests=max(args.batch * 2, 8),
+            intra_op_threads=args.intra_op_threads,
         )
         row, per_request, _ = run_point(
             graph,
@@ -958,6 +1018,7 @@ def main() -> int:
             tpot_slo_ms=args.tpot_slo_ms,
             cost=cost,
             seed=args.seed,
+            intra_op_threads=args.intra_op_threads,
         )
         shape_rows.append(row)
         outcomes.extend(per_request)
@@ -974,14 +1035,7 @@ def main() -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
-        "host": {
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "python": platform.python_version(),
-            "backend": "extension",
-            "onnxruntime": load_extension().onnxruntime_version(),
-            "intra_op_num_threads": 1,
-        },
+        "host": host_metadata(args.intra_op_threads),
         "model": args.model,
         "precision": args.precision,
         "requests_per_point": requests,

@@ -52,9 +52,12 @@ STEPS = 8
 SYNTHETIC_GEOMETRY = {"layers": LAYERS, "kv_heads": KV_HEADS, "head_dim": HEAD_DIM}
 
 
-def _session(graph, *, block_tokens=4, num_blocks=64):
+def _session(graph, *, block_tokens=4, num_blocks=64, intra_op_threads=1):
     return load_extension().DecoderSession(
-        str(graph), block_tokens=block_tokens, num_blocks=num_blocks
+        str(graph),
+        block_tokens=block_tokens,
+        num_blocks=num_blocks,
+        intra_op_threads=intra_op_threads,
     )
 
 
@@ -390,7 +393,7 @@ def test_extend_on_an_unknown_sequence_raises(decoder_graph):
 # moves those by 6e-02 to 4e-01 relative -- four orders above the bound below.
 
 
-def _prefilled(graph, names, lengths, *, num_blocks=256, slack=8):
+def _prefilled(graph, names, lengths, *, num_blocks=256, slack=8, intra_op_threads=1):
     """Open and prefill one sequence per name, each with a distinct prompt.
 
     `slack` is how many token positions beyond the prompt each sequence reserves.
@@ -398,7 +401,7 @@ def _prefilled(graph, names, lengths, *, num_blocks=256, slack=8):
     step has to take a block -- which is how the all-or-nothing test arranges a
     batch that cannot fit without any single row being at fault.
     """
-    session = _session(graph, num_blocks=num_blocks)
+    session = _session(graph, num_blocks=num_blocks, intra_op_threads=intra_op_threads)
     prompts = {}
     for index, (name, length) in enumerate(zip(names, lengths, strict=True)):
         prompt = [(index * 7 + step) % (VOCAB - 2) + 1 for step in range(length)]
@@ -453,6 +456,72 @@ def test_a_batched_decode_step_matches_the_same_sequences_run_alone(decoder_grap
             assert result.rows[index].length == len(prompts[name]) + step + 1
             assert alone.length == result.rows[index].length
         feed = [int(np.argmax(np.asarray(row.logits))) % (VOCAB - 2) + 1 for row in result.rows]
+
+
+@pytest.mark.parametrize("threads", [2, 4])
+@pytest.mark.parametrize(
+    "lengths",
+    [
+        pytest.param([6, 6, 6, 6], id="uniform"),
+        pytest.param([13, 9, 5, 2], id="mixed"),
+        pytest.param([8], id="batch-of-one"),
+    ],
+)
+def test_a_threaded_session_decodes_the_same_batch_as_a_serial_one(decoder_graph, lengths, threads):
+    """Thread count is a session option, so it must not change what comes out.
+
+    ONNX Runtime partitions an operator across its intra-op threads, and a different
+    partition sums a reduction in a different order. So the bar is the same one
+    batching itself is held to and for the same reason: token identity always,
+    float32 agreement for the values. Asserting bitwise here would be the mistake
+    `Hold cross-build comparisons to float32` already made once.
+
+    Four steps rather than one, so the cache a threaded run wrote is what the next
+    step reads back.
+    """
+    names = [f"s{i}" for i in range(len(lengths))]
+    threaded, _ = _prefilled(decoder_graph, names, lengths, intra_op_threads=threads)
+    serial, _ = _prefilled(decoder_graph, [f"t{i}" for i in range(len(lengths))], lengths)
+    serial_names = [f"t{i}" for i in range(len(lengths))]
+
+    feed = [(index * 3 + 5) % (VOCAB - 2) + 1 for index in range(len(lengths))]
+    for step in range(4):
+        many = threaded.decode_batch(names, feed)
+        one = serial.decode_batch(serial_names, feed)
+        for index in range(len(lengths)):
+            got = np.asarray(many.rows[index].logits)
+            want = np.asarray(one.rows[index].logits)
+            assert int(np.argmax(got)) == int(np.argmax(want)), (
+                f"step {step}, row {index}: {threads} threads and 1 picked different tokens"
+            )
+            np.testing.assert_allclose(
+                got,
+                want,
+                rtol=CROSS_BUILD_RTOL,
+                atol=CROSS_BUILD_ATOL,
+                err_msg=f"step {step}, row {index} differs by more than float32 accumulation error",
+            )
+        feed = [int(np.argmax(np.asarray(row.logits))) % (VOCAB - 2) + 1 for row in many.rows]
+
+
+def test_a_threaded_session_prefills_the_same_cache_as_a_serial_one(decoder_graph):
+    """Prefill is the wide GEMM, so it is where a thread partition differs most.
+
+    Separate from the decode case because a prefill chunk runs a 256-wide sequence
+    dimension against decode's 1, and those are different enough shapes that ORT may
+    parallelise one and not the other.
+    """
+    prompt = [(step * 5) % (VOCAB - 2) + 1 for step in range(40)]
+    threaded = _session(decoder_graph, intra_op_threads=4)
+    serial = _session(decoder_graph)
+    for session in (threaded, serial):
+        assert session.open("a", 64) is True
+        session.prefill("a", prompt, chunk_tokens=16)
+
+    got = np.asarray(threaded.decode("a", 3).logits)
+    want = np.asarray(serial.decode("a", 3).logits)
+    assert int(np.argmax(got)) == int(np.argmax(want))
+    np.testing.assert_allclose(got, want, rtol=CROSS_BUILD_RTOL, atol=CROSS_BUILD_ATOL)
 
 
 def test_padding_is_cleared_rather_than_left_from_the_previous_step(decoder_graph):

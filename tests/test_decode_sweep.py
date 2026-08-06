@@ -30,6 +30,7 @@ from run_decode_sweep import (  # noqa: E402
     blocks_for,
     build_requests,
     drive,
+    host_metadata,
     meets_slo,
     summarise,
 )
@@ -46,6 +47,18 @@ requires_extension = pytest.mark.skipif(
 BLOCK_TOKENS = 4
 FIXTURE_VOCAB = 64
 FIXTURE_CONTEXT = 64
+
+
+@requires_extension
+@pytest.mark.parametrize("threads", [1, 4])
+def test_the_recorded_host_reports_the_thread_count_the_run_used(threads):
+    """Capacity is measured under this setting, so the sweep is only readable with it.
+
+    Every load figure here is a fraction of measured capacity. Capacity measured with
+    one thread and reported beside a metadata block claiming another would make the
+    whole sweep describe a machine it never ran on.
+    """
+    assert host_metadata(threads)["intra_op_num_threads"] == threads
 
 
 def _outcome(

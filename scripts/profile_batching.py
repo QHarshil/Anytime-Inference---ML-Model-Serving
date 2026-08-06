@@ -87,7 +87,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from profile_decode import Spread  # noqa: E402
 
 from anytime_serving.serving.batch_scheduler import ContinuousBatchScheduler  # noqa: E402
-from anytime_serving.serving.decoder import DecoderClient, GenerationRequest  # noqa: E402
+from anytime_serving.serving.decoder import (  # noqa: E402
+    DEFAULT_INTRA_OP_THREADS,
+    DecoderClient,
+    GenerationRequest,
+)
 from anytime_serving.serving.onnx_runtime import extension_available, load_extension  # noqa: E402
 from anytime_serving.utils.logger import get_logger  # noqa: E402
 
@@ -782,6 +786,24 @@ def feasible(cached_tokens: int, batch_size: int, steps: int, max_context: int) 
     return cached_tokens + batch_size + steps + 4 <= max_context
 
 
+def host_metadata(intra_op_threads: int) -> dict[str, object]:
+    """What the run was taken on, including the settings that change the numbers.
+
+    `intra_op_num_threads` is read from the run rather than written as a constant. It
+    was a hardcoded 1 while the thread count was not configurable, and leaving it that
+    way once it was would have made every recorded artefact describe a configuration
+    it had not been measured under.
+    """
+    return {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+        "backend": "extension",
+        "onnxruntime": load_extension().onnxruntime_version(),
+        "intra_op_num_threads": intra_op_threads,
+    }
+
+
 def profile_precision(
     precision: str,
     graph: Path,
@@ -795,6 +817,7 @@ def profile_precision(
     max_context: int,
     padding_batch: int,
     trace_settings: tuple[int, ...],
+    intra_op_threads: int,
 ) -> tuple[PrecisionProfile, list[str]]:
     """Every measurement for one precision. Returns it plus any divergence found."""
     profile = PrecisionProfile(
@@ -809,6 +832,7 @@ def profile_precision(
         block_tokens=block_tokens,
         num_blocks=num_blocks,
         max_context_tokens=max_context,
+        intra_op_threads=intra_op_threads,
     ) as client:
         geometry = client.geometry
         LOGGER.info(
@@ -988,6 +1012,19 @@ def main() -> int:
         help="Arena blocks; 0 derives it from the widest configuration in the sweep",
     )
     parser.add_argument("--max-context", type=int, default=DEFAULT_MAX_CONTEXT)
+    parser.add_argument(
+        "--intra-op-threads",
+        type=int,
+        default=DEFAULT_INTRA_OP_THREADS,
+        help=(
+            "Threads ONNX Runtime may use inside one operator. Defaults to what the "
+            "serving path uses, so a recorded run describes the configuration that "
+            "would actually serve. The gather, the padding and the scatter are this "
+            "process's own memcpy loops and stay serial whatever this is set to, so "
+            "they double as a drift control: they should not move with it "
+            f"(default {DEFAULT_INTRA_OP_THREADS})"
+        ),
+    )
     parser.add_argument("--padding-batch", type=int, default=PADDING_BATCH)
     parser.add_argument(
         "--quick", action="store_true", help="Fewer batch widths, cached lengths and passes"
@@ -1002,6 +1039,8 @@ def main() -> int:
         )
     if args.repeats < 1:
         raise SystemExit("--repeats must be at least 1")
+    if args.intra_op_threads < 1:
+        raise SystemExit("--intra-op-threads must be at least 1")
 
     batch_sizes = tuple(QUICK_BATCH_SIZES if args.quick else args.batch_sizes)
     cached = tuple(QUICK_CACHED if args.quick else args.cached)
@@ -1063,6 +1102,7 @@ def main() -> int:
             max_context=args.max_context,
             padding_batch=args.padding_batch,
             trace_settings=trace_settings,
+            intra_op_threads=args.intra_op_threads,
         )
         profiles.append(profile)
         divergences.extend(found)
@@ -1080,14 +1120,7 @@ def main() -> int:
         )
 
     payload = {
-        "host": {
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "python": platform.python_version(),
-            "backend": "extension",
-            "onnxruntime": load_extension().onnxruntime_version(),
-            "intra_op_num_threads": 1,
-        },
+        "host": host_metadata(args.intra_op_threads),
         "model": args.model,
         "measurement_passes": repeats,
         "measured_steps_per_pass": args.steps,

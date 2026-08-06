@@ -32,6 +32,7 @@ from profile_batching import (  # noqa: E402
     blocks_for_sweep,
     feasible,
     fit_step_split,
+    host_metadata,
     measure_scaling_point,
     padding_regimes,
     record_alternation,
@@ -295,6 +296,18 @@ def test_the_guard_compares_the_prefix_both_runs_produced():
     # Nothing to compare is not a disagreement; a run that emitted nothing is caught
     # by the step count instead.
     assert not tokens_disagree([], [1, 2, 3])
+
+
+@requires_extension
+@pytest.mark.parametrize("threads", [1, 4])
+def test_the_recorded_host_reports_the_thread_count_the_run_used(threads):
+    """A settings field written as a constant describes a run that may not have happened.
+
+    This one was literally `"intra_op_num_threads": 1` while the count was fixed at 1,
+    and it stayed correct only for as long as nothing could change it. Reading it from
+    the run is what keeps the artefact a record rather than an assumption.
+    """
+    assert host_metadata(threads)["intra_op_num_threads"] == threads
 
 
 # --- against the real scheduler ----------------------------------------------

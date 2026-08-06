@@ -118,9 +118,14 @@ struct BatchStepResult {
 class DecoderSession {
 public:
     // `num_blocks` fixes the arena: the cache never grows past it, which is what
-    // makes admission a decision rather than a hope. Thread counts default to one
-    // of each, matching Engine, so a measurement here is comparable with one taken
-    // through the encoder path.
+    // makes admission a decision rather than a hope.
+    //
+    // Thread counts default to one of each, which is the neutral mechanism default
+    // rather than a recommendation. On the encoder path that pin is load-bearing --
+    // N single-threaded workers are N independent servers, which is what makes the
+    // M/M/c model valid. The decoder lane has no pool, so the reason does not carry
+    // over, and serving.DecoderClient overrides this with a measured count. Policy
+    // in Python, mechanism here.
     DecoderSession(const std::string& path, int block_tokens = kDefaultBlockTokens,
                    std::size_t num_blocks = 256, int intra_op_threads = 1,
                    int inter_op_threads = 1);

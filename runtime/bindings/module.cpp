@@ -299,10 +299,13 @@ PYBIND11_MODULE(anytime_runtime, module) {
         "them would produce a number that reads as per-sequence and is not; "
         "len(rows) is the divisor for an average, stated as an average.\n\n"
         "Batching a decode step pays, and how much depends on how full the caches "
-        "are. Measured on GPT-2 at FP32, Run alone, batch 8 against eight separate "
-        "runs: 2.79x at 128 cached tokens, 1.72x at 512 and 1.36x at 960. Only the "
-        "cache-independent term of a decode step amortises across a batch; the "
-        "per-cached-token term is per sequence.")
+        "are: only the cache-independent term of a step amortises across a batch, "
+        "while the per-cached-token term is per sequence and grows with the batch's "
+        "total cache. The measured curve lives in docs/benchmarks.md rather than "
+        "here. It is deliberately not quoted in this docstring -- an earlier version "
+        "cited a Run-only probe that measurement through the scheduler later "
+        "overturned by about 20%, and a number embedded in a C++ string literal is "
+        "the last copy anyone thinks to update.")
         .def_readonly("rows", &PyBatchStepResult::rows,
                       "One StepResult per sequence, in the order they were given.")
         .def_readonly("timings", &PyBatchStepResult::timings,

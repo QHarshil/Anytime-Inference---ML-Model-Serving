@@ -16,6 +16,15 @@ this host GPT-2 FP32 prefills a 1024-token prompt in 372.2 ms and then emits eac
 token in 9.5 ms at full context, a factor of 39. A single latency figure would
 describe neither.
 
+Threads
+-------
+
+The session runs with `DEFAULT_INTRA_OP_THREADS` inside one operator rather than the
+encoder's one. See the constant for why the encoder's pin does not carry over here
+and for what it measured; the short version is that the decoder lane is a single
+scheduler over a single arena, so there is no worker pool for a per-worker thread
+budget to protect.
+
 Preemption
 ----------
 
@@ -47,12 +56,32 @@ from .onnx_runtime import load_extension
 LOGGER = get_logger("serving.decoder")
 
 __all__ = [
+    "DEFAULT_INTRA_OP_THREADS",
     "DecoderClient",
     "GenerationRecord",
     "GenerationRequest",
     "Occupancy",
     "StepRecord",
 ]
+
+# Threads ONNX Runtime may use inside one operator on the decoder path.
+#
+# Not one, and deliberately not the core count either. The encoder pins this to one
+# because N workers are then N independent servers, which is what makes the M/M/c
+# model in `admission.py` valid; the decoder lane is one scheduler over one arena
+# with no pool, so that reason does not apply and the pin was never revisited.
+#
+# Measured through `scripts/profile_batching.py` on GPT-2 at FP32, 960 cached tokens,
+# median of three passes and confirmed by a second run on an idle machine: a batch-32
+# step is 1.50x faster at eight threads than at one, and batching's own payoff over
+# stepping one at a time rises from 1.35x to 1.79x, because a batch-1 decode is a
+# skinny GEMV with little to parallelise while a wide batch is a real GEMM. Ten
+# threads is erratic and fourteen -- this host's core count -- is an outright loss at
+# 0.63x, so "use every core" would have been a regression.
+#
+# Eight is therefore a measurement on this host, not a portable constant. Override it
+# per client, and re-measure on different hardware before trusting it there.
+DEFAULT_INTRA_OP_THREADS = 8
 
 
 @dataclass
@@ -243,7 +272,7 @@ class DecoderClient:
         *,
         block_tokens: int | None = None,
         num_blocks: int = 256,
-        intra_op_threads: int = 1,
+        intra_op_threads: int = DEFAULT_INTRA_OP_THREADS,
         inter_op_threads: int = 1,
         admission: BlockAdmission | None = None,
         reserve_full_generation: bool = True,
