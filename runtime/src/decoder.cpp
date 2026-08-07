@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <stdexcept>
 
@@ -34,9 +35,12 @@ std::map<std::string, std::size_t> index_by_name(const std::vector<std::string>&
 }  // namespace
 
 DecoderSession::DecoderSession(const std::string& path, int block_tokens, std::size_t num_blocks,
-                               int intra_op_threads, int inter_op_threads)
+                               int intra_op_threads, int inter_op_threads, int copy_threads,
+                               std::size_t parallel_copy_floor)
     : env_(ORT_LOGGING_LEVEL_WARNING, "anytime_decoder"),
-      memory_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault)) {
+      memory_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault)),
+      copy_pool_(copy_threads),
+      parallel_copy_floor_(parallel_copy_floor) {
     model_ = std::make_unique<Model>(env_, path, intra_op_threads, inter_op_threads);
     derive_geometry(block_tokens);
     pool_ = std::make_unique<BlockPool>(geometry_, num_blocks);
@@ -542,32 +546,59 @@ BatchStepResult DecoderSession::decode_batch(const std::vector<std::string>& ids
         }
     }
 
-    double gather_ms = 0.0;
-    double pad_ms = 0.0;
+    // Allocation first, in one serial pass, so the timed regions below hold copying
+    // and nothing else. It was already outside the timers; hoisting it also settles
+    // any question about two threads growing buffers at the same moment.
     for (std::size_t slot = 0; slot < halves; ++slot) {
-        std::vector<float>& buffer = past_buffers_[slot];
-        if (buffer.size() < wanted) {
-            buffer.resize(wanted);
+        if (past_buffers_[slot].size() < wanted) {
+            past_buffers_[slot].resize(wanted);
         }
+    }
+
+    // Split over slots rather than over rows. Each slot owns its own staging buffer,
+    // so the tasks share nothing at all, and there are layers * 2 of them -- 24 on
+    // GPT-2 -- against a batch that may be 1. Splitting over rows would leave nothing
+    // to divide on the batch sizes where a decode step is cheapest.
+    //
+    // Below the floor the copy is small enough that synchronising costs more than it
+    // saves, so it runs inline. The floor is a measured crossover, not a guess; see
+    // the constant.
+    const std::size_t staged_floats = row_floats * batch;
+    const auto over_slots = [&](const std::function<void(std::size_t)>& body) {
+        if (staged_floats >= parallel_copy_floor_) {
+            copy_pool_.parallel_for(halves, body);
+        } else {
+            for (std::size_t slot = 0; slot < halves; ++slot) {
+                body(slot);
+            }
+        }
+    };
+
+    // Copy and clear are separate passes because they scale with different things:
+    // the copy with the real tokens in the batch, the clear with its length variance.
+    // Keeping them apart is what lets a slow step say which of the two it was paying
+    // for, and pad_ms stays an exact zero when no row is short.
+    const auto gather_start = Clock::now();
+    over_slots([&](std::size_t slot) {
+        float* buffer = past_buffers_[slot].data();
         const int layer = static_cast<int>(slot / 2);
         const KvKind kind = static_cast<KvKind>(slot % 2);
-
-        // Copy and clear are timed apart because they scale with different things:
-        // the copy with the real tokens in the batch, the clear with its length
-        // variance. Both passes stay inside this slot so the buffer is still warm.
-        const auto gather_start = Clock::now();
         for (std::size_t b = 0; b < batch; ++b) {
-            gather(*pool_, *rows[b], layer, kind, past_len[b], buffer.data() + row_floats * b,
-                   max_past);
+            gather(*pool_, *rows[b], layer, kind, past_len[b], buffer + row_floats * b, max_past);
         }
-        const auto gather_end = Clock::now();
-        gather_ms += elapsed_ms(gather_start, gather_end);
-        if (needs_pad) {
+    });
+    const double gather_ms = elapsed_ms(gather_start, Clock::now());
+
+    double pad_ms = 0.0;
+    if (needs_pad) {
+        const auto pad_start = Clock::now();
+        over_slots([&](std::size_t slot) {
+            float* buffer = past_buffers_[slot].data();
             for (std::size_t b = 0; b < batch; ++b) {
-                zero_pad(geometry_, buffer.data() + row_floats * b, past_len[b], max_past);
+                zero_pad(geometry_, buffer + row_floats * b, past_len[b], max_past);
             }
-            pad_ms += elapsed_ms(gather_end, Clock::now());
-        }
+        });
+        pad_ms = elapsed_ms(pad_start, Clock::now());
     }
 
     std::vector<const char*> input_names;

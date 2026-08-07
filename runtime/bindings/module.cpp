@@ -322,13 +322,23 @@ PYBIND11_MODULE(anytime_runtime, module) {
         "decision: open() returns False when there is no room, and a sequence that "
         "outgrows its reservation mid-decode raises CacheExhausted.")
         .def(py::init([](const std::string& path, int block_tokens, std::size_t num_blocks,
-                         int intra_op_threads, int inter_op_threads) {
+                         int intra_op_threads, int inter_op_threads, int copy_threads,
+                         std::size_t parallel_copy_floor) {
                  return std::make_unique<anytime::DecoderSession>(
-                     path, block_tokens, num_blocks, intra_op_threads, inter_op_threads);
+                     path, block_tokens, num_blocks, intra_op_threads, inter_op_threads,
+                     copy_threads, parallel_copy_floor);
              }),
              py::arg("path"), py::arg("block_tokens") = anytime::kDefaultBlockTokens,
              py::arg("num_blocks") = 256, py::arg("intra_op_threads") = 1,
-             py::arg("inter_op_threads") = 1)
+             py::arg("inter_op_threads") = 1, py::arg("copy_threads") = 1,
+             py::arg("parallel_copy_floor") = anytime::kDefaultParallelCopyFloor)
+        .def_property_readonly("copy_threads", &anytime::DecoderSession::copy_threads,
+                               "Runners the gather may split across, the calling thread "
+                               "included. One means the copy is a plain loop.")
+        .def_property_readonly("parallel_copy_floor",
+                               &anytime::DecoderSession::parallel_copy_floor,
+                               "Staged floats below which the gather runs inline whatever "
+                               "the copy pool holds.")
         .def_property_readonly("geometry", &anytime::DecoderSession::geometry,
                                py::return_value_policy::copy)
         .def_property_readonly("capacity_blocks", &anytime::DecoderSession::capacity_blocks)

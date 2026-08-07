@@ -310,6 +310,20 @@ def test_the_recorded_host_reports_the_thread_count_the_run_used(threads):
     assert host_metadata(threads)["intra_op_num_threads"] == threads
 
 
+@requires_extension
+@pytest.mark.parametrize("copy_threads", [1, 4])
+def test_the_recorded_host_reports_the_copy_thread_count_too(copy_threads):
+    """It moves `gather_p50_ms`, which is a reported number, so it has to be recorded.
+
+    Same species as the field above and added at the same time as the setting, rather
+    than after an artefact had already been written describing the wrong one.
+    """
+    assert host_metadata(8, copy_threads)["copy_threads"] == copy_threads
+    # Defaulted rather than required, so an older caller records the serial copy it
+    # actually ran instead of nothing at all.
+    assert host_metadata(8)["copy_threads"] == 1
+
+
 # --- against the real scheduler ----------------------------------------------
 
 

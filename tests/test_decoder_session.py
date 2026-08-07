@@ -52,12 +52,25 @@ STEPS = 8
 SYNTHETIC_GEOMETRY = {"layers": LAYERS, "kv_heads": KV_HEADS, "head_dim": HEAD_DIM}
 
 
-def _session(graph, *, block_tokens=4, num_blocks=64, intra_op_threads=1):
+def _session(
+    graph,
+    *,
+    block_tokens=4,
+    num_blocks=64,
+    intra_op_threads=1,
+    copy_threads=1,
+    parallel_copy_floor=None,
+):
+    kwargs = {}
+    if parallel_copy_floor is not None:
+        kwargs["parallel_copy_floor"] = parallel_copy_floor
     return load_extension().DecoderSession(
         str(graph),
         block_tokens=block_tokens,
         num_blocks=num_blocks,
         intra_op_threads=intra_op_threads,
+        copy_threads=copy_threads,
+        **kwargs,
     )
 
 
@@ -393,7 +406,17 @@ def test_extend_on_an_unknown_sequence_raises(decoder_graph):
 # moves those by 6e-02 to 4e-01 relative -- four orders above the bound below.
 
 
-def _prefilled(graph, names, lengths, *, num_blocks=256, slack=8, intra_op_threads=1):
+def _prefilled(
+    graph,
+    names,
+    lengths,
+    *,
+    num_blocks=256,
+    slack=8,
+    intra_op_threads=1,
+    copy_threads=1,
+    parallel_copy_floor=None,
+):
     """Open and prefill one sequence per name, each with a distinct prompt.
 
     `slack` is how many token positions beyond the prompt each sequence reserves.
@@ -401,7 +424,13 @@ def _prefilled(graph, names, lengths, *, num_blocks=256, slack=8, intra_op_threa
     step has to take a block -- which is how the all-or-nothing test arranges a
     batch that cannot fit without any single row being at fault.
     """
-    session = _session(graph, num_blocks=num_blocks, intra_op_threads=intra_op_threads)
+    session = _session(
+        graph,
+        num_blocks=num_blocks,
+        intra_op_threads=intra_op_threads,
+        copy_threads=copy_threads,
+        parallel_copy_floor=parallel_copy_floor,
+    )
     prompts = {}
     for index, (name, length) in enumerate(zip(names, lengths, strict=True)):
         prompt = [(index * 7 + step) % (VOCAB - 2) + 1 for step in range(length)]
@@ -554,21 +583,106 @@ def test_padding_is_cleared_rather_than_left_from_the_previous_step(decoder_grap
         np.testing.assert_allclose(got, want, rtol=CROSS_BUILD_RTOL, atol=CROSS_BUILD_ATOL)
 
 
-def test_padding_costs_nothing_when_every_row_is_the_same_length(decoder_graph):
+@pytest.mark.parametrize("copy_threads", [1, 4])
+def test_padding_costs_nothing_when_every_row_is_the_same_length(decoder_graph, copy_threads):
     """pad_ms is reported apart from gather_ms because they scale with different things.
 
     A uniform batch pads no positions at all, so the clear has nothing to do. This
     asserts the accounting, not a duration: the two are timed separately so that a
-    slow step says which of the two it was paying for.
+    slow step says which of the two it was paying for. Splitting the copy across
+    threads must not turn that exact zero into a small number, which it would the
+    moment gather and pad shared one timed region.
     """
     names = ["a", "b", "c"]
-    session, _ = _prefilled(decoder_graph, names, [7, 7, 7])
+    session, _ = _prefilled(
+        decoder_graph, names, [7, 7, 7], copy_threads=copy_threads, parallel_copy_floor=0
+    )
     uniform = session.decode_batch(names, [2, 3, 4])
     assert uniform.timings.pad_ms == 0.0
 
-    spread, _ = _prefilled(decoder_graph, ["x", "y", "z"], [30, 6, 2])
+    spread, _ = _prefilled(
+        decoder_graph,
+        ["x", "y", "z"],
+        [30, 6, 2],
+        copy_threads=copy_threads,
+        parallel_copy_floor=0,
+    )
     varied = spread.decode_batch(["x", "y", "z"], [2, 3, 4])
     assert varied.timings.pad_ms > 0.0
+
+
+# --- splitting the gather across threads --------------------------------------
+#
+# Bitwise here, and that is not the weakening the section above documents. Threading
+# the gather changes which thread runs which memcpy and nothing else: the same bytes
+# land at the same offsets, so the graph is handed an identical input tensor and the
+# GEMM shape never moves. Anything less than bitwise would be the wrong bar, because
+# the failure this has to catch -- a torn write, an overlapping partition, a slot
+# copied twice or not at all -- can be a handful of floats and would hide inside a
+# tolerance. It is also the race detector: a batched step had no bitwise assertion
+# against anything before this.
+#
+# `parallel_copy_floor=0` is load-bearing. The fixture stages a few hundred floats,
+# far under the real floor, so without it every one of these would quietly measure
+# the inline path and pass for the wrong reason.
+
+
+@pytest.mark.parametrize("copy_threads", [1, 2, 4, 8])
+@pytest.mark.parametrize(
+    "lengths",
+    [
+        pytest.param([6, 6, 6, 6], id="uniform"),
+        pytest.param([13, 9, 5, 2], id="mixed"),
+        pytest.param([17, 1], id="one-long-one-minimal"),
+        pytest.param([8], id="batch-of-one"),
+    ],
+)
+def test_a_threaded_gather_stages_the_same_bytes_as_a_serial_one(
+    decoder_graph, lengths, copy_threads
+):
+    """The whole claim: more runners, identical bytes.
+
+    Four steps rather than one, for the reason the sequential comparison gives -- a
+    row scattered to the wrong index still agrees on the step that wrote it and only
+    disagrees on the step that reads it back. Mixed lengths so the rows have different
+    amounts to copy and a partition that split by slot index alone would land
+    unevenly.
+    """
+    names = [f"s{i}" for i in range(len(lengths))]
+    serial, _ = _prefilled(decoder_graph, names, lengths, parallel_copy_floor=0)
+    threaded, _ = _prefilled(
+        decoder_graph, names, lengths, copy_threads=copy_threads, parallel_copy_floor=0
+    )
+    assert threaded.copy_threads == copy_threads
+    assert threaded.parallel_copy_floor == 0
+
+    feed = [(index * 3 + 5) % (VOCAB - 2) + 1 for index in range(len(lengths))]
+    for step in range(4):
+        want = serial.decode_batch(names, feed)
+        got = threaded.decode_batch(names, feed)
+        for index, name in enumerate(names):
+            np.testing.assert_array_equal(
+                np.asarray(got.rows[index].logits),
+                np.asarray(want.rows[index].logits),
+                err_msg=(
+                    f"{copy_threads} copy thread(s), step {step}, row {index} ({name}): "
+                    "the threaded gather staged different bytes than the serial one"
+                ),
+            )
+            assert got.rows[index].length == want.rows[index].length
+        feed = [int(np.argmax(np.asarray(row.logits))) % (VOCAB - 2) + 1 for row in want.rows]
+
+
+def test_one_copy_thread_is_the_default_and_the_floor_is_the_measured_one(decoder_graph):
+    """Both defaults are the configuration every recorded number was measured on.
+
+    The floor is pinned because it is a measured crossover rather than a round
+    number, and it already moved once: the first value was a guess 32x too high,
+    which would have left the copy serial at batch 8 where threading is 1.85x.
+    """
+    session = _session(decoder_graph)
+    assert session.copy_threads == 1
+    assert session.parallel_copy_floor == 1 << 15
 
 
 def test_the_batch_reports_one_set_of_timings_and_no_per_row_ones(decoder_graph):
@@ -617,11 +731,17 @@ def test_a_batch_containing_an_unknown_sequence_raises(decoder_graph):
         session.decode_batch(["a", "ghost"], [1, 2])
 
 
-def test_a_batch_that_does_not_fit_reserves_nothing(decoder_graph):
+@pytest.mark.parametrize("copy_threads", [1, 4])
+def test_a_batch_that_does_not_fit_reserves_nothing(decoder_graph, copy_threads):
     """All or nothing, so a refused batch leaves the arena exactly as it was.
 
     Reserving row by row and failing part way would leave the earlier rows holding
     blocks for a step that never runs, and the caller with no way to know which.
+
+    Run at both copy-thread counts because this is what keeps the gather's one
+    plausible exception out of a worker: the shortfall is totalled and refused before
+    anything is reserved, so no copy is ever attempted against a span that cannot
+    hold it.
     """
     exhausted = load_extension().CacheExhausted
     names = ["a", "b", "c"]
@@ -630,7 +750,15 @@ def test_a_batch_that_does_not_fit_reserves_nothing(decoder_graph):
     # three against the two that are free. Two is enough for either of the first two
     # rows alone, so this fails as a batch rather than because any one row is
     # individually impossible.
-    session, _ = _prefilled(decoder_graph, names, [16, 16, 16], num_blocks=14, slack=0)
+    session, _ = _prefilled(
+        decoder_graph,
+        names,
+        [16, 16, 16],
+        num_blocks=14,
+        slack=0,
+        copy_threads=copy_threads,
+        parallel_copy_floor=0,
+    )
     assert session.free_blocks == 2
 
     before_free = session.free_blocks

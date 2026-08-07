@@ -88,6 +88,7 @@ from profile_decode import Spread  # noqa: E402
 
 from anytime_serving.serving.batch_scheduler import ContinuousBatchScheduler  # noqa: E402
 from anytime_serving.serving.decoder import (  # noqa: E402
+    DEFAULT_COPY_THREADS,
     DEFAULT_INTRA_OP_THREADS,
     DecoderClient,
     GenerationRequest,
@@ -786,13 +787,17 @@ def feasible(cached_tokens: int, batch_size: int, steps: int, max_context: int) 
     return cached_tokens + batch_size + steps + 4 <= max_context
 
 
-def host_metadata(intra_op_threads: int) -> dict[str, object]:
+def host_metadata(
+    intra_op_threads: int, copy_threads: int = DEFAULT_COPY_THREADS
+) -> dict[str, object]:
     """What the run was taken on, including the settings that change the numbers.
 
     `intra_op_num_threads` is read from the run rather than written as a constant. It
     was a hardcoded 1 while the thread count was not configurable, and leaving it that
     way once it was would have made every recorded artefact describe a configuration
-    it had not been measured under.
+    it had not been measured under. `copy_threads` is here for the same reason and was
+    added at the same time as the setting: it moves `gather_p50_ms`, which is a
+    reported number.
     """
     return {
         "platform": platform.platform(),
@@ -801,6 +806,7 @@ def host_metadata(intra_op_threads: int) -> dict[str, object]:
         "backend": "extension",
         "onnxruntime": load_extension().onnxruntime_version(),
         "intra_op_num_threads": intra_op_threads,
+        "copy_threads": copy_threads,
     }
 
 
@@ -818,6 +824,7 @@ def profile_precision(
     padding_batch: int,
     trace_settings: tuple[int, ...],
     intra_op_threads: int,
+    copy_threads: int = DEFAULT_COPY_THREADS,
 ) -> tuple[PrecisionProfile, list[str]]:
     """Every measurement for one precision. Returns it plus any divergence found."""
     profile = PrecisionProfile(
@@ -833,6 +840,7 @@ def profile_precision(
         num_blocks=num_blocks,
         max_context_tokens=max_context,
         intra_op_threads=intra_op_threads,
+        copy_threads=copy_threads,
     ) as client:
         geometry = client.geometry
         LOGGER.info(
@@ -1019,10 +1027,24 @@ def main() -> int:
         help=(
             "Threads ONNX Runtime may use inside one operator. Defaults to what the "
             "serving path uses, so a recorded run describes the configuration that "
-            "would actually serve. The gather, the padding and the scatter are this "
-            "process's own memcpy loops and stay serial whatever this is set to, so "
-            "they double as a drift control: they should not move with it "
+            "would actually serve. The scatter is this process's own memcpy loop and "
+            "stays serial whatever this is set to, so it doubles as a drift control: "
+            "it should not move with this. The gather and the padding were that too "
+            "until --copy-threads existed, and are only a control while it is 1 "
             f"(default {DEFAULT_INTRA_OP_THREADS})"
+        ),
+    )
+    parser.add_argument(
+        "--copy-threads",
+        type=int,
+        default=DEFAULT_COPY_THREADS,
+        help=(
+            "Runners the KV gather may split across, the calling thread included. A "
+            "separate budget from --intra-op-threads because it divides a different "
+            "thing: that one divides the graph, this one divides the memcpy that "
+            "stages the batch's past, and the two never run at the same moment. One "
+            "is the serial copy every recorded number was taken with "
+            f"(default {DEFAULT_COPY_THREADS})"
         ),
     )
     parser.add_argument("--padding-batch", type=int, default=PADDING_BATCH)
@@ -1041,6 +1063,8 @@ def main() -> int:
         raise SystemExit("--repeats must be at least 1")
     if args.intra_op_threads < 1:
         raise SystemExit("--intra-op-threads must be at least 1")
+    if args.copy_threads < 1:
+        raise SystemExit("--copy-threads must be at least 1")
 
     batch_sizes = tuple(QUICK_BATCH_SIZES if args.quick else args.batch_sizes)
     cached = tuple(QUICK_CACHED if args.quick else args.cached)
@@ -1103,6 +1127,7 @@ def main() -> int:
             padding_batch=args.padding_batch,
             trace_settings=trace_settings,
             intra_op_threads=args.intra_op_threads,
+            copy_threads=args.copy_threads,
         )
         profiles.append(profile)
         divergences.extend(found)
@@ -1120,7 +1145,7 @@ def main() -> int:
         )
 
     payload = {
-        "host": host_metadata(args.intra_op_threads),
+        "host": host_metadata(args.intra_op_threads, args.copy_threads),
         "model": args.model,
         "measurement_passes": repeats,
         "measured_steps_per_pass": args.steps,

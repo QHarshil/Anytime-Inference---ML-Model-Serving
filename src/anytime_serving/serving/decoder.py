@@ -57,6 +57,7 @@ from .onnx_runtime import load_extension
 LOGGER = get_logger("serving.decoder")
 
 __all__ = [
+    "DEFAULT_COPY_THREADS",
     "DEFAULT_INTRA_OP_THREADS",
     "DecoderClient",
     "GenerationRecord",
@@ -114,6 +115,17 @@ def available_cpus() -> int:
 # most thread-sync overhead on a fixture whose graph time is microseconds. On the
 # 14-core host where 8 was measured this cap changes nothing.
 DEFAULT_INTRA_OP_THREADS = min(_MEASURED_INTRA_OP_THREADS, available_cpus())
+
+# Runners the KV gather may split across. One is the serial copy every number in
+# docs/benchmarks.md was measured with, and it stays the default until a measurement
+# says otherwise -- changing it silently would re-point every consumer of it, which is
+# the trap `profile_decode.py` fell into when the intra-op default moved.
+#
+# It is a separate budget from the intra-op count because it buys a different thing:
+# ONNX Runtime's pool divides the graph, this one divides the memcpy that stages the
+# batch's past. The two never run at once -- the gather finishes before Run starts --
+# so they are not competing and there is no reason to tie them together.
+DEFAULT_COPY_THREADS = 1
 
 
 @dataclass
@@ -306,18 +318,30 @@ class DecoderClient:
         num_blocks: int = 256,
         intra_op_threads: int = DEFAULT_INTRA_OP_THREADS,
         inter_op_threads: int = 1,
+        copy_threads: int = DEFAULT_COPY_THREADS,
+        parallel_copy_floor: int | None = None,
         admission: BlockAdmission | None = None,
         reserve_full_generation: bool = True,
         max_context_tokens: int | None = None,
     ) -> None:
         extension = load_extension()
         width = extension.DEFAULT_BLOCK_TOKENS if block_tokens is None else block_tokens
+        floor: dict[str, int] = (
+            {} if parallel_copy_floor is None else {"parallel_copy_floor": parallel_copy_floor}
+        )
         self._session: Any = extension.DecoderSession(
             str(graph),
             block_tokens=width,
             num_blocks=num_blocks,
             intra_op_threads=intra_op_threads,
             inter_op_threads=inter_op_threads,
+            # Capped for the same reason the intra-op count is: asking for more
+            # runners than the machine has is always wrong, and a 2-core runner is
+            # where that stops being theoretical.
+            copy_threads=min(copy_threads, available_cpus()),
+            # Left at the extension's measured default unless a caller is
+            # deliberately measuring the crossover it encodes.
+            **floor,
         )
         self._exhausted = extension.CacheExhausted
         self._default_chunk = extension.DEFAULT_PREFILL_CHUNK_TOKENS

@@ -34,6 +34,7 @@
 
 #include "anytime/engine.hpp"
 #include "anytime/kv_cache.hpp"
+#include "anytime/thread_pool.hpp"
 
 namespace anytime {
 
@@ -46,6 +47,19 @@ constexpr int kDefaultPrefillChunkTokens = 256;
 // sequence is 16 blocks and admission has useful granularity without the free list
 // growing large enough to matter.
 constexpr int kDefaultBlockTokens = 64;
+
+// Staged floats per slot below which a batch's gather runs on the calling thread
+// whatever the copy pool holds, because synchronising costs more than the copy saves.
+//
+// Measured, and the measurement moved it by a factor of 32. The guess it replaced was
+// 1<<20, on the reasoning that a small gather is only a fraction of a millisecond and
+// thread hand-off is tens of microseconds. That reasoning was wrong about where the
+// line falls: on GPT-2 at eight runners the copy is already 1.85x faster at batch 8
+// and 128 cached tokens, which 1<<20 would have excluded. The sweep found the
+// crossover at batch 1 between 24,576 floats (0.72x, a loss) and 49,152 (1.29x, a
+// win); this sits in that gap. Below it the whole gather is under 0.1 ms, so the
+// choice costs nothing either way.
+constexpr std::size_t kDefaultParallelCopyFloor = 1u << 15;
 
 // Where one step's time went. `run_ms` is time inside Session::Run, matching what
 // Engine::run reports, so the two are comparable. The gather is broken out because
@@ -133,15 +147,34 @@ public:
     // M/M/c model valid. The decoder lane has no pool, so the reason does not carry
     // over, and serving.DecoderClient overrides this with a measured count. Policy
     // in Python, mechanism here.
+    //
+    // `copy_threads` is a separate budget from `intra_op_threads` because it buys a
+    // different thing: ONNX Runtime's pool divides the graph, this one divides the
+    // memcpy that stages a batch's past. They never run at the same time -- the
+    // gather finishes before Run starts -- so the two counts are not competing for
+    // the machine and there is no reason to tie them. It defaults to one so that
+    // every measurement recorded before it existed still reproduces.
+    //
+    // `parallel_copy_floor` is the staged float count below which the gather runs
+    // inline however many runners there are, because synchronising a few dozen slots
+    // costs more than a small copy saves. It is an argument rather than a constant
+    // for the same reason the thread count is: a threshold nothing can set is a
+    // threshold nothing can test, and a test on a small graph would otherwise never
+    // reach the threaded path at all.
     DecoderSession(const std::string& path, int block_tokens = kDefaultBlockTokens,
                    std::size_t num_blocks = 256, int intra_op_threads = 1,
-                   int inter_op_threads = 1);
+                   int inter_op_threads = 1, int copy_threads = 1,
+                   std::size_t parallel_copy_floor = kDefaultParallelCopyFloor);
 
     const KvGeometry& geometry() const { return geometry_; }
     std::size_t capacity_blocks() const { return pool_->capacity_blocks(); }
     std::size_t free_blocks() const { return pool_->free_blocks(); }
     std::size_t arena_bytes() const { return pool_->bytes(); }
     std::size_t blocks_for(int tokens) const { return geometry_.blocks_for(tokens); }
+    // Runners the gather may split across, the calling thread included. One means
+    // the copy is a plain loop with no pool touched at all.
+    int copy_threads() const { return copy_pool_.threads(); }
+    std::size_t parallel_copy_floor() const { return parallel_copy_floor_; }
     // Whether the graph declares these; a decoder that derives positions itself
     // does not, and feeding an input the graph never asked for is an error.
     bool declares_attention_mask() const { return has_attention_mask_; }
@@ -219,6 +252,12 @@ private:
     // the session exists.
     std::unique_ptr<BlockPool> pool_;
     std::map<std::string, SequenceCache> sequences_;
+
+    // Owned by the session rather than made per step. At batch 1 the whole gather is
+    // 0.18 ms and starting threads would cost more than it saves, so a pool built per
+    // call would be a slowdown at exactly the sizes where the copy is already cheap.
+    ThreadPool copy_pool_;
+    std::size_t parallel_copy_floor_;
 
     // Sequences whose first non-empty step has already confirmed that
     // `present[..., :past_len, :]` equals what the blocks hold. Checked once per
