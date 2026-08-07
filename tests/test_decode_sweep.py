@@ -22,17 +22,20 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from run_decode_sweep import (  # noqa: E402
+    VARIANCE_LENGTHS,
     PolicySpec,
     RequestOutcome,
     WorkloadSpec,
     _cost_model,
     _percentile,
     blocks_for,
+    bucketing_policies,
     build_requests,
     drive,
     host_metadata,
     meets_slo,
     summarise,
+    variance_workload,
 )
 
 from anytime_serving.serving.batch_scheduler import ContinuousBatchScheduler  # noqa: E402
@@ -132,6 +135,59 @@ def test_a_fixed_workload_is_every_request_the_same_length():
     fixed = _workload(requests=3)
     assert fixed.lengths() == [256, 256, 256]
     assert fixed.mean_prompt_tokens == 256.0
+
+
+def test_the_spread_workload_has_one_definition():
+    """The shape matrix and the bucketing A/B have to be measuring the same thing.
+
+    Two inline copies would drift, and the drift would show up as a capacity
+    difference that looked like a policy result.
+    """
+    spread = variance_workload(new_tokens=64, requests=8)
+    assert spread.spread == VARIANCE_LENGTHS
+    assert spread.mean_prompt_tokens == pytest.approx(spread.prompt_tokens, abs=0.5)
+    assert spread.label == "variance"
+
+
+# --- the bucketing A/B ------------------------------------------------------
+
+
+def test_the_bucketing_arms_differ_in_one_bit_and_nothing_else():
+    """A comparison is only about bucketing if that is the only thing that moved."""
+    arrival, bucketed = bucketing_policies(batch=8, resident=24)
+    assert arrival.length_bucketing is False
+    assert bucketed.length_bucketing is True
+    assert arrival.name != bucketed.name
+    for field_name in ("max_batch_size", "resident_capacity", "use_admission"):
+        assert getattr(arrival, field_name) == getattr(bucketed, field_name)
+
+
+@pytest.mark.parametrize("resident", [4, 8])
+def test_an_arena_no_deeper_than_the_batch_is_refused(resident):
+    """It would measure nothing, and it would report a difference of noise as a result.
+
+    With residency at or below the batch width every step holds every resident
+    sequence, so both arms run identical schedules. Failing is the honest outcome;
+    returning two nearly-equal numbers would look like a finding.
+    """
+    with pytest.raises(SystemExit, match="must exceed --batch"):
+        bucketing_policies(batch=8, resident=resident)
+
+
+def test_the_main_sweep_policies_are_all_arrival_ordered():
+    """Bucketing must not reach the three policies the recorded numbers came from."""
+    policies = (
+        PolicySpec("serial", max_batch_size=1, resident_capacity=1, use_admission=False),
+        PolicySpec("batched-8", max_batch_size=8, resident_capacity=8, use_admission=False),
+        PolicySpec(
+            "batched-8-preempting", max_batch_size=8, resident_capacity=4, use_admission=True
+        ),
+    )
+    assert all(policy.length_bucketing is False for policy in policies)
+    assert all(policy.resident_capacity <= policy.max_batch_size for policy in policies), (
+        "if a main-sweep policy ever gets an arena deeper than its batch width, its "
+        "recorded numbers stop being independent of the ordering rule"
+    )
 
 
 def test_the_arena_holds_whole_sequences_rounded_up():

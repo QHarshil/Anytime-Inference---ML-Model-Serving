@@ -52,15 +52,29 @@ Every per-request row is written out, so attainment at a different SLO, or any o
 percentile, can be recomputed without measuring again. `run_load_sweep.py` cannot
 redraw its figure without re-measuring and that is a wart worth not repeating.
 
+What `--bucketing-ab` measures instead
+--------------------------------------
+
+Length bucketing decides *who shares a decode step*, so it can only do anything when
+more sequences are decoding than fit in one. None of the three policies above satisfy
+that -- `serial` is a batch of one and the other two hold no more sequences than the
+width -- so `--bucketing-ab` runs its own pair: one arena deeper than the batch width,
+measured with the ordering rule off and on, over the spread workload where padding is
+what costs. It writes separate files, so a policy experiment cannot overwrite the
+recorded sweep.
+
 Writes:
 
-  results/decode_sweep.json           metadata, capacity, one row per point
-  results/decode_sweep_requests.csv   one row per request, every point
+  results/decode_sweep.json              metadata, capacity, one row per point
+  results/decode_sweep_requests.csv      one row per request, every point
+  results/decode_bucketing.json          --bucketing-ab only
+  results/decode_bucketing_requests.csv  --bucketing-ab only
 
 Usage:
     python scripts/run_decode_sweep.py
     python scripts/run_decode_sweep.py --precision int8 --utilisations 0.95 1.3
     python scripts/run_decode_sweep.py --quick --output-dir /tmp/sweep
+    python scripts/run_decode_sweep.py --bucketing-ab
 """
 
 from __future__ import annotations
@@ -73,6 +87,7 @@ import statistics
 import sys
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -128,6 +143,18 @@ VARIANCE_LENGTHS = (64, 192, 320, 448)
 # than truncated.
 DEFAULT_POINT_BUDGET_S = 900.0
 
+# Arena depth for the bucketing A/B, in sequences, against a batch width of 8. Three
+# times the batch so most of the decoding set is unserved on any one step and the
+# ordering rule has a real choice, without going so deep that the arena stops being a
+# concurrency limit anybody would configure.
+DEFAULT_BUCKETING_RESIDENT = 24
+# Load points for the A/B, spanning saturation. Below rho = 1 this measures almost
+# nothing: a pilot at 0.8 and 0.95 held every request inside the SLO under both arms,
+# and the mean decode batch sat at 3.4-5.0 against a width of 8, so the arena was not
+# full and the ordering rule had nothing to choose from most of the time. Bucketing is
+# a policy for a scheduler with a backlog, and it has to be measured with one.
+BUCKETING_UTILISATIONS = (0.8, 0.95, 1.1, 1.3)
+
 
 @dataclass
 class PolicySpec:
@@ -136,12 +163,18 @@ class PolicySpec:
     `resident_capacity` is how many full sequences of the workload the arena holds.
     It is part of the policy rather than of the host: with the whole generation
     reserved up front, that number is the concurrency limit.
+
+    `length_bucketing` only means anything when `resident_capacity` exceeds
+    `max_batch_size`. Below that every batch holds every resident sequence and the
+    ordering rule has nothing to choose, which is why the three policies the main
+    sweep runs are all unaffected by it.
     """
 
     name: str
     max_batch_size: int
     resident_capacity: int
     use_admission: bool
+    length_bucketing: bool = False
 
 
 @dataclass
@@ -276,6 +309,22 @@ def build_requests(
 
 def blocks_for(*, sequences: int, tokens_each: int, block_tokens: int) -> int:
     return -(-tokens_each // block_tokens) * sequences
+
+
+def variance_workload(*, new_tokens: int, requests: int) -> WorkloadSpec:
+    """The spread workload: four prompt lengths at the fixed workload's mean.
+
+    Holding the mean is what makes the comparison about variance rather than about
+    length. Used by the shape matrix and by the bucketing A/B, from one definition so
+    the two cannot drift into measuring different workloads.
+    """
+    return WorkloadSpec(
+        label="variance",
+        prompt_tokens=int(statistics.fmean(VARIANCE_LENGTHS)),
+        max_new_tokens=new_tokens,
+        requests=requests,
+        spread=VARIANCE_LENGTHS,
+    )
 
 
 def drive(
@@ -665,7 +714,11 @@ def measure_capacity(
             requests=requests,
             spread=workload.spread,
         )
-        scheduler = ContinuousBatchScheduler(client, max_batch_size=policy.max_batch_size)
+        scheduler = ContinuousBatchScheduler(
+            client,
+            max_batch_size=policy.max_batch_size,
+            length_bucketing=policy.length_bucketing,
+        )
         result = drive(
             scheduler,
             build_requests(spec, vocab=vocab, deadline_ms=deadline_ms, seed=1),
@@ -743,7 +796,11 @@ def run_point(
         cost=cost,
         intra_op_threads=intra_op_threads,
     ) as client:
-        scheduler = ContinuousBatchScheduler(client, max_batch_size=policy.max_batch_size)
+        scheduler = ContinuousBatchScheduler(
+            client,
+            max_batch_size=policy.max_batch_size,
+            length_bucketing=policy.length_bucketing,
+        )
         result = drive(
             scheduler,
             build_requests(workload, vocab=vocab, deadline_ms=deadline_ms, seed=seed + 1000),
@@ -763,6 +820,198 @@ def run_point(
         tpot_slo_ms=tpot_slo_ms,
     )
     return row, result.outcomes, result
+
+
+def bucketing_policies(*, batch: int, resident: int) -> tuple[PolicySpec, PolicySpec]:
+    """The A/B arms: one arena, one batch width, one bit of policy between them.
+
+    `resident` has to exceed `batch` or the comparison is vacuous -- with every
+    resident sequence in every step there is nothing for an ordering rule to choose,
+    which is exactly why the three policies the main sweep runs cannot show this
+    effect and why these two exist separately rather than joining them.
+    """
+    if resident <= batch:
+        raise SystemExit(
+            f"--bucketing-resident must exceed --batch ({resident} against {batch}); "
+            "with the arena no deeper than the batch width every step holds every "
+            "resident sequence and bucketing has nothing to choose from"
+        )
+    return (
+        PolicySpec(
+            f"deep-{batch}-arrival",
+            max_batch_size=batch,
+            resident_capacity=resident,
+            use_admission=False,
+        ),
+        PolicySpec(
+            f"deep-{batch}-bucketed",
+            max_batch_size=batch,
+            resident_capacity=resident,
+            use_admission=False,
+            length_bucketing=True,
+        ),
+    )
+
+
+def run_bucketing_ab(
+    graph: Path,
+    *,
+    workload: WorkloadSpec,
+    batch: int,
+    resident: int,
+    utilisations: Sequence[float],
+    vocab: int,
+    block_tokens: int,
+    max_context: int,
+    deadline_ms: float,
+    ttft_slo_ms: float,
+    tpot_slo_ms: float,
+    cost: CacheCost | None,
+    seed: int,
+    intra_op_threads: int,
+    budget_s: float,
+) -> tuple[list[SweepRow], list[RequestOutcome], dict[str, float]]:
+    """Both halves of what bucketing is worth: capacity, then who waited.
+
+    Each arm measures its own capacity, because the arms are being compared on what
+    they can sustain -- expressing one against the other's capacity would bake the
+    answer into the axis. The load points are then a fraction of each arm's own
+    figure, which is the same convention the main sweep uses between policies.
+    """
+    rows: list[SweepRow] = []
+    outcomes: list[RequestOutcome] = []
+    capacities: dict[str, float] = {}
+
+    for policy in bucketing_policies(batch=batch, resident=resident):
+        capacity = measure_capacity(
+            graph,
+            workload=workload,
+            policy=policy,
+            vocab=vocab,
+            block_tokens=block_tokens,
+            max_context=max_context,
+            deadline_ms=deadline_ms,
+            requests=max(resident * 2, 8),
+            intra_op_threads=intra_op_threads,
+        )
+        capacities[policy.name] = round(capacity, 4)
+        LOGGER.info("%s: capacity %.3f completions/s", policy.name, capacity)
+
+        for utilisation in utilisations:
+            row, per_request, _ = run_point(
+                graph,
+                policy=policy,
+                workload=workload,
+                utilisation=utilisation,
+                capacity_rps=capacity,
+                vocab=vocab,
+                block_tokens=block_tokens,
+                max_context=max_context,
+                deadline_ms=deadline_ms,
+                ttft_slo_ms=ttft_slo_ms,
+                tpot_slo_ms=tpot_slo_ms,
+                cost=cost,
+                seed=seed,
+                intra_op_threads=intra_op_threads,
+                budget_s=budget_s,
+            )
+            rows.append(row)
+            outcomes.extend(per_request)
+            LOGGER.info(
+                "  rho=%.2f  TTFT p95 %7.1f  TPOT p95 %6.1f  attainment %.3f  "
+                "batch %.2f  %.1f tok/s",
+                utilisation,
+                row.ttft_p95_ms,
+                row.tpot_p95_ms,
+                row.slo_attainment,
+                row.mean_decode_batch,
+                row.output_tokens_per_s,
+            )
+
+    return rows, outcomes, capacities
+
+
+def _write_bucketing_ab(
+    graph: Path,
+    *,
+    args: argparse.Namespace,
+    workload: WorkloadSpec,
+    vocab: int,
+    deadline_ms: float,
+    cost: CacheCost | None,
+) -> int:
+    """Run the A/B and write it to its own files.
+
+    Its own files rather than the sweep's: a run measuring one policy question must
+    not be able to overwrite `decode_sweep.json`, which holds a different workload
+    under different policies and is what the documented numbers come from.
+    """
+    utilisations = tuple(args.bucketing_utilisations or BUCKETING_UTILISATIONS)
+    LOGGER.info(
+        "Bucketing A/B on %s %s: prompts %s (mean %.0f), batch %d, arena for %d, "
+        "%d request(s) per point",
+        args.model,
+        args.precision,
+        list(VARIANCE_LENGTHS),
+        workload.mean_prompt_tokens,
+        args.batch,
+        args.bucketing_resident,
+        workload.requests,
+    )
+    rows, outcomes, capacities = run_bucketing_ab(
+        graph,
+        workload=workload,
+        batch=args.batch,
+        resident=args.bucketing_resident,
+        utilisations=utilisations,
+        vocab=vocab,
+        block_tokens=args.block_tokens,
+        max_context=args.max_context,
+        deadline_ms=deadline_ms,
+        ttft_slo_ms=args.ttft_slo_ms,
+        tpot_slo_ms=args.tpot_slo_ms,
+        cost=cost,
+        seed=args.seed,
+        intra_op_threads=args.intra_op_threads,
+        budget_s=args.point_budget_s,
+    )
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "host": host_metadata(args.intra_op_threads),
+        "model": args.model,
+        "precision": args.precision,
+        "requests_per_point": workload.requests,
+        "block_tokens": args.block_tokens,
+        "max_context_tokens": args.max_context,
+        "batch_size": args.batch,
+        "resident_capacity": args.bucketing_resident,
+        "prompt_spread": list(VARIANCE_LENGTHS),
+        "mean_prompt_tokens": round(workload.mean_prompt_tokens, 1),
+        "max_new_tokens": workload.max_new_tokens,
+        "arrival_process": "poisson, open loop",
+        "capacity_rps": capacities,
+        "ttft_slo_ms": args.ttft_slo_ms,
+        "tpot_slo_ms": args.tpot_slo_ms,
+        "deadline_ms": deadline_ms,
+        "policies": [
+            asdict(policy)
+            for policy in bucketing_policies(batch=args.batch, resident=args.bucketing_resident)
+        ],
+        "sweep": [asdict(row) for row in rows],
+    }
+    summary_path = args.output_dir / "decode_bucketing.json"
+    summary_path.write_text(json.dumps(payload, indent=2) + "\n")
+    LOGGER.info("Wrote %s", summary_path)
+
+    requests_path = args.output_dir / "decode_bucketing_requests.csv"
+    with requests_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(asdict(outcomes[0]).keys()))
+        writer.writeheader()
+        for outcome in outcomes:
+            writer.writerow(asdict(outcome))
+    LOGGER.info("Wrote %s (%d rows)", requests_path, len(outcomes))
+    return 0
 
 
 def main() -> int:
@@ -809,6 +1058,35 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--skip-shapes", action="store_true", help="Skip the prompt/generation matrix"
+    )
+    parser.add_argument(
+        "--bucketing-ab",
+        action="store_true",
+        help=(
+            "Measure length bucketing against arrival order on the spread workload, "
+            "and nothing else. Writes decode_bucketing.json rather than "
+            "decode_sweep.json, so it cannot overwrite the recorded sweep"
+        ),
+    )
+    parser.add_argument(
+        "--bucketing-resident",
+        type=int,
+        default=DEFAULT_BUCKETING_RESIDENT,
+        help=(
+            "Sequences the arena holds for the bucketing A/B. Must exceed --batch: an "
+            "arena no deeper than the batch width leaves the ordering rule nothing to "
+            f"choose from (default {DEFAULT_BUCKETING_RESIDENT})"
+        ),
+    )
+    parser.add_argument(
+        "--bucketing-utilisations",
+        nargs="+",
+        type=float,
+        default=None,
+        help=(
+            "Load points for the bucketing A/B, as a fraction of each arm's own "
+            f"measured capacity (default {' '.join(str(u) for u in BUCKETING_UTILISATIONS)})"
+        ),
     )
     parser.add_argument(
         "--quick", action="store_true", help="Two utilisations and far fewer requests"
@@ -860,6 +1138,16 @@ def main() -> int:
         max_context=args.max_context,
         intra_op_threads=args.intra_op_threads,
     )
+
+    if args.bucketing_ab:
+        return _write_bucketing_ab(
+            graph,
+            args=args,
+            workload=variance_workload(new_tokens=args.new_tokens, requests=max(requests // 2, 8)),
+            vocab=vocab,
+            deadline_ms=deadline_ms,
+            cost=cost,
+        )
 
     policies = (
         PolicySpec("serial", max_batch_size=1, resident_capacity=1, use_admission=False),
@@ -1022,13 +1310,7 @@ def main() -> int:
 
         # The same mean prompt length, spread four ways, to put the padding cost from
         # profile_batching.py under load.
-        variance = WorkloadSpec(
-            label="variance",
-            prompt_tokens=int(statistics.fmean(VARIANCE_LENGTHS)),
-            max_new_tokens=args.new_tokens,
-            requests=max(requests // 2, 8),
-            spread=VARIANCE_LENGTHS,
-        )
+        variance = variance_workload(new_tokens=args.new_tokens, requests=max(requests // 2, 8))
         variance_capacity = measure_capacity(
             graph,
             workload=variance,
