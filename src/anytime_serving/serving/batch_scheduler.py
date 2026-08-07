@@ -49,6 +49,19 @@ wins again by as much: 71% of requests meeting their targets against 13%.
 `docs/benchmarks.md` has both, and the caveat that a batched-against-serial ratio is
 scaled to the batched policy's own capacity.
 
+What length bucketing is for
+----------------------------
+
+A batched step runs every row at the longest row's cached length, so a batch holding one
+long sequence charges every short one for positions it does not have. Measured at a 4:1
+spread that is 9.0 ms of a 27.7 ms step, and only 1.0 ms of it is clearing the padding --
+the rest is the graph doing arithmetic on absent tokens. `length_bucketing` chooses *who
+shares a step* to shrink that.
+
+It can only help when more sequences are decoding than fit in one step. With an arena
+sized to the batch width every batch holds everyone, and the ordering rule cannot change
+what the step costs.
+
 Fairness is the part admission already owned
 --------------------------------------------
 
@@ -145,6 +158,7 @@ class ContinuousBatchScheduler:
         chunk_tokens: int | None = None,
         max_batch_size: int = 8,
         prefill_chunks_per_decode: int = 1,
+        length_bucketing: bool = False,
     ) -> None:
         if max_batch_size <= 0:
             raise ValueError("max_batch_size must be positive")
@@ -165,6 +179,7 @@ class ContinuousBatchScheduler:
         self._chunk_tokens = client.default_chunk_tokens if chunk_tokens is None else chunk_tokens
         self._max_batch_size = max_batch_size
         self._prefill_chunks_per_decode = prefill_chunks_per_decode
+        self._length_bucketing = length_bucketing
 
         self._waiting: deque[GenerationRequest] = deque()
         # Admitted, prompt not yet fully cached. Includes sequences re-running a
@@ -188,6 +203,11 @@ class ContinuousBatchScheduler:
     def chunk_tokens(self) -> int:
         """Prefill chunk width, which is also the decode-jitter knob."""
         return self._chunk_tokens
+
+    @property
+    def length_bucketing(self) -> bool:
+        """Whether a decode batch is filled by cached length or by queue order."""
+        return self._length_bucketing
 
     @property
     def waiting(self) -> int:
@@ -362,8 +382,60 @@ class ContinuousBatchScheduler:
             preempted=preempted,
         )
 
+    def _select_batch(self) -> list[str]:
+        """Which of the decoding sequences share the next step.
+
+        Queue order unless `length_bucketing` is on, and queue order either way when
+        everyone fits: with nothing left over there is no choice to make, which is why
+        an arena sized to the batch width sees no effect from this setting at all.
+
+        Bucketed, the batch is **anchored** on the head of the queue -- the sequence
+        that has waited longest -- and the remaining slots go to the nearest cached
+        lengths. Anchoring is what makes starvation impossible rather than unlikely:
+
+            The anchor is always index 0 and is always removed from the queue. So a
+            sequence at index k is either picked as filler this step, or watches at
+            least one element ahead of it leave, which drops it to index k-1 or lower.
+            An unserved sequence's index therefore strictly decreases, and it becomes
+            the anchor within k steps. With N decoding, **every sequence is served at
+            least once in any window of N decode steps.**
+
+        That bound is a property of the rule, not of a tuning constant, which is why
+        there is no age guard here. Sequences admitted or readmitted later join at the
+        back, so they never push an incumbent's index up.
+
+        Ties on distance break on queue position, so the sequence that has waited
+        longer takes the slot.
+        """
+        if len(self._decoding) <= self._max_batch_size:
+            return list(self._decoding)
+        if not self._length_bucketing:
+            return self._decoding[: self._max_batch_size]
+
+        anchor = self._decoding[0]
+        lengths = self._cached_lengths()
+        anchor_length = lengths[anchor]
+        ranked = sorted(
+            enumerate(self._decoding[1:]),
+            key=lambda pair: (abs(lengths[pair[1]] - anchor_length), pair[0]),
+        )
+        return [anchor] + [request_id for _, request_id in ranked[: self._max_batch_size - 1]]
+
+    def _cached_lengths(self) -> dict[str, int]:
+        """Cached tokens per decoding sequence, which is what sets the padded width.
+
+        Read from the client's own view rather than tracked alongside it, so the two
+        cannot disagree about how long a sequence is after a preemption and recompute.
+        """
+        decoding = set(self._decoding)
+        return {
+            state.sequence_id: state.cached_tokens
+            for state in self._client.states()
+            if state.sequence_id in decoding
+        }
+
     def _run_decode_batch(self, preempted: tuple[str, ...]) -> SchedulerStep:
-        batch = self._decoding[: self._max_batch_size]
+        batch = self._select_batch()
         records = self._client.emit_batch(batch)
         self._chunks_since_decode = 0
         self._stats.decode_steps += 1
@@ -381,8 +453,12 @@ class ContinuousBatchScheduler:
             self._retire(request_id)
 
         # Round-robin, so a batch wider than max_batch_size does not starve its tail.
-        remaining = [r for r in batch if r not in completed]
-        self._decoding = self._decoding[len(batch) :] + remaining
+        # Written against a subset rather than a prefix because a bucketed batch is one;
+        # with bucketing off the two are the same list, since ids are unique and the
+        # batch is then exactly the front of the queue.
+        served = set(batch)
+        survivors = [r for r in batch if r not in completed]
+        self._decoding = [r for r in self._decoding if r not in served] + survivors
 
         return SchedulerStep(
             kind="decode",

@@ -12,6 +12,8 @@ share an invocation, that alternation bounds how long a resident sequence waits,
 that the counts a caller reads describe what actually ran.
 """
 
+import statistics
+
 import numpy as np
 import pytest
 
@@ -64,22 +66,30 @@ def _alone(graph, request):
 # --- the assertion the scheduler exists to preserve --------------------------
 
 
+@pytest.mark.parametrize("length_bucketing", [False, True])
 @pytest.mark.parametrize("chunk_tokens", [3, 4, 64])
 @pytest.mark.parametrize("max_batch_size", [1, 3, 8])
-def test_every_sequence_emits_what_it_would_have_alone(decoder_graph, chunk_tokens, max_batch_size):
+def test_every_sequence_emits_what_it_would_have_alone(
+    decoder_graph, chunk_tokens, max_batch_size, length_bucketing
+):
     """Interleaving must not change any answer, at every width and batch cap.
 
     Prompt lengths differ so decode batches are right-padded, and a chunk width of 3
     straddles the 4-token block boundary. A batch cap of 1 is the degenerate schedule
     and has to agree too, since it is the reference the batched ones are measured
-    against.
+    against. Bucketing reorders who shares a step, which is exactly the kind of change
+    that must not reach the answers: at a cap of 3 there are four sequences to choose
+    three from, so it is choosing here rather than taking what it is given.
     """
     requests = [_request(index, length=length) for index, length in enumerate([9, 6, 11, 4])]
     expected = {request.request_id: _alone(decoder_graph, request) for request in requests}
 
     with _client(decoder_graph) as client:
         scheduler = ContinuousBatchScheduler(
-            client, chunk_tokens=chunk_tokens, max_batch_size=max_batch_size
+            client,
+            chunk_tokens=chunk_tokens,
+            max_batch_size=max_batch_size,
+            length_bucketing=length_bucketing,
         )
         records = scheduler.run(requests)
 
@@ -379,3 +389,230 @@ def test_logits_stay_the_next_token_distribution_through_a_batched_schedule(deco
             row = client.next_token_logits(record.request_id)
             assert row.ndim == 1
             assert np.isfinite(row).all()
+
+
+# --- length bucketing --------------------------------------------------------
+#
+# Every assertion here is about which sequences share a step, never about how long a
+# step took. A batch's composition is what the rule decides; wall time on a fixture
+# whose graph runs in microseconds is noise, and asserting on it is what put a flaky
+# test through CI last round.
+
+
+# Iterations allowed to get every sequence decoding. Alternation spends about three
+# per sequence, so this is generous enough that reaching it means a hang rather than
+# a slow start.
+_ASSEMBLY_BUDGET = 400
+
+
+def _batch_trace(client, scheduler, requests, *, steps):
+    """Assemble every sequence into the decoding set, then record the next `steps` batches.
+
+    Returns `(request_ids, cached_length_range)` per decode step. Assembly is separate
+    because the ordering rule has nothing to decide until residency exceeds the batch
+    width, which is the whole condition under which bucketing does anything at all.
+
+    The range is snapshotted per step rather than recomputed at the end. Rows served
+    more often have grown more, so one set of final lengths does not describe a batch
+    from twenty steps ago -- and a rule that keeps picking the same rows is exactly the
+    one that would be flattered by the mistake. Taken immediately after the step, when
+    every row of that batch has gained the same single token, it is the range that was
+    actually selected.
+    """
+    for request in requests:
+        scheduler.submit(request)
+
+    for _ in range(_ASSEMBLY_BUDGET):
+        if len(scheduler.decoding) == len(requests):
+            break
+        if scheduler.step() is None:
+            break
+    else:  # pragma: no cover - a budget this size means something is wrong
+        raise AssertionError("the sequences never all reached the decoding set")
+    assert len(scheduler.decoding) == len(requests), (
+        f"only {len(scheduler.decoding)} of {len(requests)} became resident; "
+        "the arena is too small for this test to be about ordering"
+    )
+
+    trace = []
+    while len(trace) < steps:
+        step = scheduler.step()
+        if step is None:
+            break
+        if step.kind != "decode":
+            continue
+        lengths = {state.sequence_id: state.cached_tokens for state in client.states()}
+        served = [lengths[r] for r in step.request_ids if r in lengths]
+        trace.append((step.request_ids, max(served) - min(served) if served else 0))
+    return trace
+
+
+def _longest_gap(trace, request_ids):
+    """The most decode steps any sequence went unserved.
+
+    Counted from the start of the window, so a sequence never served at all is charged
+    the whole of it rather than being silently skipped.
+    """
+    worst = 0
+    for request_id in request_ids:
+        last = -1
+        for index, (batch, _) in enumerate(trace):
+            if request_id in batch:
+                worst = max(worst, index - last)
+                last = index
+        worst = max(worst, len(trace) - 1 - last)
+    return worst
+
+
+def test_bucketing_puts_similar_lengths_in_one_step(decoder_graph):
+    """The mechanism: a batch runs at its longest row, so cluster the rows.
+
+    Three clusters far enough apart that the tokens emitted during the trace cannot
+    blur them. Arrival order interleaves the clusters and pays the full range on most
+    steps; bucketing should mostly stay inside one.
+    """
+    lengths = [8, 12, 16, 64, 68, 72, 128, 132]
+    requests = [
+        _request(index, length=length, max_new_tokens=24) for index, length in enumerate(lengths)
+    ]
+
+    spreads = {}
+    for bucketing in (False, True):
+        with _client(decoder_graph, num_blocks=192) as client:
+            scheduler = ContinuousBatchScheduler(
+                client, chunk_tokens=256, max_batch_size=3, length_bucketing=bucketing
+            )
+            trace = _batch_trace(client, scheduler, requests, steps=12)
+            spreads[bucketing] = [spread for _, spread in trace]
+
+    assert len(spreads[True]) >= 8, "too few decode steps observed to compare"
+    bucketed = statistics.fmean(spreads[True])
+    arrival = statistics.fmean(spreads[False])
+    assert bucketed < arrival, (
+        f"bucketing left a mean cached-length range of {bucketed:.1f} against arrival "
+        f"order's {arrival:.1f}; it is not clustering anything"
+    )
+
+
+def test_no_sequence_waits_longer_than_the_decoding_set(decoder_graph):
+    """The starvation bound, which is a property of anchoring rather than a guard.
+
+    The anchor is always the head of the queue and is always moved to the back, so an
+    unserved sequence's position strictly decreases and it becomes the anchor within N
+    steps. One sequence is deliberately far from the pack: a rule that only looked at
+    length would never pick it.
+    """
+    lengths = [8, 12, 16, 20, 24, 28, 32, 160]
+    requests = [
+        _request(index, length=length, max_new_tokens=64) for index, length in enumerate(lengths)
+    ]
+    with _client(decoder_graph, num_blocks=224) as client:
+        scheduler = ContinuousBatchScheduler(
+            client, chunk_tokens=256, max_batch_size=3, length_bucketing=True
+        )
+        trace = _batch_trace(client, scheduler, requests, steps=32)
+        still_decoding = len(scheduler.decoding)
+
+    assert len(trace) > 3 * len(requests), (
+        "the window has to be several times the bound for the bound to be tested"
+    )
+    assert still_decoding == len(requests), (
+        "a sequence retired inside the window, so the set the bound is stated over "
+        "changed underneath it"
+    )
+    gap = _longest_gap(trace, [request.request_id for request in requests])
+    assert gap <= len(requests), (
+        f"a sequence went {gap} decode steps unserved with {len(requests)} decoding; "
+        f"anchoring bounds that at {len(requests)}"
+    )
+
+
+def test_a_pure_length_sort_starves_the_outlier(decoder_graph, monkeypatch):
+    """Fault injection: delete the anchor and the bound has to fail.
+
+    Otherwise the test above is passing on something other than what it claims. With
+    the anchor gone and the batch taken by length alone, the sequence 128 tokens clear
+    of the pack is never among the three shortest and never runs again.
+    """
+    lengths = [8, 12, 16, 20, 24, 28, 32, 160]
+    requests = [
+        _request(index, length=length, max_new_tokens=64) for index, length in enumerate(lengths)
+    ]
+    with _client(decoder_graph, num_blocks=224) as client:
+        scheduler = ContinuousBatchScheduler(
+            client, chunk_tokens=256, max_batch_size=3, length_bucketing=True
+        )
+
+        def pure_length_sort(self=scheduler):
+            lengths_now = self._cached_lengths()
+            ordered = sorted(self._decoding, key=lambda r: (lengths_now[r], r))
+            return ordered[: self._max_batch_size]
+
+        monkeypatch.setattr(scheduler, "_select_batch", pure_length_sort)
+        trace = _batch_trace(client, scheduler, requests, steps=32)
+
+    gap = _longest_gap(trace, [request.request_id for request in requests])
+    assert gap > len(requests), (
+        "a pure length sort was supposed to starve the outlier and did not, so the "
+        "starvation test is not testing the anchor"
+    )
+
+
+def test_bucketing_is_a_no_op_when_everyone_fits_in_a_step(decoder_graph):
+    """With residency at or below the batch width there is no choice to make.
+
+    This is what lets `profile_batching.py` stand without re-measuring: it assembles
+    exactly `max_batch_size` sequences, so every batch holds all of them whatever the
+    ordering rule is, and the padding regimes it measures cannot move.
+    """
+    lengths = [8, 40, 12, 72]
+    requests = [
+        _request(index, length=length, max_new_tokens=16) for index, length in enumerate(lengths)
+    ]
+
+    traces = {}
+    for bucketing in (False, True):
+        with _client(decoder_graph, num_blocks=128) as client:
+            scheduler = ContinuousBatchScheduler(
+                client,
+                chunk_tokens=256,
+                max_batch_size=len(requests),
+                length_bucketing=bucketing,
+            )
+            traces[bucketing] = _batch_trace(client, scheduler, requests, steps=8)
+
+    assert traces[True] == traces[False]
+    assert all(len(batch) == len(requests) for batch, _ in traces[True])
+
+
+def test_bucketing_off_still_takes_the_front_of_the_queue(decoder_graph):
+    """The default has to be the schedule every recorded number was measured under.
+
+    Checked only on steps that did not just promote a sequence out of prefill. A
+    promotion appends to the decoding set inside the same iteration, so the queue this
+    loop saw beforehand is genuinely not the one the batch was drawn from -- and once
+    the queue is already at least a batch wide, appending to its back cannot change
+    its front anyway.
+    """
+    lengths = [8, 40, 12, 72, 20, 96]
+    requests = [
+        _request(index, length=length, max_new_tokens=16) for index, length in enumerate(lengths)
+    ]
+    with _client(decoder_graph, num_blocks=192) as client:
+        scheduler = ContinuousBatchScheduler(client, chunk_tokens=256, max_batch_size=3)
+        for request in requests:
+            scheduler.submit(request)
+        assert scheduler.length_bucketing is False
+
+        observed = 0
+        for _ in range(_ASSEMBLY_BUDGET):
+            before = scheduler.decoding
+            step = scheduler.step()
+            if step is None:
+                break
+            if step.kind == "decode" and len(before) >= 3:
+                assert step.request_ids == before[:3]
+                observed += 1
+            if observed >= 12:
+                break
+    assert observed >= 12, "not enough decode steps to be sure of the ordering"
