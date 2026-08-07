@@ -39,6 +39,7 @@ recompute before naming a victim.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from collections.abc import Sequence
@@ -62,9 +63,11 @@ __all__ = [
     "GenerationRequest",
     "Occupancy",
     "StepRecord",
+    "available_cpus",
 ]
 
-# Threads ONNX Runtime may use inside one operator on the decoder path.
+# Threads ONNX Runtime may use inside one operator on the decoder path, before the
+# cap below.
 #
 # Not one, and deliberately not the core count either. The encoder pins this to one
 # because N workers are then N independent servers, which is what makes the M/M/c
@@ -76,12 +79,41 @@ __all__ = [
 # step is 1.50x faster at eight threads than at one, and batching's own payoff over
 # stepping one at a time rises from 1.35x to 1.79x, because a batch-1 decode is a
 # skinny GEMV with little to parallelise while a wide batch is a real GEMM. Ten
-# threads is erratic and fourteen -- this host's core count -- is an outright loss at
+# threads is erratic and fourteen -- that host's core count -- is an outright loss at
 # 0.63x, so "use every core" would have been a regression.
 #
-# Eight is therefore a measurement on this host, not a portable constant. Override it
+# Eight is therefore a measurement on one host, not a portable constant. Override it
 # per client, and re-measure on different hardware before trusting it there.
-DEFAULT_INTRA_OP_THREADS = 8
+_MEASURED_INTRA_OP_THREADS = 8
+
+
+def available_cpus() -> int:
+    """Cores this process may actually run on, not what the machine advertises.
+
+    `os.cpu_count()` reports the host's cores, which is the wrong number inside a
+    container with a smaller quota or under an affinity mask. Prefer the interfaces
+    that respect those, and fall back only when neither exists.
+    """
+    process_count = getattr(os, "process_cpu_count", None)  # 3.13+, honours affinity
+    if process_count is not None:
+        return process_count() or 1
+    affinity = getattr(os, "sched_getaffinity", None)  # Linux
+    if affinity is not None:
+        return len(affinity(0)) or 1
+    return os.cpu_count() or 1
+
+
+# Never ask for more threads than there are cores to run them on. The measured
+# optimum above is a property of one 14-core host; the cap is not a second guess at
+# the curve, it is the one bound that holds without measuring, and exceeding it is
+# always wrong.
+#
+# This is not hypothetical. With a flat 8 on a 2-core CI runner -- 4x oversubscribed
+# -- `test_a_serial_policy_queues_what_a_batched_one_overlaps` failed on two of four
+# Python versions, because the batched policy runs the wider graph and so pays the
+# most thread-sync overhead on a fixture whose graph time is microseconds. On the
+# 14-core host where 8 was measured this cap changes nothing.
+DEFAULT_INTRA_OP_THREADS = min(_MEASURED_INTRA_OP_THREADS, available_cpus())
 
 
 @dataclass

@@ -436,6 +436,16 @@ def test_a_serial_policy_queues_what_a_batched_one_overlaps(decoder_graph):
     sequence, the fourth waits for the first three; batched, they overlap. This is
     the mechanism behind the time-to-first-token difference in the results, checked
     here on a graph that runs in microseconds so it cannot be a timing artefact.
+
+    That last clause is only true while the graph time dominates everything around
+    it, and one intra-op thread is what keeps it true. At the serving default of
+    eight this test failed on two of four CI Python versions and 3 times in 20 runs
+    locally on an idle 14-core machine, against 0 in 20 at one thread: a thread pool
+    adds more variance than a microsecond graph has signal, and the batched policy
+    runs the wider graph so it pays the most of it. The property under test is about
+    *scheduling* -- who waits behind whom -- which is invariant to how many threads
+    ONNX Runtime uses inside an operator. Thread behaviour is covered directly in
+    `test_decoder_session.py`, by comparing outputs rather than durations.
     """
     workload = WorkloadSpec(label="fixed", prompt_tokens=8, max_new_tokens=3, requests=4)
     arrivals = [0.0, 0.0, 0.0, 0.0]
@@ -451,6 +461,7 @@ def test_a_serial_policy_queues_what_a_batched_one_overlaps(decoder_graph):
                 sequences=policy.resident_capacity, tokens_each=11, block_tokens=BLOCK_TOKENS
             ),
             max_context_tokens=FIXTURE_CONTEXT,
+            intra_op_threads=1,
         ) as client:
             scheduler = ContinuousBatchScheduler(client, max_batch_size=policy.max_batch_size)
             result = drive(
