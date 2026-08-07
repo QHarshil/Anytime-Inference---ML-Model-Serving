@@ -126,6 +126,26 @@ attribution. And it is not a lower bound on jitter for a well-sized deployment -
 what one particular schedule did, and the arena in that trace held every sequence, so
 nothing was waiting on memory.
 
+### Who shares a decode step
+
+Round-robin over the decoding queue by default: the batch is the front of it, and the
+sequences served move to the back. That gives every sequence the same service rate,
+which is why the four prompt lengths of the spread workload finish within 1.8 ms a token
+of each other at every load measured.
+
+`length_bucketing` trades that uniformity for throughput. It **anchors** the batch on the
+head of the queue -- the sequence that has waited longest -- and fills the remaining
+slots by nearest cached length, so a step runs over rows of similar length and wastes
+less on right-padding. Anchoring rather than sorting by length is what makes starvation
+impossible: the anchor is always at the front and always moves to the back, so an
+unserved sequence's position strictly decreases and it becomes the anchor within N steps.
+The bound falls out of the rule, so there is no age guard to tune. Deleting the anchor
+and taking a pure length sort is a test that must fail, and does.
+
+It is off by default and it earns its place only past saturation. `docs/benchmarks.md`
+has what it bought (throughput, in 12 of 12 paired comparisons) and what it spent (a
+service rate that now depends on where a sequence sits in the length distribution).
+
 ## Why the split
 
 The control plane needs to be cheap and observable; inference needs to be fast.

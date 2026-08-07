@@ -440,12 +440,15 @@ running every row at 960 positions instead of 600 while 1.0 ms is clearing the p
 The gather is identical between those two regimes, as it must be: they hold the same
 number of real tokens.
 
-So `pad_ms` is the cheap part and bucketing by length would be worth roughly the whole
-9.0 ms, up to a ceiling of 11.2 ms — the difference between a batch of the mean length
-and a batch of the longest. INT8 and INT4 measure the same effect at 33% of their steps
-each. Threading the session shrank the absolute cost by about half and left the
-*proportion* almost unchanged, which is what makes bucketing worth building rather than
-a problem that went away.
+So `pad_ms` is the cheap part, and the ceiling on what bucketing could recover is
+11.2 ms — the difference between a batch of the mean length and a batch of the longest.
+INT8 and INT4 measure the same effect at 33% of their steps each. Threading the session
+shrank the absolute cost by about half and left the *proportion* almost unchanged, which
+is what made bucketing worth building rather than a problem that went away.
+
+That is a ceiling on the mechanism, not a prediction of the result. What bucketing
+actually recovered under load is measured separately below, and it is about a third of
+it — for the reason that a ceiling measured over a full batch cannot show.
 
 ### Reproducibility, and what moved between two runs
 
@@ -608,8 +611,69 @@ have the same 253-token mean as the fixed 256-token workload and sustain 4.02
 requests/s against 4.80, with p95 time per output token of 41.8 ms against 19.2. That
 is the right-padding cost from the section above, under load: the batch runs
 at its longest row, so one long prompt slows every sequence sharing the step with it.
-It is the strongest argument here for length-bucketed batching, and it is measured
-rather than assumed.
+It was the argument for length-bucketed batching, and the section below is what
+bucketing did about it.
+
+### Length bucketing buys throughput and spends fairness
+
+A batched step runs at its longest row, so the scheduler can choose *who shares a step*
+to make the rows more alike. `ContinuousBatchScheduler` does it by anchoring the batch
+on the head of the decoding queue — the sequence that has waited longest — and filling
+the remaining slots by nearest cached length. Anchoring rather than sorting is what
+bounds starvation: the anchor is always at the front and always moves to the back, so an
+unserved sequence's position strictly decreases and it becomes the anchor within N
+steps. That bound comes from the rule rather than from a tuned age guard.
+
+**None of the three policies above can show this.** Bucketing needs more sequences
+decoding than fit in one step, and `serial` is a batch of one while `batched-8` and
+`batched-8-preempting` hold no more sequences than the width. So it is measured by its
+own pair — one arena for 24 sequences against a batch width of 8, with the ordering rule
+off and on, over the spread workload — run by `--bucketing-ab` into its own files.
+Three passes, medians below, `fp32`, admission off in both arms so nothing was evicted.
+
+| ρ | output tokens/s | time per output token, p50, by prompt length |
+| --- | --- | --- |
+| | arrival → bucketed | 64 / 192 / 320 / 448 |
+| 0.80 | 203.5 → 212.5 (+4.5%) | 15.3 15.1 15.4 15.8 → 17.3 17.6 17.4 17.9 |
+| 0.95 | 231.5 → 239.4 (+3.4%) | 22.6 22.6 22.7 22.7 → 25.1 23.3 23.3 27.3 |
+| 1.10 | 242.7 → 257.0 (+5.8%) | 46.9 47.3 46.9 46.7 → 53.3 42.4 41.3 51.4 |
+| 1.30 | 253.6 → 270.8 (+8.4%) | 85.4 87.2 85.4 86.4 → 75.6 60.8 54.5 79.3 |
+
+**Throughput is the robust half.** Bucketing is ahead in **12 of 12** paired
+comparisons, and the gain grows with load. At ρ = 1.1 the three passes read 1.059,
+1.057, 1.058 — a 0.2% spread, the tightest ratio on this page. Capacity moves the same
+way, 4.23 → 4.47 completions/s, but read that one more carefully: the arrival arm
+reproduces to 0.8% across passes while the bucketed arm spreads 6.3%, and the three
+ratios are 1.061, 1.014 and 1.081. The direction held every time; the magnitude did not.
+
+**Fairness is what it costs, and it is dispersion rather than starvation.** Nothing
+starved: no request went uncompleted under either arm, and at ρ = 1.3 the worst-served
+request is *better* bucketed (127.6 against 131.4 ms a token). What changes is that
+round-robin gives every prompt length the same service rate — the four lengths sit
+within 0.1 to 1.8 ms of each other at every load — and bucketing does not, fanning out
+to a 12.0 ms range at ρ = 1.1 and 24.8 ms at ρ = 1.3.
+
+The shape is the mechanism showing through. The middle of the length distribution has
+near-neighbours on both sides and gets picked as filler constantly; 64 and 448 are the
+extremes, have fewer neighbours, and wait to become the anchor. So the middle gains most
+and the tails gain least, and below saturation the tails lose outright — which is what
+drives SLO attainment at ρ = 0.95 from 1.000 down to 0.85, the one place the arrival arm
+was perfectly stable across all three passes and the bucketed arm was not.
+
+**So the trade is load-dependent, and it is the same shape the preempting policy has.**
+Below saturation bucketing costs about 2 ms a token on every length and returns 3-4% of
+throughput. Past it, every length is faster than round-robin and the aggregate gain is
+8.4%. A server that never saturates should leave it off.
+
+**It recovers about a third of what variance costs, and the reason is not the rule.**
+Variance costs 16% of capacity; bucketing returns about 6%. The mean decode batch is
+3.36 / 5.01 / 5.85 / 6.24 across the four load points — **below the batch width of 8 at
+every one of them**. On a step where fewer than 8 sequences are decoding, every one of
+them is in the batch and the ordering rule has nothing to choose. Residency reaches 39
+sequences at ρ = 1.3, but most of them are still prefilling, and alternation means a
+sequence spends its prompt in the prefill queue rather than the decode set. What limits
+bucketing here is how many sequences are *decoding at once*, which is a property of the
+alternation, not of how the batch is filled.
 
 ### What is weak about these numbers
 
@@ -623,9 +687,20 @@ rather than assumed.
   reported.
 - **One precision.** The sweep is FP32 only. It answers a scheduling question, and the
   precision comparison is the section above.
+- **The bucketing A/B runs its arms in a fixed order**, arrival first, so a machine
+  degrading over the four minutes of a pass would flatter the first arm. The check
+  against it is that the arrival arm reproduces to 0.8% across three passes taken about
+  ten minutes apart, which is not what a drifting host looks like. Reversing the order
+  would settle it outright and has not been done.
+- **The dispersion figures are thinner than the throughput ones.** A point is 75
+  requests cycling through four lengths, so each length carries about 19 of them, or 56
+  across three passes. That supports the p50 quoted and nothing further out; the
+  throughput column pools all 225.
 - Every per-request row is in `results/decode_sweep_requests.csv`, so attainment at a
-  different pair of targets, or any other percentile, can be recomputed without
-  measuring again.
+  different pair of targets, or any other percentile, can be recomputed without measuring
+  again. One run of `--bucketing-ab` writes the same pair as
+  `decode_bucketing.json` and `decode_bucketing_requests.csv`; the figures above are
+  medians over three such runs, so no single file reproduces them.
 
 ## Reproducing
 
@@ -638,6 +713,7 @@ python scripts/profile_decode.py              # measure TTFT and TPOT
 python scripts/plot_decode_profiles.py        # draw the three decoder figures
 python scripts/profile_batching.py            # measure batch scaling and padding
 python scripts/run_decode_sweep.py            # sweep load through the scheduler
+python scripts/run_decode_sweep.py --bucketing-ab   # length bucketing against arrival order
 python scripts/plot_batching.py               # draw the three batching figures
 ```
 

@@ -49,8 +49,8 @@ wins again by as much: 71% of requests meeting their targets against 13%.
 `docs/benchmarks.md` has both, and the caveat that a batched-against-serial ratio is
 scaled to the batched policy's own capacity.
 
-What length bucketing is for
-----------------------------
+What length bucketing buys, and what it spends
+-----------------------------------------------
 
 A batched step runs every row at the longest row's cached length, so a batch holding one
 long sequence charges every short one for positions it does not have. Measured at a 4:1
@@ -60,7 +60,21 @@ shares a step* to shrink that.
 
 It can only help when more sequences are decoding than fit in one step. With an arena
 sized to the batch width every batch holds everyone, and the ordering rule cannot change
-what the step costs.
+what the step costs. That is why it is off by default: it is a policy for a scheduler
+with a backlog, and it costs something for one without.
+
+Measured against arrival order over a spread workload, one arena for 24 sequences at a
+batch width of 8: **output tokens per second up in 12 of 12 paired comparisons**, by
+4.5% at rho = 0.8 rising to 8.4% at rho = 1.3. Capacity moves the same way, 4.23 to 4.47
+completions/s, less reproducibly.
+
+What it spends is uniformity. Round-robin serves every prompt length at the same rate --
+the four lengths of that workload sit within 1.8 ms of each other at every load. Bucketing
+fans them out to a 24.8 ms range at rho = 1.3, because the middle of the length
+distribution has near-neighbours on both sides and is picked as filler constantly while
+the extremes wait to become the anchor. Nothing starves, which the bound below
+guarantees and the measurement confirms; below saturation the extremes are simply slower
+than they would have been. `docs/benchmarks.md` has the table and the caveats.
 
 Fairness is the part admission already owned
 --------------------------------------------
