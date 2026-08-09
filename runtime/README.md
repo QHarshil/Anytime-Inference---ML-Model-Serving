@@ -122,7 +122,15 @@ session.release("seq")  # blocks back; tokens are the caller's
   before the first run rather than faulting in during the opening decode steps.
 - **Gather is timed, not assumed.** `StepTimings` breaks out gather, run, scatter and
   the once-per-sequence invariant check separately. On GPT-2 the gather is 4% of a
-  decode step at 128 cached tokens and 11% at 960.
+  decode step at 128 cached tokens and 11% at 960, and a quarter of a wide batched one.
+- **The gather can be split across cores, and is not by default.** `copy_threads`
+  divides it over the `layers * 2` key/value slots, each of which owns its own staging
+  buffer so the tasks share nothing. It is worth 2.2x to 3.1x -- a `memcpy` is bound by
+  bandwidth rather than by thread count -- and takes the gather from a quarter of a wide
+  step to a tenth. One is the default, because that is the configuration every recorded
+  number was measured on. Below `parallel_copy_floor` staged floats the copy runs inline
+  whatever the pool holds; that threshold is a measured crossover and an argument, not a
+  constant.
 - **Only the new tail is scattered back.** That rests on `present` beginning with the
   `past` it was given, which is verified once per sequence and raises on mismatch.
 - **One arena per session, shared by every sequence in it.** `open` registers a

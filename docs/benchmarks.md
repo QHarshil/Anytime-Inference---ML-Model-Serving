@@ -130,8 +130,10 @@ neither phase.
 
 TTFT is a chunked prefill at the 256-token default; the percentage is the range across
 seven passes. "Arena cost" is the gather plus scatter as a share of the decode step --
-what block accounting costs, and it rose from 11-13% because threading shrank the step
-around a gather that is this process's own serial memcpy and did not move.
+what block accounting costs, and it rose from 11-13% because threading the *session*
+shrank the step around a gather that is this process's own memcpy and did not move. The
+copy can now be threaded too, and is not here: `copy_threads` defaults to 1 and every
+number on this page was taken with it.
 
 **Read the spread column carefully, and do not compare it with an earlier run's.** It is
 a min-max range, so it widens with the number of passes by construction; this run took
@@ -165,6 +167,11 @@ the rate one thread copies at, and the only ways to make it cheaper are to move 
 bytes or to use more than one thread. It is now the largest single item in a decode
 step that this repository owns rather than delegates to ONNX Runtime, which is what
 makes both of those worth doing rather than noting.
+
+The second of those is now built and measured — see *Splitting the gather across
+threads* below. It is worth 2.2x to 3.1x and takes the gather from a quarter of a wide
+decode step to a tenth. Every number in this section and the tables above is still the
+serial copy, which remains the default.
 
 The scatter stays near zero because it writes only the new token rather than the
 whole `present` tensor, which is worth about 1 ms a step at full context.
@@ -450,6 +457,58 @@ That is a ceiling on the mechanism, not a prediction of the result. What bucketi
 actually recovered under load is measured separately below, and it is about a third of
 it — for the reason that a ceiling measured over a full batch cannot show.
 
+### Splitting the gather across threads
+
+The gather is `memcpy` at about one thread's copy rate, so the two ways to make it
+cheaper are to move fewer bytes or to use more cores. This is the second.
+`DecoderSession` owns a small pool and divides the copy over slots — the `layers * 2`
+key/value halves, 24 on GPT-2 — because each slot has its own staging buffer and the
+tasks then share nothing at all. Dividing over batch rows instead would leave nothing to
+split at batch 1.
+
+**Ratios only in this section, and the reason is measured rather than assumed.** The
+host was running 1.5-2.1x slower than when the tables above were recorded, established
+by checking out the commit before this change, rebuilding it, and measuring it on the
+same machine in the same hour: unmodified code read 82.62 ms where the record says
+40.09. So the absolute milliseconds here are not comparable with anything else on this
+page and are not quoted. Paired arms, alternating, three passes, `fp32`:
+
+| Batch | Cached | Gather, 1 thread → 8 | Pad, 1 → 8 |
+| --- | --- | --- | --- |
+| 8 | 128 | 2.56 / 1.72 / 2.92x | 1.91x |
+| 32 | 128 | 2.98 / 2.67 / 3.12x | 2.96x |
+| 8 | 512 | 2.67 / 2.66 / 2.48x | 1.74x |
+| 32 | 512 | 2.66 / 2.65 / 2.55x | 2.90x |
+| 8 | 960 | 2.34 / 2.56 / 2.41x | 1.50x |
+| 32 | 960 | 3.02 / 2.81 / 2.54x | 3.15x |
+
+**2.2x to 3.1x, and that is the right order of magnitude rather than a disappointment.**
+A `memcpy` is bound by memory bandwidth, not by how many threads are pointed at it, so
+eight runners were never going to give eight times. What it buys is the share: **the
+gather falls from 25-28% of a wide decode step to 10-11%**, which is a within-run ratio
+and therefore survives the host problem above.
+
+**The step-level gain is real and only separable at the widest points.** At batch 32 and
+960 cached the step improves 1.18x, and the arithmetic agrees — 48.3 ms off the step
+against 51.2 ms saved on the gather. At batch 32 and 512 a 25.9 ms gather saving
+disappears into `Session::Run`'s own variance on a 147 ms step. Three passes is not
+enough to see it there, and the honest reading is that this makes the part of the step
+this repository owns three times cheaper, not that it makes every step 18% faster.
+
+**The inline floor is measured, and measuring moved it by 32x.** Below some size,
+synchronising costs more than splitting saves, so the copy runs on the calling thread.
+That threshold started at 1<<20 staged floats on the reasoning that thread hand-off is
+tens of microseconds; the crossover sweep says threading already wins 1.85x at batch 8
+and 128 cached, which 1<<20 would have excluded. The measured crossover at batch 1 is
+between 24,576 floats (0.72x, a loss) and 49,152 (1.29x, a win), and the default sits in
+that gap at 1<<15. It is a constructor argument rather than a constant, because a
+threshold nothing can set is a threshold nothing can test.
+
+**`copy_threads` defaults to 1**, the serial copy every other number on this page was
+taken with. It is a separate budget from the intra-op count because it divides a
+different thing — that one divides the graph, this one divides the staging copy — and
+the two never run at the same moment.
+
 ### Reproducibility, and what moved between two runs
 
 The whole measurement was run twice, about 25 minutes apart. Absolute step times moved
@@ -687,6 +746,16 @@ alternation, not of how the batch is filled.
   reported.
 - **One precision.** The sweep is FP32 only. It answers a scheduling question, and the
   precision comparison is the section above.
+- **A busy host penalises the gather more than it penalises the graph.** Everything
+  measured in the threading section was taken while the machine was 1.5-2.1x slower than
+  when the tables were recorded, and the two do not degrade together: `Session::Run`
+  slowed 1.5-1.6x and the gather 1.9x. A copy is bandwidth-bound and a graph is only
+  partly so, so contention is not a scale factor that cancels out of a comparison
+  between them. Shares within one run are safe; ratios between runs are not.
+- **The `AllowIntraOpSpinning=0` question is open.** ONNX Runtime's intra-op workers
+  busy-wait between runs, and what runs in between here is a bandwidth-bound gather, so
+  it is a plausible lever. `--no-spinning` exists and is tested for correctness; the
+  measurement wants an idle machine and has not had one.
 - **The bucketing A/B runs its arms in a fixed order**, arrival first, so a machine
   degrading over the four minutes of a pass would flatter the first arm. The check
   against it is that the arrival arm reproduces to 0.8% across three passes taken about
