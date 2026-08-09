@@ -164,7 +164,8 @@ public:
     DecoderSession(const std::string& path, int block_tokens = kDefaultBlockTokens,
                    std::size_t num_blocks = 256, int intra_op_threads = 1,
                    int inter_op_threads = 1, int copy_threads = 1,
-                   std::size_t parallel_copy_floor = kDefaultParallelCopyFloor);
+                   std::size_t parallel_copy_floor = kDefaultParallelCopyFloor,
+                   bool allow_spinning = true);
 
     const KvGeometry& geometry() const { return geometry_; }
     std::size_t capacity_blocks() const { return pool_->capacity_blocks(); }

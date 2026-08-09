@@ -20,11 +20,17 @@ std::string join(const std::vector<std::string>& parts) {
 }  // namespace
 
 Model::Model(Ort::Env& env, const std::string& path, int intra_op_threads,
-             int inter_op_threads) {
+             int inter_op_threads, bool allow_spinning) {
     Ort::SessionOptions options;
     options.SetIntraOpNumThreads(intra_op_threads);
     options.SetInterOpNumThreads(inter_op_threads);
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    if (!allow_spinning) {
+        // Set only when turning it off. ONNX Runtime's default is "1", and writing
+        // that back explicitly would make a run configured by this flag
+        // indistinguishable from one that never touched it.
+        options.AddConfigEntry("session.intra_op.allow_spinning", "0");
+    }
 
     session_ = std::make_unique<Ort::Session>(env, path.c_str(), options);
 

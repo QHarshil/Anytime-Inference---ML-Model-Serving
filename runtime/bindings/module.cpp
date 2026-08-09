@@ -323,15 +323,16 @@ PYBIND11_MODULE(anytime_runtime, module) {
         "outgrows its reservation mid-decode raises CacheExhausted.")
         .def(py::init([](const std::string& path, int block_tokens, std::size_t num_blocks,
                          int intra_op_threads, int inter_op_threads, int copy_threads,
-                         std::size_t parallel_copy_floor) {
+                         std::size_t parallel_copy_floor, bool allow_spinning) {
                  return std::make_unique<anytime::DecoderSession>(
                      path, block_tokens, num_blocks, intra_op_threads, inter_op_threads,
-                     copy_threads, parallel_copy_floor);
+                     copy_threads, parallel_copy_floor, allow_spinning);
              }),
              py::arg("path"), py::arg("block_tokens") = anytime::kDefaultBlockTokens,
              py::arg("num_blocks") = 256, py::arg("intra_op_threads") = 1,
              py::arg("inter_op_threads") = 1, py::arg("copy_threads") = 1,
-             py::arg("parallel_copy_floor") = anytime::kDefaultParallelCopyFloor)
+             py::arg("parallel_copy_floor") = anytime::kDefaultParallelCopyFloor,
+             py::arg("allow_spinning") = true)
         .def_property_readonly("copy_threads", &anytime::DecoderSession::copy_threads,
                                "Runners the gather may split across, the calling thread "
                                "included. One means the copy is a plain loop.")

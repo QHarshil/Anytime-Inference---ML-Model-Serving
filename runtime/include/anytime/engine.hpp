@@ -30,8 +30,15 @@ namespace anytime {
 // One loaded graph, with the input and output names it declares.
 class Model {
 public:
+    // `allow_spinning` is ONNX Runtime's own default: after a Run returns, its
+    // intra-op workers busy-wait for the next one rather than sleeping, which makes
+    // the next Run start sooner and costs cores in between. That trade is only
+    // obviously right when Run is the only thing happening. On the decoder path it is
+    // not -- a gather runs between two Runs, and it is bandwidth-bound -- so this is
+    // exposed to be measured rather than assumed. Defaults to true, which is what
+    // every recorded number was taken with.
     Model(Ort::Env& env, const std::string& path, int intra_op_threads,
-          int inter_op_threads);
+          int inter_op_threads, bool allow_spinning = true);
 
     const std::vector<std::string>& input_names() const { return input_names_; }
     const std::vector<std::string>& output_names() const { return output_names_; }

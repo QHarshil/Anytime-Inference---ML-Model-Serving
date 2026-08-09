@@ -788,7 +788,9 @@ def feasible(cached_tokens: int, batch_size: int, steps: int, max_context: int) 
 
 
 def host_metadata(
-    intra_op_threads: int, copy_threads: int = DEFAULT_COPY_THREADS
+    intra_op_threads: int,
+    copy_threads: int = DEFAULT_COPY_THREADS,
+    allow_spinning: bool = True,
 ) -> dict[str, object]:
     """What the run was taken on, including the settings that change the numbers.
 
@@ -807,6 +809,7 @@ def host_metadata(
         "onnxruntime": load_extension().onnxruntime_version(),
         "intra_op_num_threads": intra_op_threads,
         "copy_threads": copy_threads,
+        "allow_spinning": allow_spinning,
     }
 
 
@@ -825,6 +828,7 @@ def profile_precision(
     trace_settings: tuple[int, ...],
     intra_op_threads: int,
     copy_threads: int = DEFAULT_COPY_THREADS,
+    allow_spinning: bool = True,
 ) -> tuple[PrecisionProfile, list[str]]:
     """Every measurement for one precision. Returns it plus any divergence found."""
     profile = PrecisionProfile(
@@ -841,6 +845,7 @@ def profile_precision(
         max_context_tokens=max_context,
         intra_op_threads=intra_op_threads,
         copy_threads=copy_threads,
+        allow_spinning=allow_spinning,
     ) as client:
         geometry = client.geometry
         LOGGER.info(
@@ -1047,6 +1052,16 @@ def main() -> int:
             f"(default {DEFAULT_COPY_THREADS})"
         ),
     )
+    parser.add_argument(
+        "--no-spinning",
+        action="store_true",
+        help=(
+            "Stop ONNX Runtime's intra-op workers busy-waiting between runs. They do "
+            "by default, which starts the next Run sooner and holds the cores in "
+            "between -- and what runs in between here is a bandwidth-bound gather. "
+            "Off by default, matching ONNX Runtime and every recorded number"
+        ),
+    )
     parser.add_argument("--padding-batch", type=int, default=PADDING_BATCH)
     parser.add_argument(
         "--quick", action="store_true", help="Fewer batch widths, cached lengths and passes"
@@ -1128,6 +1143,7 @@ def main() -> int:
             trace_settings=trace_settings,
             intra_op_threads=args.intra_op_threads,
             copy_threads=args.copy_threads,
+            allow_spinning=not args.no_spinning,
         )
         profiles.append(profile)
         divergences.extend(found)
@@ -1145,7 +1161,7 @@ def main() -> int:
         )
 
     payload = {
-        "host": host_metadata(args.intra_op_threads, args.copy_threads),
+        "host": host_metadata(args.intra_op_threads, args.copy_threads, not args.no_spinning),
         "model": args.model,
         "measurement_passes": repeats,
         "measured_steps_per_pass": args.steps,

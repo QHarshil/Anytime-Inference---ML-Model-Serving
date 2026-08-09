@@ -673,6 +673,37 @@ def test_a_threaded_gather_stages_the_same_bytes_as_a_serial_one(
         feed = [int(np.argmax(np.asarray(row.logits))) % (VOCAB - 2) + 1 for row in want.rows]
 
 
+@pytest.mark.parametrize("allow_spinning", [True, False])
+def test_stopping_the_intra_op_threads_spinning_changes_no_answer(decoder_graph, allow_spinning):
+    """A scheduling hint for ONNX Runtime's pool, not a numeric one.
+
+    Whether its workers busy-wait between runs decides when cores are given back,
+    never what a run computes, so the logits have to be bitwise identical. Asserting
+    that is what would catch the setting being confused for one that does arithmetic.
+
+    **Bitwise is derivable here and it is not two tests above, so do not "fix" this by
+    weakening it.** `test_a_threaded_session_decodes_the_same_batch_as_a_serial_one`
+    compares one intra-op thread against four, which changes how the graph is
+    partitioned and therefore the order a reduction accumulates in; that one is
+    rightly float32. This holds the thread count fixed at four on both sides and moves
+    only the spin flag, so the partition is the same and the only difference is when a
+    worker wakes. Same reasoning as the gather: identical bytes through an identical
+    graph.
+    """
+    reference = _session(decoder_graph, intra_op_threads=4)
+    measured = load_extension().DecoderSession(
+        str(decoder_graph),
+        block_tokens=4,
+        num_blocks=64,
+        intra_op_threads=4,
+        allow_spinning=allow_spinning,
+    )
+    want_tokens, want_logits = session_generate(reference, "a", PROMPT, STEPS, chunk_tokens=0)
+    got_tokens, got_logits = session_generate(measured, "a", PROMPT, STEPS, chunk_tokens=0)
+    assert got_tokens == want_tokens
+    _assert_bitwise(want_logits, got_logits, f"allow_spinning={allow_spinning}")
+
+
 def test_one_copy_thread_is_the_default_and_the_floor_is_the_measured_one(decoder_graph):
     """Both defaults are the configuration every recorded number was measured on.
 

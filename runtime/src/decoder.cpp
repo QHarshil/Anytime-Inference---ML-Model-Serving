@@ -36,12 +36,13 @@ std::map<std::string, std::size_t> index_by_name(const std::vector<std::string>&
 
 DecoderSession::DecoderSession(const std::string& path, int block_tokens, std::size_t num_blocks,
                                int intra_op_threads, int inter_op_threads, int copy_threads,
-                               std::size_t parallel_copy_floor)
+                               std::size_t parallel_copy_floor, bool allow_spinning)
     : env_(ORT_LOGGING_LEVEL_WARNING, "anytime_decoder"),
       memory_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault)),
       copy_pool_(copy_threads),
       parallel_copy_floor_(parallel_copy_floor) {
-    model_ = std::make_unique<Model>(env_, path, intra_op_threads, inter_op_threads);
+    model_ = std::make_unique<Model>(env_, path, intra_op_threads, inter_op_threads,
+                                    allow_spinning);
     derive_geometry(block_tokens);
     pool_ = std::make_unique<BlockPool>(geometry_, num_blocks);
     past_buffers_.resize(static_cast<std::size_t>(geometry_.layers) * 2);

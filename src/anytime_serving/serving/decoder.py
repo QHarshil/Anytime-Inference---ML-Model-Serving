@@ -320,6 +320,7 @@ class DecoderClient:
         inter_op_threads: int = 1,
         copy_threads: int = DEFAULT_COPY_THREADS,
         parallel_copy_floor: int | None = None,
+        allow_spinning: bool = True,
         admission: BlockAdmission | None = None,
         reserve_full_generation: bool = True,
         max_context_tokens: int | None = None,
@@ -342,6 +343,11 @@ class DecoderClient:
             # Left at the extension's measured default unless a caller is
             # deliberately measuring the crossover it encodes.
             **floor,
+            # ONNX Runtime's intra-op workers busy-wait between runs by default.
+            # That is a good trade when Run is the only thing happening and a
+            # questionable one here, where a bandwidth-bound gather runs between
+            # two Runs. True is what every recorded number was taken with.
+            allow_spinning=allow_spinning,
         )
         self._exhausted = extension.CacheExhausted
         self._default_chunk = extension.DEFAULT_PREFILL_CHUNK_TOKENS

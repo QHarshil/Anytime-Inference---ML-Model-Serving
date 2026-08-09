@@ -324,6 +324,14 @@ def test_the_recorded_host_reports_the_copy_thread_count_too(copy_threads):
     assert host_metadata(8)["copy_threads"] == 1
 
 
+@requires_extension
+@pytest.mark.parametrize("allow_spinning", [True, False])
+def test_the_recorded_host_reports_whether_the_pool_was_spinning(allow_spinning):
+    """It changes when cores are free, so it changes the gather beside the graph."""
+    assert host_metadata(8, 1, allow_spinning)["allow_spinning"] is allow_spinning
+    assert host_metadata(8)["allow_spinning"] is True
+
+
 # --- against the real scheduler ----------------------------------------------
 
 
