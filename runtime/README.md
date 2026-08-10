@@ -125,9 +125,9 @@ session.release("seq")  # blocks back; tokens are the caller's
   decode step at 128 cached tokens and 11% at 960, and a quarter of a wide batched one.
 - **The gather can be split across cores, and is not by default.** `copy_threads`
   divides it over the `layers * 2` key/value slots, each of which owns its own staging
-  buffer so the tasks share nothing. It is worth 2.2x to 3.1x -- a `memcpy` is bound by
+  buffer so the tasks share nothing. It is worth 1.8x to 2.2x -- a `memcpy` is bound by
   bandwidth rather than by thread count -- and takes the gather from a quarter of a wide
-  step to a tenth. One is the default, because that is the configuration every recorded
+  step to a sixth. One is the default, because that is the configuration every recorded
   number was measured on. Below `parallel_copy_floor` staged floats the copy runs inline
   whatever the pool holds; that threshold is a measured crossover and an argument, not a
   constant.

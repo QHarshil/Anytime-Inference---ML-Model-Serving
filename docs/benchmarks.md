@@ -169,8 +169,8 @@ step that this repository owns rather than delegates to ONNX Runtime, which is w
 makes both of those worth doing rather than noting.
 
 The second of those is now built and measured — see *Splitting the gather across
-threads* below. It is worth 2.2x to 3.1x and takes the gather from a quarter of a wide
-decode step to a tenth. Every number in this section and the tables above is still the
+threads* below. It is worth 1.8x to 2.2x and takes the gather from a quarter of a wide
+decode step to a sixth. Every number in this section and the tables above is still the
 serial copy, which remains the default.
 
 The scatter stays near zero because it writes only the new token rather than the
@@ -417,8 +417,11 @@ Two controls, because a 1.5x is the kind of number worth disbelieving:
 - **The gather, the padding and the scatter do not move.** They are this process's own
   serial memcpy loops rather than ONNX Runtime's, so they must be flat across thread
   counts, and they are — within 4.2% across seven runs while `Run` fell 40%. They do
-  drift mildly upward with the thread count, consistent with ORT's intra-op pool
-  spin-waiting for bandwidth after `Run` returns.
+  drift mildly upward with the thread count. That was attributed to ORT's intra-op pool
+  spin-waiting for bandwidth after `Run` returns, and measuring it says otherwise:
+  parking the pool moves the gather by 1.9%, which is far too little to be the
+  explanation. See *stopping ONNX Runtime's workers spinning* below. The drift is
+  unexplained.
 - **The encoder did not move.** DistilBERT measured 12.99 ms against a recorded 12.893
   and MiniLM 5.32 against 5.189, both accuracies exact. `DecoderSession` and `Engine`
   hold separate `Ort::Env` instances and separate per-session thread pools with no
@@ -426,9 +429,10 @@ Two controls, because a 1.5x is the kind of number worth disbelieving:
   than argued, because the Stage 1 service times are what the headline result rests on.
 
 One consequence for where the remaining time is. At batch 32 and 960 cached, the gather
-was 17.1% of a decode step at one thread and is **26.6% at eight** — 39 ms that did not
-move while everything around it shrank. It is now the largest item in a decode step that
-this repository owns rather than delegates to ONNX Runtime.
+was 17.1% of a decode step at one intra-op thread and is **26.5% at eight** — 39 ms that
+did not move while everything around it shrank. It is now the largest item in a decode
+step that this repository owns rather than delegates to ONNX Runtime, and splitting it
+across cores takes it back to 16.7% rather than removing it.
 
 ### Right-padding costs a third of a step, and it is not the zeroing
 
@@ -466,34 +470,40 @@ key/value halves, 24 on GPT-2 — because each slot has its own staging buffer a
 tasks then share nothing at all. Dividing over batch rows instead would leave nothing to
 split at batch 1.
 
-**Ratios only in this section, and the reason is measured rather than assumed.** The
-host was running 1.5-2.1x slower than when the tables above were recorded, established
-by checking out the commit before this change, rebuilding it, and measuring it on the
-same machine in the same hour: unmodified code read 82.62 ms where the record says
-40.09. So the absolute milliseconds here are not comparable with anything else on this
-page and are not quoted. Paired arms, alternating, three passes, `fp32`:
+Paired arms, order alternated between pairs, three pairs, `fp32`. Every arm here passed a
+host check described under *what the numbers were gated on* below; the first attempt at
+this measurement did not, and the difference is large enough to matter — see the same
+section.
 
-| Batch | Cached | Gather, 1 thread → 8 | Pad, 1 → 8 |
-| --- | --- | --- | --- |
-| 8 | 128 | 2.56 / 1.72 / 2.92x | 1.91x |
-| 32 | 128 | 2.98 / 2.67 / 3.12x | 2.96x |
-| 8 | 512 | 2.67 / 2.66 / 2.48x | 1.74x |
-| 32 | 512 | 2.66 / 2.65 / 2.55x | 2.90x |
-| 8 | 960 | 2.34 / 2.56 / 2.41x | 1.50x |
-| 32 | 960 | 3.02 / 2.81 / 2.54x | 3.15x |
+| Batch | Cached | Gather, 1 thread → 8 | Pad, 1 → 8 | Step, 1 → 8 |
+| --- | --- | --- | --- | --- |
+| 8 | 128 | 2.08 / 2.02 / 1.89x | 1.99x | 1.04x |
+| 32 | 128 | 2.12 / 2.18 / 2.10x | 2.88x | 1.12x |
+| 8 | 512 | 1.96 / 1.92 / 1.91x | 2.39x | 1.14x |
+| 32 | 512 | 1.93 / 1.90 / 1.93x | 5.23x | 1.16x |
+| 8 | 960 | 1.77 / 1.82 / 1.82x | 2.30x | 1.11x |
+| 32 | 960 | 1.90 / 1.84 / 1.77x | 5.37x | 1.16x |
 
-**2.2x to 3.1x, and that is the right order of magnitude rather than a disappointment.**
+**1.8x to 2.2x, and that is the right order of magnitude rather than a disappointment.**
 A `memcpy` is bound by memory bandwidth, not by how many threads are pointed at it, so
-eight runners were never going to give eight times. What it buys is the share: **the
-gather falls from 25-28% of a wide decode step to 10-11%**, which is a within-run ratio
-and therefore survives the host problem above.
+eight runners were never going to give eight times. The gain shrinks as occupancy rises,
+which is what a bandwidth bound predicts: more cached tokens means more bytes per slot and
+less of the copy is per-slot overhead that parallelism can hide.
 
-**The step-level gain is real and only separable at the widest points.** At batch 32 and
-960 cached the step improves 1.18x, and the arithmetic agrees — 48.3 ms off the step
-against 51.2 ms saved on the gather. At batch 32 and 512 a 25.9 ms gather saving
-disappears into `Session::Run`'s own variance on a 147 ms step. Three passes is not
-enough to see it there, and the honest reading is that this makes the part of the step
-this repository owns three times cheaper, not that it makes every step 18% faster.
+**What it buys is the share.** At batch 32 and 960 cached the gather falls from 26.5% of a
+decode step to 16.7%; at 128 cached, from 18.2% to 9.5%. Those are within-run ratios, and
+they are quoted from the gated runs rather than the first attempt for a reason given below.
+
+**The step-level gain is separable at every point measured, and it is about 1.15x.** Batch
+32 improves 1.12x / 1.16x / 1.16x at 128 / 512 / 960 cached and batch 8 improves 1.04x /
+1.14x / 1.11x, each from three paired passes. The honest reading is still that this makes
+the part of a step this repository owns roughly twice as cheap rather than making a step
+15% faster in general: the step gain is what is left after `Session::Run`, which threading
+the copy does not touch, keeps its share.
+
+Batch 1 is not in the table because it cannot carry a ratio. Its gather is 0.18 ms at 128
+cached, where three paired passes read 1.39 / 0.52 / 1.47x — sub-microsecond noise on a
+5 ms step. At 512 and 960 cached it settles at 1.72x and 1.65x.
 
 **The inline floor is measured, and measuring moved it by 32x.** Below some size,
 synchronising costs more than splitting saves, so the copy runs on the calling thread.
@@ -503,6 +513,66 @@ and 128 cached, which 1<<20 would have excluded. The measured crossover at batch
 between 24,576 floats (0.72x, a loss) and 49,152 (1.29x, a win), and the default sits in
 that gap at 1<<15. It is a constructor argument rather than a constant, because a
 threshold nothing can set is a threshold nothing can test.
+
+#### What the numbers were gated on, and what an earlier attempt reported instead
+
+The table above replaces one that read 2.2x to 3.1x, and the difference is not a
+refinement. **This host intermittently runs about 2x slower, for stretches of twenty
+minutes or so, and the load average does not see it.** The first attempt at this A/B took
+three of its six arms inside such a stretch and three outside, and the degraded arms ran
+at a *lower* one-minute load than the healthy ones.
+
+`Session::Run` is what separates them. It is ONNX Runtime's own time inside the graph and
+cannot depend on `--copy-threads`, which divides a copy that happens outside it, so it is
+free of the thing under test and can be checked against a run recorded when the host was
+known good. Every arm above is within 8% of that reference; healthy arms land in
+0.96-1.04x, and the arms that were thrown away read 1.19x to 2.06x.
+
+**A busy host inflates this particular ratio rather than adding noise to it**, which is why
+the earlier number was wrong in a consistent direction. Contention costs a bandwidth-bound
+copy about 1.9x where it costs a partly-compute-bound graph 1.5-1.6x, so the serial arm —
+the one doing all the copying on one thread — loses more than the threaded arm, and their
+ratio grows. The same script on the same evening read **2.91x** on a degraded pair and
+**1.87x** on a healthy pair twenty-two minutes later.
+
+**Within-run shares are not immune to this, and an earlier version of this page said they
+were.** The claim was that the gather's share of a step is a ratio taken inside one run and
+therefore survives host drift. It does not: the same code reads 11.3% degraded and 16.7%
+healthy at batch 32 and 960 cached, because contention moves `Run` and the gather by
+different factors and so moves their ratio to each other. A share is safer than an absolute
+and it is not safe.
+
+### Stopping ONNX Runtime's workers spinning is a 1.65x regression
+
+The obvious next lever, and it goes the wrong way. ONNX Runtime's intra-op workers
+busy-wait rather than sleeping when there is no parallel section to run, and what runs
+between two decode runs here is a bandwidth-bound gather, so parking them should hand the
+gather the memory system. It does. The amount is 1.9%.
+
+Paired arms at `--copy-threads 8`, order alternated between pairs, three passes, `fp32`
+at batch 32 and 960 cached:
+
+| Phase | Spinning (default) | Parked | Effect of parking |
+| --- | --- | --- | --- |
+| `Session::Run` | 105.1 / 109.0 / 108.0 ms | 192.7 / 193.7 / 192.2 ms | 1.79x worse |
+| Gather | 21.45 / 21.95 / 21.89 ms | 21.12 / 21.31 / 21.64 ms | 1.9% better |
+| Step | 127.5 / 132.4 / 131.4 ms | 215.1 / 216.4 / 215.4 ms | **1.65x worse** |
+
+**The prediction was right about the sign and wrong about the size.** Every copy phase
+gains with the workers asleep — gather, padding and scatter, in 3 of 3 pairs at batch 32
+and in 9 of 9 comparisons across the three padding regimes, where it reaches 8.3%. So
+spin-waiting workers really are taking bandwidth from the gather, and it is worth about
+2% of it.
+
+**The cost lands inside `Run`, not between runs, which is not what the flag was built
+expecting.** If parking only delayed the start of the next run it could not slow `Run`
+itself by 1.79x. ONNX Runtime parks the pool at every parallel section, so a twelve-layer
+decode pays the wake-up many times within a single run. On this arm64 host a descheduled
+worker may also return on an efficiency core; which of the two dominates is not measured
+and is offered as a hypothesis.
+
+`allow_spinning` stays true, which is both ONNX Runtime's default and what every recorded
+number was taken with. `--no-spinning` is kept as the control that establishes it.
 
 **`copy_threads` defaults to 1**, the serial copy every other number on this page was
 taken with. It is a separate budget from the intra-op count because it divides a
@@ -746,16 +816,18 @@ alternation, not of how the batch is filled.
   reported.
 - **One precision.** The sweep is FP32 only. It answers a scheduling question, and the
   precision comparison is the section above.
-- **A busy host penalises the gather more than it penalises the graph.** Everything
-  measured in the threading section was taken while the machine was 1.5-2.1x slower than
-  when the tables were recorded, and the two do not degrade together: `Session::Run`
-  slowed 1.5-1.6x and the gather 1.9x. A copy is bandwidth-bound and a graph is only
-  partly so, so contention is not a scale factor that cancels out of a comparison
-  between them. Shares within one run are safe; ratios between runs are not.
-- **The `AllowIntraOpSpinning=0` question is open.** ONNX Runtime's intra-op workers
-  busy-wait between runs, and what runs in between here is a bandwidth-bound gather, so
-  it is a plausible lever. `--no-spinning` exists and is tested for correctness; the
-  measurement wants an idle machine and has not had one.
+- **A busy host penalises the gather more than it penalises the graph**, so contention is
+  not a scale factor that cancels out of a comparison between them: `Session::Run` slows
+  1.5-1.6x where the gather slows 1.9x. This is not a caveat on the threading section any
+  more — those numbers were re-measured, each arm gated on `Session::Run` against a
+  known-good reference, and the section says what the ungated attempt reported instead.
+  It is a caveat on anything measured here in future, and on the assumption it took with
+  it: **a share taken within one run is safer than an absolute and is not safe**, because
+  the two things whose ratio it is do not degrade together.
+- **`AllowIntraOpSpinning=0` is answered and it is not a lever.** It buys the gather 1.9%
+  and costs `Session::Run` 1.79x, for a 1.65x worse step; the section above has the
+  numbers. Recorded here because the reasoning behind it was sound and the measurement
+  still refuted it.
 - **The bucketing A/B runs its arms in a fixed order**, arrival first, so a machine
   degrading over the four minutes of a pass would flatter the first arm. The check
   against it is that the arrival arm reproduces to 0.8% across three passes taken about

@@ -30,13 +30,20 @@ namespace anytime {
 // One loaded graph, with the input and output names it declares.
 class Model {
 public:
-    // `allow_spinning` is ONNX Runtime's own default: after a Run returns, its
-    // intra-op workers busy-wait for the next one rather than sleeping, which makes
-    // the next Run start sooner and costs cores in between. That trade is only
-    // obviously right when Run is the only thing happening. On the decoder path it is
-    // not -- a gather runs between two Runs, and it is bandwidth-bound -- so this is
-    // exposed to be measured rather than assumed. Defaults to true, which is what
-    // every recorded number was taken with.
+    // `allow_spinning` is ONNX Runtime's own default: its intra-op workers busy-wait
+    // for the next parallel section rather than sleeping, which starts that section
+    // sooner and costs cores in between. That trade is only obviously right when Run
+    // is the only thing happening. On the decoder path it is not -- a gather runs
+    // between two Runs, and it is bandwidth-bound -- so this was exposed to be
+    // measured rather than assumed.
+    //
+    // It has been measured, and turning it off costs 1.65x on a batch-32 step. The
+    // gather does gain what the reasoning predicted, and the amount is 1.9%; Run loses
+    // 1.79x. Note where that lands: if parking only delayed the next Run it could not
+    // slow Run itself, so the pool is parked at each parallel section and a
+    // twelve-layer decode pays the wake-up many times over. Defaults to true, which is
+    // what every recorded number was taken with. False is kept as the control that
+    // establishes the default rather than as a lever anyone should reach for.
     Model(Ort::Env& env, const std::string& path, int intra_op_threads,
           int inter_op_threads, bool allow_spinning = true);
 

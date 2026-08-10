@@ -1056,10 +1056,13 @@ def main() -> int:
         "--no-spinning",
         action="store_true",
         help=(
-            "Stop ONNX Runtime's intra-op workers busy-waiting between runs. They do "
-            "by default, which starts the next Run sooner and holds the cores in "
-            "between -- and what runs in between here is a bandwidth-bound gather. "
-            "Off by default, matching ONNX Runtime and every recorded number"
+            "Stop ONNX Runtime's intra-op workers busy-waiting between parallel "
+            "sections. They do by default, which starts the next section sooner and "
+            "holds the cores in between -- and what runs between two Runs here is a "
+            "bandwidth-bound gather. Measured at --copy-threads 8: it buys the gather "
+            "1.9% and costs Run 1.79x, for a 1.65x worse step, so this is the control "
+            "that establishes the default rather than a lever. Off by default, "
+            "matching ONNX Runtime and every recorded number"
         ),
     )
     parser.add_argument("--padding-batch", type=int, default=PADDING_BATCH)
