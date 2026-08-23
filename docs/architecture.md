@@ -99,6 +99,40 @@ The decoder path is still not wired into `AdaptiveServer`: a decode request hold
 worker for hundreds of steps, and reconciling that with the encoder harness is separate
 work.
 
+### What a sequence goes through
+
+The two stacks above are drawn as text because a layered stack is what text draws well,
+and they stay readable in an editor that renders no diagrams. The two things below are
+graphs with cycles in them, which text draws badly, so they are Mermaid -- which GitHub
+renders natively and which stays diffable. A reader without a renderer sees the labels in
+source order, which is degraded but not useless.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> waiting : submit
+    waiting --> rejected : no room
+    waiting --> prefilling : admitted
+    prefilling --> decoding : prompt done
+    decoding --> preempted : evicted
+    preempted --> prefilling : readmitted
+    decoding --> done : EOS
+    rejected --> [*]
+    done --> [*]
+```
+
+Blocks are reserved for the whole generation on admission and released on eviction or on
+completion, so a rejection means no blocks were free and nobody had the deadline slack to
+be evicted for the arrival. `prefilling` advances one chunk per turn and `decoding` emits
+one token per batched step; neither self-transition is drawn, because a self-loop's label
+lands on top of its neighbour's in every layout Mermaid gives this graph.
+
+The arc worth following is `decoding -> preempted -> prefilling`. A preempted sequence
+does not resume: it goes back to the pending queue and re-runs its entire history, which
+is why eviction is priced against deadline slack rather than taken whenever the arena is
+tight. The tokens are what survive the round trip, and they are why the output is
+identical either way.
+
 ### The scheduler alternates, because the graph will not let it fuse
 
 The graph takes one `sequence` dimension as well as one `past_sequence_length`. So a
@@ -111,6 +145,32 @@ custom kernels; a stock exported graph has neither.
 chunk or one batched decode step, never both. That is a consequence of the graph rather
 than a preference, and it makes chunk width the central tuning knob: while a chunk
 runs, every resident sequence waits.
+
+One iteration, as the code decides it. Admission runs first and every time, in arrival
+order, carrying out any eviction plan; readmission follows, oldest first, putting a
+preempted sequence back on the pending queue rather than back into the batch. Neither is
+an iteration of its own, because neither invokes the graph. "The chunk budget" is
+`prefill_chunks_per_decode` chunks since the last decode step.
+
+```mermaid
+flowchart LR
+    A["step()"] --> B["admit what fits"]
+    B --> C["readmit preempted"]
+    C --> D{"pending?"}
+    D -- no --> E{"decoding?"}
+    E -- no --> F["idle: return None"]
+    E -- yes --> G["one decode step"]
+    D -- yes --> H{"decoding?"}
+    H -- no --> I["one prefill chunk"]
+    H -- yes --> J{"under the chunk budget?"}
+    J -- yes --> I
+    J -- no --> G
+```
+
+With nothing decoding, prefill runs unconditionally -- there is no one to starve. With
+both available the two alternate, and at the default of one chunk per decode a resident
+sequence waits at most one chunk plus one step, which is the guarantee chunk width is
+chosen against.
 
 The trade is measurable and measured. At the 256-token default, over six generations
 sharing one arena, a sequence that was already decoding went a median 27 ms and at most
