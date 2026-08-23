@@ -434,6 +434,15 @@ did not move while everything around it shrank. It is now the largest item in a 
 step that this repository owns rather than delegates to ONNX Runtime, and splitting it
 across cores takes it back to 16.7% rather than removing it.
 
+![Where a decode step goes as the batch widens](img/step_composition.png)
+
+The middle panel is the argument for threading the copy: `Session::Run` keeps roughly
+three quarters of a step at every width, and what grows into the rest as the batch widens
+is the gather. The right-hand panel drops `Run` so the other two copies are visible at
+all — zeroing the padding is 1.7% of a step at the widest point and the scatter is 0.5%,
+which is why the padding regimes below are a statement about `Run` rather than about
+`pad_ms`.
+
 ### Right-padding costs a third of a step, and it is not the zeroing
 
 A batch runs at its longest row. Three regimes at batch 8 and 960 cached tokens, `fp32`,

@@ -286,13 +286,58 @@ def test_the_occupancy_ramp_is_not_a_precision_colour():
     assert not set(plot.OCCUPANCY_RAMP) & set(plot.SERIES_COLOURS.values())
 
 
+def test_the_phase_palette_is_not_a_precision_or_occupancy_colour():
+    """A phase and a precision appear in adjacent figures, so a shared hue would carry
+    "blue means fp32" into a panel where blue means Session::Run."""
+    phases = set(plot.PHASE_COLOURS.values())
+    assert not phases & set(plot.SERIES_COLOURS.values())
+    assert not phases & set(plot.OCCUPANCY_RAMP)
+
+
+def test_every_drawn_phase_has_its_own_colour_and_label():
+    """The order is the drawing order and the palette is indexed by name, so a phase
+    added to one and not the others would either vanish or borrow a neighbour's hue."""
+    assert set(plot.PHASE_ORDER) == set(plot.PHASE_COLOURS)
+    assert set(plot.PHASE_ORDER) == set(plot.PHASE_LABELS)
+    assert len(set(plot.PHASE_COLOURS.values())) == len(plot.PHASE_ORDER)
+
+
+def test_more_policies_than_colours_is_refused_rather_than_wrapped(tmp_path, monkeypatch):
+    """Indexing modulo a three-colour palette gave a fourth policy the baseline's colour
+    and marker, which reads as the baseline plotted twice rather than as a new policy."""
+    rows = [
+        _sweep_row(policy, utilisation)
+        for policy in ("serial", "batched-8", "batched-8-preempting", "invented-fourth")
+        for utilisation in (0.4, 0.95, 1.3)
+    ]
+    sweep = _sweep(sweep=rows)
+    assert len({row["policy"] for row in rows}) > len(plot.POLICY_COLOURS)
+    with pytest.raises(SystemExit, match="POLICY_COLOURS"):
+        _run(tmp_path, monkeypatch, sweep=sweep)
+
+
+def test_a_composition_precision_that_was_not_measured_is_skipped(tmp_path, monkeypatch):
+    """Skipped rather than raised: the other figures in the run are still honest, and an
+    absent precision is a fact about the measurement rather than a fault in the drawing."""
+    data = _mechanism(precisions=[_profile("int8")])
+    status, output = _run(tmp_path, monkeypatch, mechanism=data)
+    assert status == 0
+    assert (output / "batch_scaling.png").exists()
+    assert not (output / "step_composition.png").exists()
+
+
 # --- what gets drawn --------------------------------------------------------
 
 
 def test_every_figure_is_written(tmp_path, monkeypatch):
     status, output = _run(tmp_path, monkeypatch, mechanism=_mechanism(), sweep=_sweep())
     assert status == 0
-    for name in ("batch_scaling.png", "alternation.png", "decode_sweep.png"):
+    for name in (
+        "batch_scaling.png",
+        "alternation.png",
+        "step_composition.png",
+        "decode_sweep.png",
+    ):
         assert (output / name).stat().st_size > 0, f"{name} was not drawn"
 
 
@@ -302,6 +347,7 @@ def test_a_missing_sweep_still_draws_the_mechanism_figures(tmp_path, monkeypatch
     assert status == 0
     assert (output / "batch_scaling.png").exists()
     assert (output / "alternation.png").exists()
+    assert (output / "step_composition.png").exists()
     assert not (output / "decode_sweep.png").exists()
 
 
@@ -310,6 +356,7 @@ def test_a_missing_mechanism_still_draws_the_sweep_figure(tmp_path, monkeypatch)
     assert status == 0
     assert (output / "decode_sweep.png").exists()
     assert not (output / "batch_scaling.png").exists()
+    assert not (output / "step_composition.png").exists()
 
 
 def test_nothing_to_draw_names_both_scripts(tmp_path, monkeypatch):
