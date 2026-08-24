@@ -62,10 +62,13 @@ aim at.
 
 from __future__ import annotations
 
+import atexit
 import threading
 import time
+import weakref
 from collections import Counter
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -89,6 +92,38 @@ PAD_VALUES: dict[str, int] = {}
 
 class BatchingClosed(RuntimeError):
     """Raised when a request arrives after `close`, or is pending during one."""
+
+
+# Every batcher that has not been closed, so a leaked one is shut down at `atexit`
+# rather than having its thread killed mid-`Condition.wait()` by interpreter teardown.
+#
+# The dispatcher is a daemon thread, which guarantees it can never hang an exit but says
+# nothing about what state it is in when the exit happens. Closing it explicitly is the
+# difference between a thread that returned and a thread that was abandoned holding a
+# lock. That is worth having on its own terms; a caller that forgets `close()` should
+# still get a clean shutdown.
+#
+# It is *not* known to fix the `std::recursive_mutex lock failed` abort a clean clone
+# prints at teardown in roughly one run in ten -- see `.claude/PROGRESS.md`. That is a
+# C++ mutex, so ONNX Runtime rather than `threading`, and it was not reproducible from a
+# leaked batcher alone.
+#
+# A WeakSet rather than a list because the registry must not be what keeps a batcher
+# alive. It achieves little on its own -- the dispatcher holds a bound method, so a
+# running batcher is reachable regardless -- but a closed one becomes collectable at
+# once.
+_LIVE_BATCHERS: weakref.WeakSet = weakref.WeakSet()
+
+
+def _close_live_batchers() -> None:
+    for batcher in list(_LIVE_BATCHERS):
+        try:
+            batcher.close()
+        except Exception:  # noqa: BLE001 - nothing useful to do while exiting
+            pass
+
+
+atexit.register(_close_live_batchers)
 
 
 def pad_along_axis1(arrays: Sequence[np.ndarray], name: str) -> np.ndarray:
@@ -237,7 +272,20 @@ class RequestBatcher:
 
         self._lock = threading.Lock()
         self._arrived = threading.Condition(self._lock)
-        self._capacity = threading.Semaphore(max_concurrent_batches)
+        # A pool rather than a thread per batch, and it is what makes `close` sound.
+        # The first version started a thread per group and joined them from inside the
+        # dispatch loop with a five-second timeout, while `close` waited five seconds for
+        # the dispatcher -- so with several batches in flight the dispatcher could
+        # outlast that wait, `close` would return, and `RuntimePool.close` would then
+        # release the sessions underneath a Run that was still going.
+        # `shutdown(wait=True)` has no timeout to overrun, so that window is gone.
+        #
+        # **It is not the fix for the SIGABRT recorded in `.claude/PROGRESS.md`**, which
+        # was what prompted the change and which still reproduces after it. Kept because
+        # the window above was real and a nested timeout is not a shutdown.
+        self._batches = ThreadPoolExecutor(
+            max_workers=max_concurrent_batches, thread_name_prefix="request-batch"
+        )
         self._queue: list[_Pending] = []
         self._closed = False
         self._counts = BatchCounts()
@@ -245,6 +293,7 @@ class RequestBatcher:
             target=self._dispatch_loop, name="request-batcher", daemon=True
         )
         self._dispatcher.start()
+        _LIVE_BATCHERS.add(self)
 
     @property
     def max_batch_size(self) -> int:
@@ -299,12 +348,20 @@ class RequestBatcher:
                 return
             self._closed = True
             self._arrived.notify_all()
-        self._dispatcher.join(timeout=5.0)
+        # No timeout: the dispatcher only waits on the condition, which has just been
+        # notified, so it returns promptly. A timeout here is what created the window
+        # described above.
+        self._dispatcher.join()
+        # Every batch already handed to the pool finishes before this returns, which is
+        # the guarantee `RuntimePool.close` needs before it releases the sessions those
+        # batches are running on.
+        self._batches.shutdown(wait=True)
         with self._lock:
             stranded, self._queue = self._queue, []
         for pending in stranded:
             pending.error = BatchingClosed("the batcher closed before this request ran")
             pending.done.set()
+        _LIVE_BATCHERS.discard(self)
 
     def __enter__(self) -> RequestBatcher:
         return self
@@ -315,23 +372,15 @@ class RequestBatcher:
     # -- dispatcher ------------------------------------------------------------
 
     def _dispatch_loop(self) -> None:
-        workers: list[threading.Thread] = []
         while True:
             group = self._take_group()
             if group is None:
                 break
-            # Bound how many batches are in the runtime at once, so the batcher
-            # cannot hand out more concurrent work than the thing behind it has
-            # workers for.
-            self._capacity.acquire()
-            worker = threading.Thread(
-                target=self._run_group, args=(group,), name="request-batch", daemon=True
-            )
-            worker.start()
-            workers = [w for w in workers if w.is_alive()]
-            workers.append(worker)
-        for worker in workers:
-            worker.join(timeout=5.0)
+            # The pool bounds how many batches are in the runtime at once, so the
+            # batcher cannot hand out more concurrent work than the thing behind it
+            # has workers to run it on. Submitting rather than blocking lets the
+            # dispatcher go straight back to forming the next group.
+            self._batches.submit(self._run_group, group)
 
     def _take_group(self) -> list[_Pending] | None:
         """Block until there is something to run, then take one runnable group.
@@ -382,7 +431,6 @@ class RequestBatcher:
             for pending in group:
                 pending.error = exc
         finally:
-            self._capacity.release()
             for pending in group:
                 pending.done.set()
 

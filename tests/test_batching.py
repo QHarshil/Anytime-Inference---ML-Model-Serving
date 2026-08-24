@@ -33,6 +33,7 @@ have to run everywhere and they carry no ONNX dependency at all.
 from __future__ import annotations
 
 import math
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -815,3 +816,54 @@ def test_a_non_positive_deadline_has_no_admissible_depth():
     )
     with pytest.raises(ValueError, match="deadline_ms"):
         selector.max_admissible_queue_depth(0.0)
+
+
+# --------------------------------------------------------------------------------------
+# Interpreter shutdown
+# --------------------------------------------------------------------------------------
+
+
+def test_an_unclosed_batcher_does_not_abort_the_interpreter_at_exit(tmp_path):
+    """A leaked batcher must not take the process down on the way out.
+
+    A subprocess because interpreter shutdown is not something an in-process assertion
+    can reach, and stderr as well as status because a teardown abort prints there
+    without moving the exit code.
+
+    **What this does not do is reproduce the abort that prompted it.** A clean clone
+    printed `std::recursive_mutex lock failed` at teardown in about one full-suite run
+    in ten; removing the `atexit` registration this guards does *not* make this test
+    fail, and 15 runs of this module alone produced none. So the abort is not a leaked
+    batcher, and this is a guard on the narrower thing that is actually checkable here:
+    a process that leaks a batcher still exits cleanly and quietly. The abort is
+    recorded as open in `.claude/PROGRESS.md` with its reproduction rate.
+    """
+    import subprocess
+
+    script = tmp_path / "leak.py"
+    script.write_text(
+        "import numpy as np\n"
+        "from anytime_serving.serving.batching import RequestBatcher\n"
+        "b = RequestBatcher(\n"
+        "    lambda v, f: (f['input_ids'][:, :1].astype(np.float32), 1.0), max_batch_size=4\n"
+        ")\n"
+        "b.infer('v', {'input_ids': np.ones((1, 2), dtype=np.int64)})\n"
+        "print('ok')\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=60
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "ok" in completed.stdout
+    for symptom in ("terminating", "recursive_mutex", "Fatal Python error"):
+        assert symptom not in completed.stderr, completed.stderr
+
+
+def test_closing_a_batcher_leaves_no_thread_behind():
+    before = {t.name for t in threading.enumerate()}
+    batcher = RequestBatcher(_StubRuntime().run, max_batch_size=4)
+    batcher.infer("v", _request(1))
+    assert any(t.name == "request-batcher" for t in threading.enumerate())
+    batcher.close()
+    after = {t.name for t in threading.enumerate()}
+    assert "request-batcher" not in after - before

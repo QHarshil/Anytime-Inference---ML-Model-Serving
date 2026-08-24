@@ -175,10 +175,20 @@ def test_partial_descriptor_shim_matches_the_interpreter():
         "apply_partial_descriptor_shim in scripts/export_decoder.py"
     )
 
-    patched = apply_partial_descriptor_shim()
     if sys.version_info < (3, 14):
-        assert patched == 0
-    else:
-        # optimum declares a partial on every decoder config needing renamed
-        # fields; if it stops doing so the shim is no longer needed.
-        assert patched > 0
+        # Below 3.14 the shim returns before importing anything, so this half runs
+        # everywhere.
+        assert apply_partial_descriptor_shim() == 0
+        return
+
+    # On 3.14 the shim walks optimum's config classes, so it cannot run without
+    # optimum -- which lives in the `research` extra, not `bench`. Skipping rather
+    # than failing: this was a hard failure on a `pip install -e ".[bench]"` clone
+    # under 3.14, and it was invisible everywhere else, because CI's matrix stops at
+    # 3.13 and a development environment has optimum installed.
+    pytest.importorskip(
+        "optimum", reason="the 3.14 shim walks optimum's config classes; research extra"
+    )
+    # optimum declares a partial on every decoder config needing renamed fields; if it
+    # stops doing so the shim is no longer needed.
+    assert apply_partial_descriptor_shim() > 0
