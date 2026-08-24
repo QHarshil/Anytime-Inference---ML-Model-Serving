@@ -1,0 +1,218 @@
+{
+  "measurement": "per-request ms of one Session::Run at several encoder batch widths",
+  "sequence_length": 128,
+  "intra_op_threads": 1,
+  "gated": true,
+  "gate": "distilbert_fp32 at width 1, every pass, against the configs/serving.yaml service_time_ms, within 20%. Logically independent of the treatment: at width 1 there is no batching, so it cannot move because batching worked or failed. One control session serves every variant, including the INT8 ones the config records no service time for.",
+  "note": "uniform sequence length, so no arm pays more padding than another. The padding a ragged workload adds is in results/encoder_batching.json and the two multiply.",
+  "variants": [
+    {
+      "variant": "distilbert_fp32",
+      "recorded_service_time_ms": 12.893,
+      "control_variant": "distilbert_fp32",
+      "control_recorded_ms": 12.893,
+      "control_measured_ms": 12.9277,
+      "own_width_1_ms": 12.9531,
+      "passes_kept": 4,
+      "passes_discarded": 0,
+      "widths": [
+        {
+          "width": 1,
+          "per_request_ms": 12.9531,
+          "run_ms": 12.9531,
+          "speedup_over_width_1": 1.0,
+          "spread_percent": 3.57,
+          "passes": 4
+        },
+        {
+          "width": 2,
+          "per_request_ms": 12.2569,
+          "run_ms": 24.5139,
+          "speedup_over_width_1": 1.0568,
+          "spread_percent": 1.87,
+          "passes": 4
+        },
+        {
+          "width": 4,
+          "per_request_ms": 12.0289,
+          "run_ms": 48.1157,
+          "speedup_over_width_1": 1.0768,
+          "spread_percent": 3.45,
+          "passes": 4
+        },
+        {
+          "width": 8,
+          "per_request_ms": 12.0002,
+          "run_ms": 96.0019,
+          "speedup_over_width_1": 1.0794,
+          "spread_percent": 0.33,
+          "passes": 4
+        },
+        {
+          "width": 16,
+          "per_request_ms": 12.2614,
+          "run_ms": 196.182,
+          "speedup_over_width_1": 1.0564,
+          "spread_percent": 0.35,
+          "passes": 4
+        }
+      ]
+    },
+    {
+      "variant": "distilbert_int8",
+      "recorded_service_time_ms": null,
+      "control_variant": "distilbert_fp32",
+      "control_recorded_ms": 12.893,
+      "control_measured_ms": 13.0841,
+      "own_width_1_ms": 17.1504,
+      "passes_kept": 4,
+      "passes_discarded": 0,
+      "widths": [
+        {
+          "width": 1,
+          "per_request_ms": 17.1504,
+          "run_ms": 17.1504,
+          "speedup_over_width_1": 1.0,
+          "spread_percent": 0.49,
+          "passes": 4
+        },
+        {
+          "width": 2,
+          "per_request_ms": 16.9594,
+          "run_ms": 33.9189,
+          "speedup_over_width_1": 1.0113,
+          "spread_percent": 0.27,
+          "passes": 4
+        },
+        {
+          "width": 4,
+          "per_request_ms": 16.9536,
+          "run_ms": 67.8145,
+          "speedup_over_width_1": 1.0116,
+          "spread_percent": 1.25,
+          "passes": 4
+        },
+        {
+          "width": 8,
+          "per_request_ms": 17.0434,
+          "run_ms": 136.3473,
+          "speedup_over_width_1": 1.0063,
+          "spread_percent": 1.03,
+          "passes": 4
+        },
+        {
+          "width": 16,
+          "per_request_ms": 17.0111,
+          "run_ms": 272.1778,
+          "speedup_over_width_1": 1.0082,
+          "spread_percent": 1.4,
+          "passes": 4
+        }
+      ]
+    },
+    {
+      "variant": "minilm_fp32",
+      "recorded_service_time_ms": 5.189,
+      "control_variant": "distilbert_fp32",
+      "control_recorded_ms": 12.893,
+      "control_measured_ms": 13.1557,
+      "own_width_1_ms": 5.4296,
+      "passes_kept": 4,
+      "passes_discarded": 0,
+      "widths": [
+        {
+          "width": 1,
+          "per_request_ms": 5.4296,
+          "run_ms": 5.4296,
+          "speedup_over_width_1": 1.0,
+          "spread_percent": 2.6,
+          "passes": 4
+        },
+        {
+          "width": 2,
+          "per_request_ms": 4.9708,
+          "run_ms": 9.9416,
+          "speedup_over_width_1": 1.0923,
+          "spread_percent": 3.79,
+          "passes": 4
+        },
+        {
+          "width": 4,
+          "per_request_ms": 4.8711,
+          "run_ms": 19.4843,
+          "speedup_over_width_1": 1.1147,
+          "spread_percent": 2.46,
+          "passes": 4
+        },
+        {
+          "width": 8,
+          "per_request_ms": 4.7711,
+          "run_ms": 38.1688,
+          "speedup_over_width_1": 1.138,
+          "spread_percent": 3.36,
+          "passes": 4
+        },
+        {
+          "width": 16,
+          "per_request_ms": 4.9777,
+          "run_ms": 79.6439,
+          "speedup_over_width_1": 1.0908,
+          "spread_percent": 3.89,
+          "passes": 4
+        }
+      ]
+    },
+    {
+      "variant": "minilm_int8",
+      "recorded_service_time_ms": null,
+      "control_variant": "distilbert_fp32",
+      "control_recorded_ms": 12.893,
+      "control_measured_ms": 13.3152,
+      "own_width_1_ms": 7.2275,
+      "passes_kept": 4,
+      "passes_discarded": 0,
+      "widths": [
+        {
+          "width": 1,
+          "per_request_ms": 7.2275,
+          "run_ms": 7.2275,
+          "speedup_over_width_1": 1.0,
+          "spread_percent": 2.93,
+          "passes": 4
+        },
+        {
+          "width": 2,
+          "per_request_ms": 7.0791,
+          "run_ms": 14.1582,
+          "speedup_over_width_1": 1.021,
+          "spread_percent": 1.67,
+          "passes": 4
+        },
+        {
+          "width": 4,
+          "per_request_ms": 7.0152,
+          "run_ms": 28.061,
+          "speedup_over_width_1": 1.0303,
+          "spread_percent": 1.79,
+          "passes": 4
+        },
+        {
+          "width": 8,
+          "per_request_ms": 6.9666,
+          "run_ms": 55.7325,
+          "speedup_over_width_1": 1.0375,
+          "spread_percent": 0.75,
+          "passes": 4
+        },
+        {
+          "width": 16,
+          "per_request_ms": 6.9645,
+          "run_ms": 111.4321,
+          "speedup_over_width_1": 1.0378,
+          "spread_percent": 0.87,
+          "passes": 4
+        }
+      ]
+    }
+  ]
+}
