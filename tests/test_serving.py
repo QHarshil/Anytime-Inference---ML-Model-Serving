@@ -198,11 +198,21 @@ class TestSharedSessions(unittest.TestCase):
             self.assertEqual(pool.size, 4, "sharing must not change how many workers there are")
             self.assertTrue(pool.share_sessions)
 
-    def test_the_default_is_still_one_backend_per_worker(self):
-        """Every recorded number was measured this way, so it stays the default."""
+    def test_sharing_is_the_default(self):
+        """Measured neutral to faster and two thirds cheaper in memory, so it is on."""
         from anytime_serving.serving.onnx_runtime import RuntimePool
 
         with RuntimePool(4, self.model_paths) as pool:
+            self.assertEqual(pool.loaded_backends, 1)
+            self.assertTrue(pool.share_sessions)
+
+    def test_a_backend_per_worker_is_still_reachable(self):
+        """The control the A/B was run against, and what numbers recorded before the
+        flip were taken under. A result that cannot be reproduced against its own
+        baseline is not one, so the unshared path stays."""
+        from anytime_serving.serving.onnx_runtime import RuntimePool
+
+        with RuntimePool(4, self.model_paths, share_sessions=False) as pool:
             self.assertEqual(pool.loaded_backends, 4)
             self.assertFalse(pool.share_sessions)
 

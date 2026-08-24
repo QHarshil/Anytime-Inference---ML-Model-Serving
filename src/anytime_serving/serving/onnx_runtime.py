@@ -297,20 +297,23 @@ class RuntimePool:
     """Pool of RuntimeClients dispatched to from worker threads.
 
     `share_sessions` decides whether the pool loads the graphs once or once per worker.
-
-    Off, which is the default and what every recorded number was measured under, each
-    worker holds its own sessions. N workers are then N independent servers that share
-    nothing, which is the reading the M/M/c admission model rests on, and the cost is N
-    copies of every variant's weights: at four workers over DistilBERT and MiniLM that
-    is 1.38 GB against 344 MB.
+    It defaults to on, and both halves of that are measured.
 
     On, one backend serves every worker. The weights are read-only, so sharing them
-    changes no answer, and `intra_op_num_threads` is 1 either way -- so a Run stays
-    single-threaded and the workers do not contend for an intra-op pool. What they do
-    now share is ONNX Runtime's per-session CPU arena, and whether that costs anything
-    under concurrency is **not measured**. Until it is, this is off by default and
-    documented as unmeasured rather than assumed free, the same way `allow_spinning`
-    was carried before its A/B.
+    changes no answer, and `intra_op_num_threads` is 1 either way -- a Run stays
+    single-threaded and the workers do not contend for an intra-op pool. N workers over
+    one backend are still N independent single-threaded servers, which is the reading
+    the M/M/c admission model rests on.
+
+    Off, each worker holds its own sessions, which costs N copies of every variant's
+    weights: 1598 MB against 549 MB at four workers over DistilBERT and MiniLM.
+
+    The concern that kept this off was ONNX Runtime's per-session CPU arena, which
+    sharing puts every worker on. Paired arms say it does not bite, and that sharing is
+    faster as concurrency rises rather than slower -- shared over unshared throughput is
+    1.015x at two workers, 1.017x at four and 1.074x at eight. `--no-share-sessions` on
+    `run_load_sweep.py` is kept as the control that says so, the way `--no-spinning` is
+    on the decoder path. See `scripts/ab_session_sharing.py`.
     """
 
     def __init__(
@@ -320,7 +323,7 @@ class RuntimePool:
         *,
         backend: str | None = None,
         input_name: str = "input",
-        share_sessions: bool = False,
+        share_sessions: bool = True,
     ) -> None:
         if size <= 0:
             raise ValueError("size must be positive")

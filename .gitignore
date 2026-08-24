@@ -62,6 +62,7 @@ results/*
 !results/decoder_profiles.json
 !results/load_sweep.csv
 !results/session_sharing.json
+!results/ab_session_sharing.json
 !results/variant_profiles.json
 
 # OS

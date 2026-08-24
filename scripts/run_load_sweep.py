@@ -194,11 +194,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("results/load_sweep.csv"))
     parser.add_argument("--figure", type=Path, default=Path("docs/img/load_sweep.png"))
     parser.add_argument(
-        "--share-sessions",
-        action="store_true",
-        help="Load each variant once for the whole pool instead of once per worker. "
-        "Saves memory; its latency cost under concurrency is not yet measured, so this "
-        "is off by default and every recorded number was taken without it.",
+        "--no-share-sessions",
+        dest="share_sessions",
+        action="store_false",
+        help="Load every variant once per worker instead of once for the pool. The "
+        "control for the sharing A/B, and what the numbers recorded before 2026-08-24 "
+        "were taken under; sharing is the default because it is measured neutral to "
+        "faster and saves two thirds of the pool's memory.",
     )
     parser.add_argument(
         "--replot",

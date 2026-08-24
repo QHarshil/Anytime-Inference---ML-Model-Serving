@@ -1,0 +1,255 @@
+{
+  "question": "does sharing the pool's sessions cost latency under concurrent load",
+  "control": {
+    "recorded_ms": 12.893,
+    "tolerance": 0.08,
+    "why": "at one worker there is nothing to share, so this cannot depend on the treatment"
+  },
+  "requests_per_arm": 2000,
+  "ratios_are": "shared / unshared, so below 1 means sharing is faster",
+  "by_workers": [
+    {
+      "workers": 2,
+      "retakes": 0,
+      "passes": [
+        {
+          "shared_first": false,
+          "control_before_ms": 13.657,
+          "control_after_ms": 13.456,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 13.274,
+            "p95_ms": 13.99,
+            "mean_ms": 13.341,
+            "throughput_rps": 149.3
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 2,
+            "p50_ms": 13.697,
+            "p95_ms": 14.48,
+            "mean_ms": 13.775,
+            "throughput_rps": 144.7
+          },
+          "p50_ratio": 0.9691,
+          "p95_ratio": 0.9662,
+          "throughput_ratio": 1.0318
+        },
+        {
+          "shared_first": true,
+          "control_before_ms": 13.571,
+          "control_after_ms": 13.323,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 13.411,
+            "p95_ms": 14.003,
+            "mean_ms": 13.459,
+            "throughput_rps": 147.9
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 2,
+            "p50_ms": 13.642,
+            "p95_ms": 14.22,
+            "mean_ms": 13.678,
+            "throughput_rps": 145.7
+          },
+          "p50_ratio": 0.9831,
+          "p95_ratio": 0.9847,
+          "throughput_ratio": 1.0151
+        },
+        {
+          "shared_first": false,
+          "control_before_ms": 13.307,
+          "control_after_ms": 13.644,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 13.694,
+            "p95_ms": 14.051,
+            "mean_ms": 13.657,
+            "throughput_rps": 145.8
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 2,
+            "p50_ms": 13.402,
+            "p95_ms": 14.18,
+            "mean_ms": 13.43,
+            "throughput_rps": 148.5
+          },
+          "p50_ratio": 1.0218,
+          "p95_ratio": 0.9909,
+          "throughput_ratio": 0.9818
+        }
+      ],
+      "median_p50_ratio": 0.9831,
+      "median_p95_ratio": 0.9847,
+      "median_throughput_ratio": 1.0151
+    },
+    {
+      "workers": 4,
+      "retakes": 0,
+      "passes": [
+        {
+          "shared_first": false,
+          "control_before_ms": 13.557,
+          "control_after_ms": 13.428,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 18.924,
+            "p95_ms": 54.51,
+            "mean_ms": 20.439,
+            "throughput_rps": 195.2
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 4,
+            "p50_ms": 19.366,
+            "p95_ms": 54.948,
+            "mean_ms": 20.784,
+            "throughput_rps": 192.0
+          },
+          "p50_ratio": 0.9772,
+          "p95_ratio": 0.992,
+          "throughput_ratio": 1.0167
+        },
+        {
+          "shared_first": true,
+          "control_before_ms": 13.407,
+          "control_after_ms": 13.526,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 18.851,
+            "p95_ms": 54.353,
+            "mean_ms": 20.288,
+            "throughput_rps": 196.7
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 4,
+            "p50_ms": 19.33,
+            "p95_ms": 54.752,
+            "mean_ms": 20.66,
+            "throughput_rps": 193.1
+          },
+          "p50_ratio": 0.9752,
+          "p95_ratio": 0.9927,
+          "throughput_ratio": 1.0186
+        },
+        {
+          "shared_first": false,
+          "control_before_ms": 13.575,
+          "control_after_ms": 13.704,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 18.979,
+            "p95_ms": 54.569,
+            "mean_ms": 20.468,
+            "throughput_rps": 194.9
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 4,
+            "p50_ms": 19.479,
+            "p95_ms": 54.808,
+            "mean_ms": 20.725,
+            "throughput_rps": 192.6
+          },
+          "p50_ratio": 0.9743,
+          "p95_ratio": 0.9956,
+          "throughput_ratio": 1.0119
+        }
+      ],
+      "median_p50_ratio": 0.9752,
+      "median_p95_ratio": 0.9927,
+      "median_throughput_ratio": 1.0167
+    },
+    {
+      "workers": 8,
+      "retakes": 0,
+      "passes": [
+        {
+          "shared_first": false,
+          "control_before_ms": 13.456,
+          "control_after_ms": 13.847,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 25.485,
+            "p95_ms": 80.997,
+            "mean_ms": 30.577,
+            "throughput_rps": 260.7
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 8,
+            "p50_ms": 27.266,
+            "p95_ms": 81.512,
+            "mean_ms": 32.803,
+            "throughput_rps": 243.3
+          },
+          "p50_ratio": 0.9347,
+          "p95_ratio": 0.9937,
+          "throughput_ratio": 1.0715
+        },
+        {
+          "shared_first": true,
+          "control_before_ms": 13.882,
+          "control_after_ms": 13.777,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 25.591,
+            "p95_ms": 80.646,
+            "mean_ms": 30.623,
+            "throughput_rps": 260.6
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 8,
+            "p50_ms": 27.772,
+            "p95_ms": 81.73,
+            "mean_ms": 33.225,
+            "throughput_rps": 240.1
+          },
+          "p50_ratio": 0.9215,
+          "p95_ratio": 0.9867,
+          "throughput_ratio": 1.0854
+        },
+        {
+          "shared_first": false,
+          "control_before_ms": 13.773,
+          "control_after_ms": 13.816,
+          "shared": {
+            "share_sessions": true,
+            "backends": 1,
+            "p50_ms": 25.764,
+            "p95_ms": 81.315,
+            "mean_ms": 30.859,
+            "throughput_rps": 258.4
+          },
+          "unshared": {
+            "share_sessions": false,
+            "backends": 8,
+            "p50_ms": 27.731,
+            "p95_ms": 81.865,
+            "mean_ms": 33.178,
+            "throughput_rps": 240.5
+          },
+          "p50_ratio": 0.9291,
+          "p95_ratio": 0.9933,
+          "throughput_ratio": 1.0744
+        }
+      ],
+      "median_p50_ratio": 0.9291,
+      "median_p95_ratio": 0.9933,
+      "median_throughput_ratio": 1.0744
+    }
+  ]
+}

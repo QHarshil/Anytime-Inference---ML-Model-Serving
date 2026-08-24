@@ -135,6 +135,7 @@ python scripts/draw_arena_geometry.py         # docs/img/arena_geometry.png; a s
 python scripts/run_load_sweep.py              # results/load_sweep.csv, docs/img/
 python scripts/run_load_sweep.py --replot     # redraw docs/img/load_sweep.png from that CSV
 python scripts/measure_session_sharing.py     # results/session_sharing.json; memory, not timing
+python scripts/ab_session_sharing.py          # results/ab_session_sharing.json; paired, gated, needs a quiet host
 ```
 
 Six files under `results/` are committed rather than ignored, listed in `.gitignore`

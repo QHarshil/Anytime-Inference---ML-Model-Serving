@@ -981,7 +981,7 @@ writes no config: the decoder path is not wired into the adaptive serving harnes
 The scripts are deterministic given a seed except for wall-clock effects, which is why
 latency is reported as percentiles over repeated passes rather than as single figures.
 
-## Sharing the sessions across the pool saves two thirds of the memory
+## Sharing the sessions across the pool saves two thirds of the memory and costs nothing
 
 `RuntimePool` loads every variant once per worker, so four workers hold four copies of
 the same read-only weights. `share_sessions=True` loads them once. Measured on the
@@ -1011,13 +1011,38 @@ and the workers do not contend for an intra-op pool. N workers over one backend 
 N independent single-threaded servers, which is the reading the M/M/c admission model
 rests on.
 
-**What is not measured, and why it is off by default.** The workers now share ONNX
-Runtime's per-session CPU arena. Whether that allocator contends under concurrent load is
-open, and it is the one way this could cost latency. So `share_sessions` is off, every
-recorded number on this page was taken with it off, and `--share-sessions` exists on
-`run_load_sweep.py` to make the A/B possible rather than to change the default before it
-has run. That A/B needs a quiet host and this one has not been quiet; the memory result
-did not need one, which is why it is here and the latency result is not.
+**The latency question is answered, and it goes the other way.** The concern was ONNX
+Runtime's per-session CPU arena, which sharing puts every worker on. Paired arms,
+alternated between passes, three passes each, every pair gated on single-worker service
+time against the recorded 12.893 ms -- a control that **cannot depend on the treatment,
+because at one worker there is nothing to share**. Ratios are shared over unshared, so
+below one means sharing is faster:
+
+| Workers | p50 | p95 | Throughput | Retakes |
+| --- | --- | --- | --- | --- |
+| 2 | 0.983x | 0.985x | 1.015x | 0 |
+| 4 | 0.975x | 0.993x | 1.017x | 0 |
+| 8 | 0.929x | 0.993x | 1.074x | 0 |
+
+**Sharing is never worse, and at eight workers it is 7% better.** The eight-worker point
+reproduced across two independent invocations of the driver -- 0.929x and 0.930x on p50,
+1.074x and 1.079x on throughput -- against a within-sweep spread of 0.3%, so the effect is
+several times the noise rather than inside it.
+
+**Why it is faster is a hypothesis and is labelled as one.** Eight unshared workers stream
+eight distinct copies of the same 256 MB of weights, so the shared cache levels see eight
+working sets where sharing gives them one. That fits the shape of the result -- the gain
+appears where the copies do, growing from 1.015x at two workers to 1.074x at eight -- but
+nothing here measured a cache miss, and the machine has 24 GB against 2.9 GB resident at
+eight unshared workers, so it is not paging either. The mechanism is unconfirmed; the
+direction and the size are measured.
+
+**So sharing is the default now.** `--no-share-sessions` is kept on `run_load_sweep.py` as
+the control that says so, the way `--no-spinning` is kept on the decoder path. **The
+numbers elsewhere on this page were recorded before the flip, unshared.** At the four
+workers `configs/serving.yaml` sets, that is worth about 2% of p50 -- small, but a future
+comparison that forgets it would read a 2% gain as a code change. `--no-share-sessions`
+reproduces the configuration they were taken under.
 
 ## Known limitations
 
@@ -1043,9 +1068,9 @@ did not need one, which is why it is here and the latency result is not.
   Batching exists on the decoder path only.
 - The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
   are measured through different harnesses and their capacities are not comparable.
-- **Sharing the pool's sessions is built and measured for memory but not for latency.**
-  The saving is real and large; whether a shared CPU arena costs anything under
-  concurrency is unmeasured, so the default is unchanged.
+- **Numbers on this page predate session sharing becoming the default**, and were
+  taken with one backend per worker. Reproduce that with `--no-share-sessions`. The
+  measured difference at four workers is about 2% of p50.
 - Attainment for `accurate-only` above ρ = 0.9 is conditioned on a small admitted
   sample and should not be read as a quality signal.
 

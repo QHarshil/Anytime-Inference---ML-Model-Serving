@@ -5,12 +5,24 @@
 // a function call, so there is no framing, no base64, and no copy in either
 // direction.
 //
-// Threading in this phase mirrors what the subprocess pool did. One Engine holds
-// its own sessions, and the Python pool holds one Engine per slot, so N workers
-// remain N independent single-threaded servers and the M/M/c model the admission
-// controller uses stays valid. Sharing one session across the pool would save
-// memory and is what the scheduler will do once it lands, but it would change the
-// concurrency model in the same commit that introduces the engine.
+// Threading in this phase mirrors what the subprocess pool did: one Engine holds its
+// own sessions and runs them at one intra-op thread, so a Run is single-threaded and
+// N workers are N independent single-threaded servers, which is what keeps the M/M/c
+// model the admission controller uses valid.
+//
+// This comment used to say that sharing one Engine across the pool "would change the
+// concurrency model". That was too broad and it kept the option shut for longer than it
+// deserved. Sharing changes what is *allocated*, not how work is scheduled: `run` reads
+// a model map fixed at construction and calls Session::Run, which ONNX Runtime documents
+// as safe to call concurrently, and the binding releases the GIL around it, so N workers
+// over one Engine are still N independent single-threaded servers. What they newly share
+// is this Engine's per-session CPU arena.
+//
+// Measured, because that arena was the real question rather than the thread pool:
+// sharing saves 66% of the pool's resident memory at four workers and costs no latency
+// at two, four or eight -- it is 7% *faster* at eight, most likely because eight copies
+// of one set of read-only weights is eight working sets for the cache instead of one.
+// `serving/onnx_runtime.py` shares by default now; see docs/benchmarks.md.
 
 #ifndef ANYTIME_ENGINE_HPP
 #define ANYTIME_ENGINE_HPP
