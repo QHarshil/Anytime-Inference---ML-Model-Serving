@@ -397,3 +397,38 @@ def test_the_headline_sentence_quotes_the_widest_batch_at_both_extremes(tmp_path
     assert "2.33x" in sentence
     assert "1.55x" in sentence
     assert "128 cached" in sentence
+
+
+def test_the_four_phases_account_for_the_measured_step():
+    """The stack claims the four phases are the step. This is the claim, checked.
+
+    `plot_step_composition` draws `run`, `gather`, `pad` and `scatter` as one stacked
+    column per batch width and takes each share against their sum rather than against the
+    measured `step`, so a column reaches exactly 100%. That is only honest if the sum is
+    the step, and the docstring quotes how closely: within 0.5% at every width, at the
+    occupancy the figure draws.
+
+    Scoped the way the figure is scoped -- fp32, the widest cache occupancy -- rather than
+    over every point in the file. The residual is larger at lower occupancies (4.0% at 512
+    cached, 2.4% at 128) where the step is small enough for per-step overhead to show, and
+    a test that averaged those in would be testing something the figure does not draw.
+    """
+    measured = Path(__file__).resolve().parents[1] / "results" / "batch_profiles.json"
+    data = json.loads(measured.read_text())
+
+    profiles = [p for p in data["precisions"] if p["precision"] == "fp32" and not p.get("skipped")]
+    assert profiles, "fp32 is what the composition figure draws"
+    scaling = profiles[0]["scaling"]
+    cached = max(point["cached_tokens"] for point in scaling)
+    points = [point for point in scaling if point["cached_tokens"] == cached]
+    assert len(points) > 1, "a composition figure needs more than one batch width"
+
+    for point in points:
+        total = sum(point[f"{phase}_p50_ms"] for phase in plot.PHASE_ORDER)
+        step = point["step"]["p50_ms"]
+        residual = abs(total - step) / step * 100
+        assert residual <= 0.5, (
+            f"at batch {point['batch_size']} and {cached} cached the four phases sum to "
+            f"{total:.2f} ms against a measured step of {step:.2f} ms, which is "
+            f"{residual:.2f}% and outside the 0.5% the figure's docstring claims"
+        )

@@ -539,10 +539,12 @@ def plot_step_composition(data: dict, path: Path, *, precision: str = "fp32") ->
 
     Stacked rather than grouped because the four phases are one step rather than four
     independent measurements: they are what the caller waits through, in order. They are
-    also checked to sum to the measured step -- they agree within 0.4% at every width --
-    so the stack is not implying an accounting that does not hold. The shares are taken
-    against that sum rather than against `step` so a column reaches exactly 100%; the
-    difference is the 0.4%.
+    also checked to sum to the measured step -- they agree within 0.5% at every width at
+    the occupancy drawn -- so the stack is not implying an accounting that does not hold.
+    The shares are taken against that sum rather than against `step` so a column reaches
+    exactly 100%; the difference is that 0.5%. `tests/test_plot_batching.py` asserts it
+    against the committed measurements, because a tolerance quoted in prose and checked
+    by nothing is a number that drifts.
 
     One precision, because composition is a statement about one graph's shape and three
     would be three figures. `fp32` by default: it is the precision the load sweep and the
