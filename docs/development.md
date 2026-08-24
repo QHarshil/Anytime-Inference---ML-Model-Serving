@@ -134,6 +134,7 @@ python scripts/plot_decode_profiles.py        # docs/img/ decoder figures, from 
 python scripts/draw_arena_geometry.py         # docs/img/arena_geometry.png; a schematic, reads nothing
 python scripts/run_load_sweep.py              # results/load_sweep.csv, docs/img/
 python scripts/run_load_sweep.py --replot     # redraw docs/img/load_sweep.png from that CSV
+python scripts/measure_session_sharing.py     # results/session_sharing.json; memory, not timing
 ```
 
 Six files under `results/` are committed rather than ignored, listed in `.gitignore`

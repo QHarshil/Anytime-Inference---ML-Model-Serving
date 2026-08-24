@@ -129,6 +129,7 @@ def _run_policy(
     inputs: list[dict],
     deadline_ms: float,
     workers: int,
+    share_sessions: bool = False,
 ) -> dict:
     model_paths = {v.name: _graph_for(model_dir, v.name) for v in variants}
     selector = AdaptiveSelector(
@@ -140,7 +141,7 @@ def _run_policy(
     monitor = LoadMonitor(interval_s=0.1, alpha=0.3)
     monitor.start()
     try:
-        with RuntimePool(workers, model_paths) as pool:
+        with RuntimePool(workers, model_paths, share_sessions=share_sessions) as pool:
             server = AdaptiveServer(pool, selector, monitor)
             try:
 
@@ -192,6 +193,13 @@ def main() -> int:
     parser.add_argument("--quick", action="store_true", help="Three sweep points instead of six")
     parser.add_argument("--output", type=Path, default=Path("results/load_sweep.csv"))
     parser.add_argument("--figure", type=Path, default=Path("docs/img/load_sweep.png"))
+    parser.add_argument(
+        "--share-sessions",
+        action="store_true",
+        help="Load each variant once for the whole pool instead of once per worker. "
+        "Saves memory; its latency cost under concurrency is not yet measured, so this "
+        "is off by default and every recorded number was taken without it.",
+    )
     parser.add_argument(
         "--replot",
         action="store_true",
@@ -270,8 +278,13 @@ def main() -> int:
                 inputs=inputs,
                 deadline_ms=deadline_ms,
                 workers=workers,
+                share_sessions=args.share_sessions,
             )
             result["target_utilisation"] = utilisation
+            # Provenance: a CSV cannot be read back as comparable to another one without
+            # it. Absent in the committed sweep, which predates the option and was taken
+            # with it off.
+            result["share_sessions"] = args.share_sessions
             result["arrival_rate_rps"] = arrival_rate
             rows.append(result)
             LOGGER.info(

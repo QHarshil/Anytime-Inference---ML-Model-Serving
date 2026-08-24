@@ -981,6 +981,44 @@ writes no config: the decoder path is not wired into the adaptive serving harnes
 The scripts are deterministic given a seed except for wall-clock effects, which is why
 latency is reported as percentiles over repeated passes rather than as single figures.
 
+## Sharing the sessions across the pool saves two thirds of the memory
+
+`RuntimePool` loads every variant once per worker, so four workers hold four copies of
+the same read-only weights. `share_sessions=True` loads them once. Measured on the
+exported DistilBERT and MiniLM graphs, each arm in its own subprocess so the second is
+not charged a discount for pages the first already faulted in:
+
+| Workers | Backends loaded | Per worker | Shared | Saved | |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 548 MB | 548 MB | -0 MB | -0% |
+| 2 | 2 | 900 MB | 549 MB | 352 MB | 39% |
+| 4 | 4 | 1598 MB | 548 MB | 1049 MB | 66% |
+
+**This is resident bytes, not a timing**, which is why it is quoted without the gating
+every other measurement here carries. Memory does not depend on how busy the machine is,
+so a contended host cannot move it. `python scripts/measure_session_sharing.py`
+reproduces the table; the numbers land in `results/session_sharing.json`.
+
+At one worker the two arms agree to within a megabyte, which is the check that says the
+saving is the duplicate weights and not an artefact of how it is measured. Each extra
+unshared worker costs about 350 MB, against 344 MB of model file on disk.
+
+**What is safe about it, and why the concurrency model survives.** `Engine::run` reads a
+model map fixed at construction and calls `Session::Run`, which ONNX Runtime documents as
+safe to call concurrently; the binding releases the GIL around it, so N threads really do
+run in parallel. `intra_op_num_threads` is 1 either way, so a Run stays single-threaded
+and the workers do not contend for an intra-op pool. N workers over one backend are still
+N independent single-threaded servers, which is the reading the M/M/c admission model
+rests on.
+
+**What is not measured, and why it is off by default.** The workers now share ONNX
+Runtime's per-session CPU arena. Whether that allocator contends under concurrent load is
+open, and it is the one way this could cost latency. So `share_sessions` is off, every
+recorded number on this page was taken with it off, and `--share-sessions` exists on
+`run_load_sweep.py` to make the A/B possible rather than to change the default before it
+has run. That A/B needs a quiet host and this one has not been quiet; the memory result
+did not need one, which is why it is here and the latency result is not.
+
 ## Known limitations
 
 - **Single host, and horizontal scale is out of scope.** There is no GPU path, no
@@ -1005,6 +1043,9 @@ latency is reported as percentiles over repeated passes rather than as single fi
   Batching exists on the decoder path only.
 - The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
   are measured through different harnesses and their capacities are not comparable.
+- **Sharing the pool's sessions is built and measured for memory but not for latency.**
+  The saving is real and large; whether a shared CPU arena costs anything under
+  concurrency is unmeasured, so the default is unchanged.
 - Attainment for `accurate-only` above ρ = 0.9 is conditioned on a small admitted
   sample and should not be read as a quality signal.
 

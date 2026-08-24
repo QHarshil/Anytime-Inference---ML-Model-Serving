@@ -224,7 +224,11 @@ def _make_backend(model_paths: dict[str, Path], requested: str | None) -> _Runti
 
 
 class RuntimeClient:
-    """Single inference worker."""
+    """Single inference worker.
+
+    Owns its backend unless it was built by `sharing`, in which case several clients
+    hold the same one and none of them may close it.
+    """
 
     def __init__(
         self,
@@ -237,7 +241,26 @@ class RuntimeClient:
             raise ValueError("model_paths must be non-empty")
         self._input_name = input_name
         self._backend = _make_backend(model_paths, backend)
+        self._owns_backend = True
         self._lock = threading.Lock()
+
+    @classmethod
+    def sharing(cls, backend: _RuntimeBackend, *, input_name: str = "input") -> RuntimeClient:
+        """A worker over a backend somebody else owns and will close.
+
+        The lock still guards this client, which is what makes the sharing safe to reason
+        about: it is per client rather than per backend, so it serialises nothing between
+        workers and the concurrency the pool provides is unchanged. What the backend has
+        to be is re-entrant, and both are -- `Engine::run` reads a model map fixed at
+        construction and calls `Session::Run`, which ONNX Runtime documents as safe to
+        call concurrently, and the binding releases the GIL around it.
+        """
+        client = cls.__new__(cls)
+        client._input_name = input_name
+        client._backend = backend
+        client._owns_backend = False
+        client._lock = threading.Lock()
+        return client
 
     @property
     def backend_name(self) -> str:
@@ -258,7 +281,10 @@ class RuntimeClient:
         )
 
     def close(self) -> None:
-        self._backend.close()
+        # A shared backend outlives every client over it, so closing here would pull the
+        # sessions out from under the workers still holding it.
+        if self._owns_backend:
+            self._backend.close()
 
     def __enter__(self) -> RuntimeClient:
         return self
@@ -268,7 +294,24 @@ class RuntimeClient:
 
 
 class RuntimePool:
-    """Pool of RuntimeClients dispatched to from worker threads."""
+    """Pool of RuntimeClients dispatched to from worker threads.
+
+    `share_sessions` decides whether the pool loads the graphs once or once per worker.
+
+    Off, which is the default and what every recorded number was measured under, each
+    worker holds its own sessions. N workers are then N independent servers that share
+    nothing, which is the reading the M/M/c admission model rests on, and the cost is N
+    copies of every variant's weights: at four workers over DistilBERT and MiniLM that
+    is 1.38 GB against 344 MB.
+
+    On, one backend serves every worker. The weights are read-only, so sharing them
+    changes no answer, and `intra_op_num_threads` is 1 either way -- so a Run stays
+    single-threaded and the workers do not contend for an intra-op pool. What they do
+    now share is ONNX Runtime's per-session CPU arena, and whether that costs anything
+    under concurrency is **not measured**. Until it is, this is off by default and
+    documented as unmeasured rather than assumed free, the same way `allow_spinning`
+    was carried before its A/B.
+    """
 
     def __init__(
         self,
@@ -277,15 +320,46 @@ class RuntimePool:
         *,
         backend: str | None = None,
         input_name: str = "input",
+        share_sessions: bool = False,
     ) -> None:
         if size <= 0:
             raise ValueError("size must be positive")
-        self._clients: list[RuntimeClient] = [
-            RuntimeClient(model_paths, backend=backend, input_name=input_name) for _ in range(size)
-        ]
+        self._share_sessions = share_sessions
+        if share_sessions:
+            if not model_paths:
+                raise ValueError("model_paths must be non-empty")
+            shared = _make_backend(model_paths, backend)
+            # The pool owns the one backend; the clients borrow it. Ownership has to sit
+            # somewhere singular or `close` runs once per worker over the same sessions.
+            self._shared: _RuntimeBackend | None = shared
+            self._clients = [
+                RuntimeClient.sharing(shared, input_name=input_name) for _ in range(size)
+            ]
+        else:
+            self._shared = None
+            self._clients = [
+                RuntimeClient(model_paths, backend=backend, input_name=input_name)
+                for _ in range(size)
+            ]
         self._free: queue.Queue[RuntimeClient] = queue.Queue()
         for client in self._clients:
             self._free.put(client)
+
+    @property
+    def share_sessions(self) -> bool:
+        """Whether one backend serves every worker. Recorded beside a measurement,
+        because it changes what the pool costs in memory and may change what it costs
+        in latency."""
+        return self._share_sessions
+
+    @property
+    def loaded_backends(self) -> int:
+        """How many times the graphs are loaded, which is the whole point of sharing.
+
+        Exposed so the saving is a number a test can assert rather than a claim in a
+        docstring.
+        """
+        return 1 if self._share_sessions else len(self._clients)
 
     @property
     def size(self) -> int:
@@ -311,6 +385,12 @@ class RuntimePool:
         for client in self._clients:
             client.close()
         self._clients = []
+        # Borrowing clients close nothing, so the one backend they shared is the pool's
+        # to release. Doing it after the loop rather than inside it is what makes the
+        # release happen exactly once however many workers there were.
+        if self._shared is not None:
+            self._shared.close()
+            self._shared = None
 
     def __enter__(self) -> RuntimePool:
         return self

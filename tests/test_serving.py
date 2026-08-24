@@ -161,3 +161,95 @@ class TestAdaptiveServer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(onnx is None, "onnx/onnxruntime not installed")
+class TestSharedSessions(unittest.TestCase):
+    """One backend behind every worker, instead of one per worker.
+
+    The saving is the whole point and it is arithmetic on how many times the graphs are
+    loaded, so it is asserted as a count and measured as resident bytes rather than
+    argued. What has to hold for the saving to be allowed is that sharing changes no
+    answer, which is the concurrency test below: the weights are read-only, a Run is
+    single-threaded at `intra_op_num_threads = 1` either way, and ONNX Runtime documents
+    `Run` as safe to call concurrently on one session.
+
+    What is deliberately *not* asserted here is latency. Sharing puts every worker on one
+    per-session CPU arena, and whether that contends has not been measured; the default
+    is off until it has been.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.fp32_path = Path(cls._tmp.name) / "identity_fp32.onnx"
+        _build_identity_model(cls.fp32_path)
+        cls.model_paths: dict[str, Path] = {"fp32": cls.fp32_path}
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def test_sharing_loads_the_graphs_once_however_many_workers(self):
+        from anytime_serving.serving.onnx_runtime import RuntimePool
+
+        with RuntimePool(4, self.model_paths, share_sessions=True) as pool:
+            self.assertEqual(pool.loaded_backends, 1)
+            self.assertEqual(pool.size, 4, "sharing must not change how many workers there are")
+            self.assertTrue(pool.share_sessions)
+
+    def test_the_default_is_still_one_backend_per_worker(self):
+        """Every recorded number was measured this way, so it stays the default."""
+        from anytime_serving.serving.onnx_runtime import RuntimePool
+
+        with RuntimePool(4, self.model_paths) as pool:
+            self.assertEqual(pool.loaded_backends, 4)
+            self.assertFalse(pool.share_sessions)
+
+    def test_shared_workers_return_what_unshared_workers_return(self):
+        """Concurrently, and against the same requests through an unshared pool.
+
+        A shared session that raced would show up here as a wrong answer rather than a
+        slow one, which is the failure worth catching: the pool hands out one client at
+        a time, so the lock inside a client never contends, and the only thing standing
+        between four threads and one session is that `Run` is re-entrant.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from anytime_serving.serving.onnx_runtime import InferenceRequest, RuntimePool
+
+        batches = [np.arange(8, dtype=np.float32).reshape(2, 4) + index for index in range(64)]
+
+        def drive(pool):
+            def one(index):
+                response = pool.infer(
+                    InferenceRequest(variant="fp32", data=batches[index], request_id=f"r{index}")
+                )
+                return response.request_id, response.logits
+
+            with ThreadPoolExecutor(max_workers=8) as pool_of_threads:
+                return dict(pool_of_threads.map(one, range(len(batches))))
+
+        with RuntimePool(4, self.model_paths, share_sessions=True) as shared:
+            shared_results = drive(shared)
+        with RuntimePool(4, self.model_paths) as unshared:
+            unshared_results = drive(unshared)
+
+        self.assertEqual(sorted(shared_results), sorted(unshared_results))
+        for index, request_id in enumerate(f"r{i}" for i in range(len(batches))):
+            np.testing.assert_array_almost_equal(shared_results[request_id], batches[index])
+            np.testing.assert_array_almost_equal(
+                shared_results[request_id], unshared_results[request_id]
+            )
+
+    def test_closing_a_shared_pool_releases_the_backend_once(self):
+        """A borrowing client closing the backend would pull it from workers still on it."""
+        from anytime_serving.serving.onnx_runtime import RuntimePool
+
+        pool = RuntimePool(3, self.model_paths, share_sessions=True)
+        backend = pool._shared
+        self.assertIsNotNone(backend)
+        closes = []
+        backend.close = lambda: closes.append(1)  # type: ignore[method-assign]
+        pool.close()
+        self.assertEqual(closes, [1], "the shared backend is released exactly once")

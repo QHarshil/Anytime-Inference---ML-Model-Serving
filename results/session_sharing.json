@@ -1,0 +1,37 @@
+{
+  "measurement": "resident set size of a RuntimePool, shared against per-worker",
+  "variants": [
+    "distilbert_fp32",
+    "minilm_fp32"
+  ],
+  "note": "memory only; the latency cost of a shared CPU arena is not measured",
+  "rows": [
+    {
+      "workers": 1,
+      "unshared_backends": 1,
+      "shared_backends": 1,
+      "unshared_rss_mb": 548.4,
+      "shared_rss_mb": 548.4,
+      "saved_mb": -0.0,
+      "saved_fraction": -0.0
+    },
+    {
+      "workers": 2,
+      "unshared_backends": 2,
+      "shared_backends": 1,
+      "unshared_rss_mb": 900.2,
+      "shared_rss_mb": 548.6,
+      "saved_mb": 351.5,
+      "saved_fraction": 0.3905
+    },
+    {
+      "workers": 4,
+      "unshared_backends": 4,
+      "shared_backends": 1,
+      "unshared_rss_mb": 1597.6,
+      "shared_rss_mb": 548.5,
+      "saved_mb": 1049.1,
+      "saved_fraction": 0.6567
+    }
+  ]
+}
