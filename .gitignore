@@ -64,6 +64,8 @@ results/*
 !results/session_sharing.json
 !results/ab_session_sharing.json
 !results/variant_profiles.json
+!results/encoder_batching.json
+!results/encoder_batching_timed.json
 
 # OS
 .DS_Store

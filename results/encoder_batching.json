@@ -1,0 +1,371 @@
+{
+  "measurement": "what encoder batching costs in padding and changes in answers",
+  "dataset": "glue/sst2 validation",
+  "gated": false,
+  "note": "counts and numerics only. No timing here, so a contended host cannot corrupt it; the throughput arm of encoder batching is a separate, gated measurement.",
+  "geometry": {
+    "sentences": 872,
+    "token_length": {
+      "min": 4,
+      "median": 24,
+      "mean": 25.16,
+      "p95": 44,
+      "max": 55
+    },
+    "benchmark_sequence_length": 128,
+    "fixed_padding_fraction": 0.8034,
+    "widths": [
+      {
+        "width": 1,
+        "runs": 872,
+        "runs_saved_fraction": 0.0,
+        "padding_fraction": 0.0
+      },
+      {
+        "width": 2,
+        "runs": 436,
+        "runs_saved_fraction": 0.5,
+        "padding_fraction": 0.1871
+      },
+      {
+        "width": 4,
+        "runs": 218,
+        "runs_saved_fraction": 0.75,
+        "padding_fraction": 0.3018
+      },
+      {
+        "width": 8,
+        "runs": 109,
+        "runs_saved_fraction": 0.875,
+        "padding_fraction": 0.3814
+      },
+      {
+        "width": 16,
+        "runs": 55,
+        "runs_saved_fraction": 0.9369,
+        "padding_fraction": 0.4363
+      },
+      {
+        "width": 32,
+        "runs": 28,
+        "runs_saved_fraction": 0.9679,
+        "padding_fraction": 0.4775
+      }
+    ],
+    "tokenisers_agree": true
+  },
+  "variants": [
+    {
+      "variant": "distilbert_fp32",
+      "dynamic_quantize_nodes": 0,
+      "reference": "batch 1, true length, no padding",
+      "reference_accuracy": 0.9106,
+      "arms": [
+        {
+          "arm": "batch 1, pad to 128 (what the benchmarks run)",
+          "runs": 872,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9106,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.1086463928222656e-05
+        },
+        {
+          "arm": "batch 1, pad to longest in batch",
+          "runs": 872,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9106,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 0.0
+        },
+        {
+          "arm": "batch 2, pad to longest in batch",
+          "runs": 436,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9106,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 9.447336196899414e-06
+        },
+        {
+          "arm": "batch 4, pad to longest in batch",
+          "runs": 218,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9106,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.1086463928222656e-05
+        },
+        {
+          "arm": "batch 8, pad to longest in batch",
+          "runs": 109,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9106,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.1086463928222656e-05
+        },
+        {
+          "arm": "batch 16, pad to longest in batch",
+          "runs": 55,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9106,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.1086463928222656e-05
+        },
+        {
+          "arm": "batch 32, pad to longest in batch",
+          "runs": 28,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9106,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.1086463928222656e-05
+        }
+      ]
+    },
+    {
+      "variant": "distilbert_int8",
+      "dynamic_quantize_nodes": 50,
+      "reference": "batch 1, true length, no padding",
+      "reference_accuracy": 0.9037,
+      "arms": [
+        {
+          "arm": "batch 1, pad to 128 (what the benchmarks run)",
+          "runs": 872,
+          "flips": 4,
+          "requests": 872,
+          "flip_percent": 0.459,
+          "accuracy": 0.906,
+          "accuracy_delta_pp": 0.229,
+          "max_abs_logit_delta": 0.7772207260131836
+        },
+        {
+          "arm": "batch 1, pad to longest in batch",
+          "runs": 872,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9037,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 0.0
+        },
+        {
+          "arm": "batch 2, pad to longest in batch",
+          "runs": 436,
+          "flips": 6,
+          "requests": 872,
+          "flip_percent": 0.688,
+          "accuracy": 0.9037,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 0.7260602116584778
+        },
+        {
+          "arm": "batch 4, pad to longest in batch",
+          "runs": 218,
+          "flips": 6,
+          "requests": 872,
+          "flip_percent": 0.688,
+          "accuracy": 0.906,
+          "accuracy_delta_pp": 0.229,
+          "max_abs_logit_delta": 0.7989765405654907
+        },
+        {
+          "arm": "batch 8, pad to longest in batch",
+          "runs": 109,
+          "flips": 6,
+          "requests": 872,
+          "flip_percent": 0.688,
+          "accuracy": 0.9037,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 0.6719150543212891
+        },
+        {
+          "arm": "batch 16, pad to longest in batch",
+          "runs": 55,
+          "flips": 4,
+          "requests": 872,
+          "flip_percent": 0.459,
+          "accuracy": 0.9083,
+          "accuracy_delta_pp": 0.459,
+          "max_abs_logit_delta": 0.8208292722702026
+        },
+        {
+          "arm": "batch 32, pad to longest in batch",
+          "runs": 28,
+          "flips": 5,
+          "requests": 872,
+          "flip_percent": 0.573,
+          "accuracy": 0.9048,
+          "accuracy_delta_pp": 0.115,
+          "max_abs_logit_delta": 1.1818667650222778
+        }
+      ]
+    },
+    {
+      "variant": "minilm_fp32",
+      "dynamic_quantize_nodes": 0,
+      "reference": "batch 1, true length, no padding",
+      "reference_accuracy": 0.9014,
+      "arms": [
+        {
+          "arm": "batch 1, pad to 128 (what the benchmarks run)",
+          "runs": 872,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.0788440704345703e-05
+        },
+        {
+          "arm": "batch 1, pad to longest in batch",
+          "runs": 872,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 0.0
+        },
+        {
+          "arm": "batch 2, pad to longest in batch",
+          "runs": 436,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.0788440704345703e-05
+        },
+        {
+          "arm": "batch 4, pad to longest in batch",
+          "runs": 218,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.0788440704345703e-05
+        },
+        {
+          "arm": "batch 8, pad to longest in batch",
+          "runs": 109,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.0788440704345703e-05
+        },
+        {
+          "arm": "batch 16, pad to longest in batch",
+          "runs": 55,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.0788440704345703e-05
+        },
+        {
+          "arm": "batch 32, pad to longest in batch",
+          "runs": 28,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 1.0788440704345703e-05
+        }
+      ]
+    },
+    {
+      "variant": "minilm_int8",
+      "dynamic_quantize_nodes": 50,
+      "reference": "batch 1, true length, no padding",
+      "reference_accuracy": 0.8991,
+      "arms": [
+        {
+          "arm": "batch 1, pad to 128 (what the benchmarks run)",
+          "runs": 872,
+          "flips": 4,
+          "requests": 872,
+          "flip_percent": 0.459,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.229,
+          "max_abs_logit_delta": 0.5625005960464478
+        },
+        {
+          "arm": "batch 1, pad to longest in batch",
+          "runs": 872,
+          "flips": 0,
+          "requests": 872,
+          "flip_percent": 0.0,
+          "accuracy": 0.8991,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 0.0
+        },
+        {
+          "arm": "batch 2, pad to longest in batch",
+          "runs": 436,
+          "flips": 4,
+          "requests": 872,
+          "flip_percent": 0.459,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.229,
+          "max_abs_logit_delta": 0.7153031229972839
+        },
+        {
+          "arm": "batch 4, pad to longest in batch",
+          "runs": 218,
+          "flips": 2,
+          "requests": 872,
+          "flip_percent": 0.229,
+          "accuracy": 0.8991,
+          "accuracy_delta_pp": 0.0,
+          "max_abs_logit_delta": 0.859153151512146
+        },
+        {
+          "arm": "batch 8, pad to longest in batch",
+          "runs": 109,
+          "flips": 4,
+          "requests": 872,
+          "flip_percent": 0.459,
+          "accuracy": 0.9014,
+          "accuracy_delta_pp": 0.229,
+          "max_abs_logit_delta": 0.5782885551452637
+        },
+        {
+          "arm": "batch 16, pad to longest in batch",
+          "runs": 55,
+          "flips": 5,
+          "requests": 872,
+          "flip_percent": 0.573,
+          "accuracy": 0.9002,
+          "accuracy_delta_pp": 0.115,
+          "max_abs_logit_delta": 0.6837754845619202
+        },
+        {
+          "arm": "batch 32, pad to longest in batch",
+          "runs": 28,
+          "flips": 5,
+          "requests": 872,
+          "flip_percent": 0.573,
+          "accuracy": 0.9025,
+          "accuracy_delta_pp": 0.344,
+          "max_abs_logit_delta": 0.5450795888900757
+        }
+      ]
+    }
+  ]
+}
