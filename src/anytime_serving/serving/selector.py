@@ -111,6 +111,44 @@ class AdaptiveSelector:
 
         return max(decision.expected_sojourn_ms, queue_sojourn_ms), decision.utilisation
 
+    def max_admissible_queue_depth(
+        self,
+        deadline_ms: float,
+        *,
+        arrival_rate_rps: float = 0.0,
+        load_percent: float = 0.0,
+        limit: int = 4096,
+    ) -> int:
+        """Deepest backlog this selector will still admit into.
+
+        The backlog term in `_sojourn_estimate_ms` charges an arrival
+        ``ceil(queue_depth / servers) + 1`` service times, so admission fails once
+        that exceeds the deadline however quiet the arrival process is. The bound is
+        therefore a property of the deadline and the service time alone:
+        ``servers * floor(deadline_ms / service_time_ms - 1)``.
+
+        **This is what caps batching on the encoder lane.** A batch of K needs K
+        requests at the runtime at once, and this is the most the controller will
+        ever allow to be there -- so the widest batch the lane can form is this plus
+        the arrival being decided. For the shipped configuration (38.7 ms deadline,
+        four workers) that is 8 for DistilBERT at 12.893 ms and 24 for MiniLM at
+        5.189 ms, giving widest batches of 9 and 25. `AdaptiveServer`'s
+        ``max_in_flight`` defaults to the pool size and is usually tighter still.
+
+        Computed by asking `select` rather than by evaluating the formula, so the two
+        cannot drift apart. Monotone in `queue_depth`, so the scan stops at the first
+        rejection; `limit` bounds it for a deadline that admits everything.
+        """
+        if deadline_ms <= 0.0:
+            raise ValueError("deadline_ms must be positive")
+        depth = 0
+        while depth <= limit:
+            decision = self.select(deadline_ms, arrival_rate_rps, load_percent, queue_depth=depth)
+            if decision.expected_sojourn_ms > deadline_ms:
+                return depth - 1
+            depth += 1
+        return limit
+
     def select(
         self,
         deadline_ms: float,
