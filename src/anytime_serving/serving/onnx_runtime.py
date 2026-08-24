@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 
 from ..utils.logger import get_logger
+from .batching import BatchCounts, RequestBatcher
 
 LOGGER = get_logger("serving.onnx_runtime")
 
@@ -118,6 +119,11 @@ class InferenceResponse:
     logits: np.ndarray
     runtime_latency_ms: float
     wall_latency_ms: float
+    # How many requests shared the Run this came out of. Recorded because
+    # `runtime_latency_ms` is the batch's, so a service time read off a batched
+    # response means something different at width 8 than at width 1, and nothing
+    # else in the response says which it was.
+    batch_size: int = 1
 
 
 class _RuntimeBackend:
@@ -270,8 +276,7 @@ class RuntimeClient:
     def infer(self, request: InferenceRequest) -> InferenceResponse:
         feeds = request.feed(self._input_name)
         start = time.perf_counter()
-        with self._lock:
-            logits, runtime_latency_ms = self._backend.infer(request.variant, feeds)
+        logits, runtime_latency_ms = self.infer_feeds(request.variant, feeds)
         wall_ms = (time.perf_counter() - start) * 1000.0
         return InferenceResponse(
             request_id=request.request_id,
@@ -279,6 +284,17 @@ class RuntimeClient:
             runtime_latency_ms=runtime_latency_ms,
             wall_latency_ms=wall_ms,
         )
+
+    def infer_feeds(self, variant: str, feeds: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
+        """Run an already-assembled feed, whatever its batch width.
+
+        `infer` is one request; this is the entry the batcher needs, where the
+        leading axis holds several requests and no single `request_id` owns the
+        result. Both go through the same lock and the same backend, so a batched
+        run is not a second code path into the runtime.
+        """
+        with self._lock:
+            return self._backend.infer(variant, feeds)
 
     def close(self) -> None:
         # A shared backend outlives every client over it, so closing here would pull the
@@ -324,10 +340,15 @@ class RuntimePool:
         backend: str | None = None,
         input_name: str = "input",
         share_sessions: bool = True,
+        max_batch_size: int = 1,
+        max_batch_delay_ms: float = 0.0,
     ) -> None:
         if size <= 0:
             raise ValueError("size must be positive")
+        if max_batch_size < 1:
+            raise ValueError("max_batch_size must be at least 1")
         self._share_sessions = share_sessions
+        self._input_name = input_name
         if share_sessions:
             if not model_paths:
                 raise ValueError("model_paths must be non-empty")
@@ -347,6 +368,22 @@ class RuntimePool:
         self._free: queue.Queue[RuntimeClient] = queue.Queue()
         for client in self._clients:
             self._free.put(client)
+
+        # `infer` keeps its per-request signature either way, which is what makes a
+        # batched sweep and an unbatched one the same harness. At width 1 no batcher
+        # is built at all, so the unbatched path is untouched rather than merely
+        # configured off.
+        self._batcher: RequestBatcher | None = None
+        if max_batch_size > 1:
+            self._batcher = RequestBatcher(
+                self._run_batch,
+                max_batch_size=max_batch_size,
+                max_delay_ms=max_batch_delay_ms,
+                # One batch per worker at most: the batcher may not hand the pool
+                # more concurrent work than it has clients to run it on, or callers
+                # would block inside `_run_batch` holding a batch together.
+                max_concurrent_batches=size,
+            )
 
     @property
     def share_sessions(self) -> bool:
@@ -377,7 +414,44 @@ class RuntimePool:
         """Which backend the workers use."""
         return self._clients[0].backend_name if self._clients else "none"
 
+    @property
+    def max_batch_size(self) -> int:
+        """Widest Run the pool will form. 1 means no batching at all."""
+        return self._batcher.max_batch_size if self._batcher is not None else 1
+
+    @property
+    def batch_counts(self) -> BatchCounts | None:
+        """What the batcher did, in counts. None when batching is off.
+
+        Exposed because the achieved width is the only honest statement of what
+        batching did on a given workload: a pool configured for width 8 that never
+        saw eight requests at once ran at width 1 and should say so.
+        """
+        return self._batcher.counts if self._batcher is not None else None
+
+    def _run_batch(self, variant: str, feeds: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
+        """Run one assembled batch on whichever worker is free."""
+        client = self._free.get()
+        try:
+            return client.infer_feeds(variant, feeds)
+        finally:
+            self._free.put(client)
+
     def infer(self, request: InferenceRequest) -> InferenceResponse:
+        if self._batcher is not None:
+            start = time.perf_counter()
+            logits, runtime_latency_ms, width = self._batcher.infer(
+                request.variant, request.feed(self._input_name)
+            )
+            return InferenceResponse(
+                request_id=request.request_id,
+                logits=logits,
+                runtime_latency_ms=runtime_latency_ms,
+                # Wall time includes the wait for a batch to form, which is the
+                # whole cost of batching and is invisible in the runtime latency.
+                wall_latency_ms=(time.perf_counter() - start) * 1000.0,
+                batch_size=width,
+            )
         client = self._free.get()
         try:
             return client.infer(request)
@@ -385,6 +459,11 @@ class RuntimePool:
             self._free.put(client)
 
     def close(self) -> None:
+        # The batcher first: it dispatches onto these clients, so releasing their
+        # sessions while a batch is in flight would run a closed session.
+        if self._batcher is not None:
+            self._batcher.close()
+            self._batcher = None
         for client in self._clients:
             client.close()
         self._clients = []

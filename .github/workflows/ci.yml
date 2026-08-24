@@ -130,6 +130,9 @@ jobs:
             tests/test_profile_decode.py \
             tests/test_profile_batching.py \
             tests/test_decode_sweep.py \
+            tests/test_batching.py \
+            tests/test_count_encoder_batching.py \
+            tests/test_profile_encoder_batching.py \
             tests/test_import_boundaries.py
 
   engine:
