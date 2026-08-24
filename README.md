@@ -117,6 +117,7 @@ Reproduce the measured results end to end:
 python scripts/export_onnx.py --task text     # export FP32 and INT8 variants
 python scripts/profile_variants.py            # measure the Pareto frontier
 python scripts/run_load_sweep.py              # sweep load, write the figure
+python scripts/run_load_sweep.py --replot     # redraw it from the CSV, measuring nothing
 ```
 
 The decoder path, which needs the `research` extra for the export:

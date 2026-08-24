@@ -123,7 +123,7 @@ tests/            unit, integration, engine-parity, and import-boundary tests
 
 ## Generated files
 
-`models/` and `results/` are ignored. Both are reproducible:
+`models/` is ignored, and so is most of `results/`. Both are reproducible:
 
 ```bash
 python scripts/export_onnx.py --task text     # models/, encoder variants
@@ -131,9 +131,17 @@ python scripts/export_decoder.py              # models/, decoder variants + resu
 python scripts/profile_variants.py            # results/variant_profiles.json, configs/serving.yaml
 python scripts/profile_decode.py              # results/decode_profiles.json
 python scripts/plot_decode_profiles.py        # docs/img/ decoder figures, from that JSON
-python scripts/draw_arena_geometry.py          # docs/img/arena_geometry.png; a schematic, reads nothing
+python scripts/draw_arena_geometry.py         # docs/img/arena_geometry.png; a schematic, reads nothing
 python scripts/run_load_sweep.py              # results/load_sweep.csv, docs/img/
+python scripts/run_load_sweep.py --replot     # redraw docs/img/load_sweep.png from that CSV
 ```
+
+Six files under `results/` are committed rather than ignored, listed in `.gitignore`
+and totalling 196 KB: the measurements every figure in `docs/img/` is drawn from. They
+are there so a checkout can redraw each figure and check the numbers in the docs against
+the data behind them, rather than having to take both on trust. Everything else under
+`results/` -- the A/B arm directories, the per-request CSVs, the inference cache -- stays
+ignored.
 
 `decoder_profiles.json` and `decode_profiles.json` are different files by one
 letter: the first is what the export measured about each precision (size,

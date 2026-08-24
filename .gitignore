@@ -47,7 +47,21 @@ models/
 
 # Experiment output. Regenerate with run_all.py, scripts/profile_variants.py, and
 # scripts/run_load_sweep.py. Figures committed for the docs live in docs/img/.
-results/
+#
+# The six files below are the exception, and they are committed on purpose: they are the
+# inputs every figure in docs/img/ is drawn from. Without them a checkout can run the
+# tests but cannot redraw a single figure or check a single number in the docs against
+# the data behind it, which makes the measured claims unverifiable by anyone but the
+# author. They are 196 KB in total. Everything else here -- the A/B arm directories, the
+# per-request CSVs, the inference cache -- stays ignored, because it is either large or
+# scratch.
+results/*
+!results/batch_profiles.json
+!results/decode_profiles.json
+!results/decode_sweep.json
+!results/decoder_profiles.json
+!results/load_sweep.csv
+!results/variant_profiles.json
 
 # OS
 .DS_Store

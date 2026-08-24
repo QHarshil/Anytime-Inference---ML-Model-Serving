@@ -1,0 +1,72 @@
+{
+  "host": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.0",
+    "backend": "extension"
+  },
+  "model": "gpt2",
+  "task": "text-generation-with-past",
+  "opset": 14,
+  "perplexity_dataset": "wikitext-2-raw-v1 test",
+  "context_length": 1024,
+  "windows": 32,
+  "int4_block_size": 32,
+  "engine_vs_session_max_logit_diff": 0.0,
+  "variants": [
+    {
+      "name": "gpt2_fp32",
+      "model": "gpt2",
+      "precision": "fp32",
+      "graph": "model.onnx",
+      "size_mb": 652.6,
+      "size_ratio_vs_fp32": 1.0,
+      "perplexity": 31.3073,
+      "perplexity_delta": 0.0,
+      "perplexity_tokens": 32736,
+      "context_length": 1024,
+      "windows": 32,
+      "prefill_p50_ms": 449.73,
+      "layers": 12,
+      "kv_heads": 12,
+      "head_dim": 64,
+      "kv_bytes_per_token": 73728
+    },
+    {
+      "name": "gpt2_int8",
+      "model": "gpt2",
+      "precision": "int8",
+      "graph": "model.onnx",
+      "size_mb": 398.5,
+      "size_ratio_vs_fp32": 0.6106,
+      "perplexity": 31.3707,
+      "perplexity_delta": 0.0634,
+      "perplexity_tokens": 32736,
+      "context_length": 1024,
+      "windows": 32,
+      "prefill_p50_ms": 415.16,
+      "layers": 12,
+      "kv_heads": 12,
+      "head_dim": 64,
+      "kv_bytes_per_token": 73728
+    },
+    {
+      "name": "gpt2_int4",
+      "model": "gpt2",
+      "precision": "int4",
+      "graph": "model.onnx",
+      "size_mb": 367.3,
+      "size_ratio_vs_fp32": 0.5628,
+      "perplexity": 32.8659,
+      "perplexity_delta": 1.5586,
+      "perplexity_tokens": 32736,
+      "context_length": 1024,
+      "windows": 32,
+      "prefill_p50_ms": 1836.85,
+      "layers": 12,
+      "kv_heads": 12,
+      "head_dim": 64,
+      "kv_bytes_per_token": 73728
+    }
+  ]
+}
