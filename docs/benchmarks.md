@@ -551,6 +551,61 @@ healthy at batch 32 and 960 cached, because contention moves `Run` and the gathe
 different factors and so moves their ratio to each other. A share is safer than an absolute
 and it is not safe.
 
+### Not doing the gather twice is worth 1.02x, because the rows do not stay put
+
+The gather re-copies each sequence's entire past into its row of the staged tensor every
+step. The obvious remaining lever is not to: if a row still holds the sequence it held
+last step, its KV is already staged and only the new token needs appending. That would
+take the gather from ~2.11 GiB a step at batch 32 and 960 cached to ~2.25 MiB, and it is
+the last idea that would have made the copy cheap rather than merely parallel.
+
+**It is worth about 1.02x, and the reason is the schedule rather than the copy.** How
+often a row keeps its sequence is a property of `ContinuousBatchScheduler`, so it is
+counted rather than timed -- no wall clock is involved, which also means a busy host
+cannot move it. Measured over the spread workload, against the contention that actually
+matters, which is the mean decoding set over the batch width:
+
+| Contention | Mean batch | Rows keeping their index | Reuse would give |
+| --- | --- | --- | --- |
+| 0.61 | 19.5 | 93.8% | 1.19x |
+| 0.76 | 24.4 | 91.8% | 1.18x |
+| 0.94 | 25.7 | 21.7% | 1.04x |
+| 1.12 | 26.9 | 17.7% | 1.03x |
+| 1.48 | 28.4 | 12.5% | 1.02x |
+| 2.18 | 29.9 | 6.4% | 1.01x |
+
+**The change is a cliff at contention 1, and it lands on the wrong side of the thing being
+optimised.** Below one there are more slots than decoding sequences, so everyone runs
+every step and a row turns over only when somebody finishes. At and above one,
+`_run_decode_batch` rotates the served batch to the back of the queue and the next step
+draws different sequences. The gather is only worth attacking when the batch is full,
+and a full batch is exactly the regime where the rows move.
+
+**The rotation is the anti-starvation guarantee, so the stability is not there to be
+recovered.** `_select_batch` proves that an unserved sequence's queue index strictly
+decreases, so every sequence is served at least once in any window of N decode steps, and
+the rotation is what makes that true. Moving the survivors to the front of the queue
+instead of the back lifts row stability from 6.4% to 86.6% -- and fails
+`test_no_sequence_waits_longer_than_the_decoding_set` on the same run. Row stability and
+the starvation bound are one mechanism. There is no version of this that keeps both.
+
+**Length bucketing is not the cause, which is worth saying because it is the obvious
+suspect.** Bucketing re-picks who shares a step, so it looks like the thing moving
+sequences between rows. The rotation happens with bucketing off too: at contention 2.15
+stability is 6.4% plain against 9.6% bucketed, so bucketing is neutral to slightly
+favourable rather than harmful.
+
+**So the gather stays.** It is the price of feeding a stock exported graph, which declares
+`past_key_values.{i}` as inputs and gives no way for attention to read scattered blocks.
+Production servers avoid the copy with a block-aware attention kernel rather than a
+cleverer staging buffer -- ONNX Runtime has a `PagedAttention` contrib operator that does
+exactly this, and it is CUDA-only, so it is not reachable from this host's CPU and CoreML
+providers. The two ways to force stability without it both cost more than the 1.2x
+ceiling they are chasing: freezing batch membership for K steps gives the bound up, and
+running a fixed-width tensor with inactive rows masked wastes compute in inverse
+proportion to occupancy. `tests/test_batch_scheduler.py` pins the cliff and the
+bucketing result so this does not have to be rediscovered.
+
 ### Stopping ONNX Runtime's workers spinning is a 1.65x regression
 
 The obvious next lever, and it goes the wrong way. ONNX Runtime's intra-op workers

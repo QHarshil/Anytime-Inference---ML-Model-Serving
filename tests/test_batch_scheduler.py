@@ -616,3 +616,103 @@ def test_bucketing_off_still_takes_the_front_of_the_queue(decoder_graph):
             if observed >= 12:
                 break
     assert observed >= 12, "not enough decode steps to be sure of the ordering"
+
+
+def _row_stability(decoder_graph, *, sequences, max_batch, bucketing, max_new_tokens=200):
+    """Contention, and how often a sequence keeps its row index between decode steps.
+
+    Returns `(contention, index_stable, member_stable)`. Contention is the mean decoding
+    set size over the batch width, measured rather than assumed: it is set by how fast
+    sequences finish against how fast they arrive, so submitting 96 requests does not
+    mean 96 are resident. Getting that wrong reads the whole effect backwards.
+
+    `index_stable` is the fraction of rows holding the same sequence as the same row in
+    the previous decode step -- the condition an incremental gather needs, because the
+    staged tensor is addressed by row. `member_stable` is the weaker one: the sequence
+    was somewhere in the previous batch, so a permutation could repair it.
+
+    No timing anywhere, so this is a property of the schedule rather than a measurement
+    of the host, and it is exactly reproducible.
+    """
+    client = _client(decoder_graph, num_blocks=32768)
+    scheduler = ContinuousBatchScheduler(
+        client, max_batch_size=max_batch, length_bucketing=bucketing
+    )
+    spread = [8, 16, 24, 32]
+    for index in range(sequences):
+        scheduler.submit(_request(index, length=spread[index % 4], max_new_tokens=max_new_tokens))
+
+    batches: list[tuple[str, ...]] = []
+    decoding: list[int] = []
+    while not scheduler.idle():
+        step = scheduler.step()
+        if step is None:
+            break
+        if step.kind == "decode":
+            batches.append(step.request_ids)
+            decoding.append(len(scheduler.decoding))
+
+    index_hits = member_hits = total = 0
+    # Not strict: the pairing is deliberately one shorter than the batch list.
+    for previous, current in zip(batches, batches[1:], strict=False):
+        seen = set(previous)
+        for row, request_id in enumerate(current):
+            total += 1
+            index_hits += row < len(previous) and previous[row] == request_id
+            member_hits += request_id in seen
+    return statistics.mean(decoding) / max_batch, index_hits / total, member_hits / total
+
+
+def test_a_full_batch_moves_every_row_and_an_unfull_one_does_not(decoder_graph):
+    """Why an incremental gather is not reachable from this schedule.
+
+    The gather re-copies each sequence's whole past into a row of the staged tensor every
+    step. Skipping that for a row whose sequence has not moved would be free, and whether
+    it is worth building comes down to how often a row keeps its sequence.
+
+    It depends entirely on contention, and the change is a cliff rather than a slope.
+    Below one -- more slots than decoding sequences -- every sequence runs every step and
+    a row turns over only when somebody finishes: about 94% stable. At and above one,
+    `_run_decode_batch` rotates the served batch to the back of the queue so the next
+    step draws different sequences, and stability falls to under 10%.
+
+    That rotation is the anti-starvation guarantee `_select_batch` documents, not an
+    accident, so the stability is not available to be recovered without giving the
+    guarantee up. And a full batch is the only regime where the gather costs what makes
+    it worth attacking: below contention one the batch is not full, so the step is
+    cheaper and the gather is a smaller share of it.
+    """
+    quiet_contention, quiet_index, quiet_member = _row_stability(
+        decoder_graph, sequences=24, max_batch=32, bucketing=False
+    )
+    busy_contention, busy_index, busy_member = _row_stability(
+        decoder_graph, sequences=96, max_batch=32, bucketing=False
+    )
+
+    assert quiet_contention < 1.0, "24 sequences into 32 slots should not fill the batch"
+    assert busy_contention > 1.5, "96 sequences into 32 slots should oversubscribe it"
+
+    assert quiet_index > 0.80, f"an unfull batch should hold its rows, got {quiet_index:.1%}"
+    assert busy_index < 0.20, f"a full batch should turn its rows over, got {busy_index:.1%}"
+
+    # The weaker condition survives a little longer but not enough to rescue the idea:
+    # repairing a permutation still moves the row, which is the copy being avoided.
+    assert quiet_member > 0.95
+    assert busy_member < 0.40
+
+
+def test_length_bucketing_is_not_what_moves_the_rows(decoder_graph):
+    """The rotation happens with bucketing off, so bucketing cannot be the cause.
+
+    Worth pinning because the obvious suspect is wrong. Bucketing re-picks who shares a
+    step, so it looks like the thing that would move a sequence between rows -- but
+    `_run_decode_batch` rotates the queue whether it is on or off, and bucketing is
+    neutral to slightly favourable at matched contention rather than harmful.
+    """
+    _, plain_index, _ = _row_stability(decoder_graph, sequences=96, max_batch=32, bucketing=False)
+    _, bucketed_index, _ = _row_stability(decoder_graph, sequences=96, max_batch=32, bucketing=True)
+    assert bucketed_index >= plain_index - 0.05, (
+        f"bucketing is blamed for row churn but is not causing it: "
+        f"{bucketed_index:.1%} bucketed against {plain_index:.1%} plain"
+    )
+    assert plain_index < 0.20, "the rotation happens with bucketing off"
