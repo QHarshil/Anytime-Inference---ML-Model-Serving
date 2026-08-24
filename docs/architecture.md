@@ -286,6 +286,34 @@ single-server queueing formula, which understated capacity by the worker count
 and shed traffic the pool could serve comfortably. Making the mismatch
 unrepresentable is cheaper than detecting it.
 
+### Batching the encoder does not move it toward the decoder's model
+
+The encoder lane is N workers each blocking on one request; the decoder lane is one
+scheduler multiplexing M sequences over a batched `Run`. `serving/batching.py` adds
+batching to the encoder, and the expectation was that this would move the two models
+closer together and dissolve part of what makes merging them hard. **It does not, and
+the reason is worth recording: the encoder's batch width is bounded by exactly the
+quantity that makes M/M/c valid.**
+
+A batch of K needs K requests at the runtime simultaneously. Two things cap that, and
+neither lives in the runtime:
+
+- **`AdaptiveServer`'s `max_in_flight`**, which defaults to `RuntimePool.size`. Four
+  workers means at most four requests are ever inside `pool.infer`, so the widest batch
+  is four.
+- **Admission itself**, which is the bound that cannot be configured away.
+  `AdaptiveSelector._sojourn_estimate_ms` charges an arrival
+  `ceil(queue_depth / servers) + 1` service times, so it rejects once the backlog would
+  outlast the deadline. `AdaptiveSelector.max_admissible_queue_depth` computes it, and
+  it comes out to `servers * floor(deadline_ms / service_time_ms - 1)`: **8 for
+  DistilBERT at 12.893 ms and 24 for MiniLM at 5.189 ms** against the 38.7 ms deadline,
+  so the widest admissible batches are 9 and 25.
+
+So widening the encoder's batch is an admission-model decision, not a runtime one --
+which is the same decision the decoder merge needs, arrived at from the other side.
+Batching does not remove that choice; it localises it to one number. `docs/benchmarks.md`
+has what the width is worth once you have it, and it is not much.
+
 ## Multiple inputs per variant
 
 Variants of the same task can declare different graph inputs: DistilBERT takes

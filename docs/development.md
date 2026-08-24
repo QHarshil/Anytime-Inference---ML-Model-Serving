@@ -136,14 +136,26 @@ python scripts/run_load_sweep.py              # results/load_sweep.csv, docs/img
 python scripts/run_load_sweep.py --replot     # redraw docs/img/load_sweep.png from that CSV
 python scripts/measure_session_sharing.py     # results/session_sharing.json; memory, not timing
 python scripts/ab_session_sharing.py          # results/ab_session_sharing.json; paired, gated, needs a quiet host
+python scripts/count_encoder_batching.py      # results/encoder_batching.json; counts and numerics, ungated
+python scripts/profile_encoder_batching.py    # results/encoder_batching_timed.json; timed, gated, needs a quiet host
 ```
 
-Six files under `results/` are committed rather than ignored, listed in `.gitignore`
-and totalling 196 KB: the measurements every figure in `docs/img/` is drawn from. They
-are there so a checkout can redraw each figure and check the numbers in the docs against
-the data behind them, rather than having to take both on trust. Everything else under
-`results/` -- the A/B arm directories, the per-request CSVs, the inference cache -- stays
-ignored.
+The last two are the two halves of the encoder-batching question and they are separate
+on purpose. `count_encoder_batching.py` measures padding shares, run counts and whether
+a batched answer differs from an unbatched one -- all properties of the workload and the
+graph, so **it carries no host gate and a contended machine cannot corrupt it**.
+`profile_encoder_batching.py` times a Run at several widths, so it does: every pass
+re-measures width 1 against `configs/serving.yaml` and a pass outside the band is
+discarded rather than recorded. Splitting them is what let the counting half be finished
+on a busy host.
+
+Ten files under `results/` are committed rather than ignored, listed in `.gitignore`
+and totalling 240 KB: the measurements every figure in `docs/img/` is drawn from, plus
+the tables on `docs/benchmarks.md` that have no figure -- session sharing and encoder
+batching. They are there so a checkout can redraw each figure and check the numbers in
+the docs against the data behind them, rather than having to take both on trust.
+Everything else under `results/` -- the A/B arm directories, the per-request CSVs, the
+inference cache -- stays ignored.
 
 `decoder_profiles.json` and `decode_profiles.json` are different files by one
 letter: the first is what the export measured about each precision (size,

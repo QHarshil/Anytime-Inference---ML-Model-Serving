@@ -1044,6 +1044,156 @@ workers `configs/serving.yaml` sets, that is worth about 2% of p50 -- small, but
 comparison that forgets it would read a 2% gain as a code change. `--no-share-sessions`
 reproduces the configuration they were taken under.
 
+## Encoder batching is worth 1.01-1.14x, and the width that earns it misses the deadline
+
+The encoder path had no batching, so every number above it describes batch size 1.
+`serving/batching.py` implements it: `RuntimePool(max_batch_size=K)` coalesces concurrent
+`infer` calls into one `Session::Run`, right-padding ragged rows and splitting the output
+back per request. `infer` keeps its per-request signature, so a batched sweep and an
+unbatched one are the same harness.
+
+**The default is 1.** What follows is why, and it is the second item this repository has
+closed by measuring it rather than building on it.
+
+### The counting half, which needed no quiet host
+
+The graphs already declare a dynamic `batch_size`, so nothing had to be re-exported. That
+left two questions a contended machine cannot corrupt, and
+`python scripts/count_encoder_batching.py` answers both into
+`results/encoder_batching.json`.
+
+**Padding.** A batched Run computes every row at the longest row's length. Over all 872
+SST-2 validation sentences, grouped in arrival order:
+
+| Width | Runs | Padding |
+| --- | --- | --- |
+| 1 | 872 | 0.0% |
+| 2 | 436 | 18.7% |
+| 4 | 218 | 30.2% |
+| 8 | 109 | 38.1% |
+| 16 | 55 | 43.6% |
+| 32 | 28 | 47.8% |
+
+**But the comparison that matters goes the other way, and it turned up something older
+than batching.** `run_load_sweep.py` and `profile_variants.py` tokenise with
+`padding="max_length"` at 128 tokens, and SST-2's median sentence is **24** tokens
+(mean 25.16, p95 44, max 55). So **80.3% of every tensor the encoder benchmarks have ever
+run is padding**, and a batched tensor of true lengths is the *cheaper* of the two at
+every width up to 32. That is a property of the measurement, not of batching, and it means
+the 12.893 ms service time and the 38.7 ms deadline are calibrated to a 128-token request
+rather than an average one. A fixed length is a defensible choice -- deterministic service
+time is what the M/M/c model wants -- but it was undocumented.
+
+**Whether a batched answer is the same answer.** For FP32, yes: zero prediction changes
+at every width, with logits agreeing to 1.1e-05. **That arm is the control here** and it
+is logically independent of the quantisation question below, so it is what says the
+harness is sound rather than the finding. Its accuracies -- 91.06% for DistilBERT, 90.14%
+for MiniLM -- are exactly the ones in `configs/serving.yaml`, which ties this measurement
+to the profiler that wrote the config.
+
+For INT8, **no**. Both quantised graphs carry 50 `DynamicQuantizeLinear` nodes, so the
+activation scale is computed at runtime from the tensor actually fed; batching changes
+that tensor and so changes every row's scale. Over the same 872 sentences it moves a logit
+by up to 1.18 and flips 0.23-0.69% of predictions.
+
+**The attribution matters and it is not batching.** Padding alone at batch 1 -- which is
+what the committed benchmarks already do -- flips 4 of 872 for both INT8 variants, the
+same order as any batched width. The true-length batch-1 arm flips exactly 0 with a
+logit delta of 0.0, which is the pair that localises the cause: it is dynamic
+quantisation meeting a non-tight tensor, and the shipped configuration is already inside
+it. Accuracy moves by at most +-0.46pp and does not systematically fall, so this is a
+determinism property rather than an accuracy regression. Whether a statically quantised
+export removes it is untested.
+
+### The timed half, gated
+
+`python scripts/profile_encoder_batching.py` times one Run at each width, **every request
+at sequence length 128**, so no arm pays more padding than another and this isolates the
+GEMM effect alone. `intra_op_num_threads` is 1, as in serving.
+
+Every pass re-measures **DistilBERT FP32 at width 1** against the recorded 12.893 ms and
+is discarded if it falls outside 20%. That control cannot depend on the treatment,
+because at width 1 there is no batching. All four variants kept 4 of 4 passes, with
+controls landing at 12.928, 13.084, 13.156 and 13.315 ms -- within 3.3% of the record.
+
+| Variant | w1 | w2 | w4 | w8 | w16 | Peak | Widest Run inside 38.7 ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| distilbert_fp32 | 1.000x | 1.057x | 1.077x | **1.079x** | 1.056x | 1.079x @ 8 | **2** (24.5 ms) |
+| distilbert_int8 | 1.000x | 1.011x | **1.012x** | 1.006x | 1.008x | 1.012x @ 4 | **2** (33.9 ms) |
+| minilm_fp32 | 1.000x | 1.092x | 1.115x | **1.138x** | 1.091x | 1.138x @ 8 | **8** (38.2 ms) |
+| minilm_int8 | 1.000x | 1.021x | 1.030x | 1.038x | **1.038x** | 1.038x @ 16 | **4** (28.1 ms) |
+
+Speedups are per request against that variant's own width 1. Within-width spread is
+0.3-3.9%, and the DistilBERT FP32 column reproduced across two independent invocations of
+the driver (1.049/1.057x at width 2, 1.081/1.079x at width 8), so 8% is several times the
+noise -- real, and small.
+
+**Three things in that table decide the feature.**
+
+1. **The ceiling is 1.14x, against 3.00x for a decode step at the same width 8.** Batching
+   the encoder is a different regime, not a smaller version of the same win.
+2. **Almost nothing amortises.** A width-16 DistilBERT Run takes 196.2 ms against 12.95 ms
+   at width 1 -- 15.1x the time for 16x the work. So a batched Run occupies one worker for
+   very nearly K times as long, while the pool would have spent the same core-seconds
+   running those K requests *concurrently* on K workers. At `intra_op_num_threads = 1` a
+   speedup below K is not a win; it is the same work made less parallelisable.
+3. **The width that peaks does not fit the deadline.** A Run is indivisible: every request
+   in a batch waits for all of it. DistilBERT FP32 peaks at width 8, whose Run alone is
+   96.0 ms against a 38.7 ms deadline, so nothing in it can meet its target however empty
+   the queue. The widest width that fits is 2, worth 1.057x -- for which a request pays
+   24.5 ms instead of 12.95 ms, **91% more latency for 5.7% less work**. MiniLM FP32 is
+   the only row where the peak fits at all, and its width-8 Run consumes 38.2 ms of a
+   38.7 ms budget, leaving 0.5 ms for every queueing delay in the system.
+
+### Why the regime is different, in arithmetic
+
+The decoder gains from batching because a one-token decode step is a GEMV: it reads a
+whole weight matrix to do one row of work. A 128-token encoder request is already a GEMM.
+FP32 arithmetic intensity of the projection and FFN GEMMs, from the graph's own
+dimensions at hidden 768:
+
+| | Batch 1 | Batch 8 | Batch 32 |
+| --- | --- | --- | --- |
+| GPT-2 decode step (M = batch) | **0.50** | 3.9 | 14.8 |
+| DistilBERT encoder, seq 128 (M = 128 x batch) | **48-53** | 140-192 | -- |
+
+**A hundredfold difference in where the two start.** The decoder at width 1 is far below
+any plausible machine balance and batching moves it toward compute-bound, which is worth
+3x. The encoder at width 1 is already well above it, so widening the GEMM buys the few
+percent that better cache blocking gives and nothing more. This is reasoning from
+dimensions rather than a measured roofline -- nothing here counted a cache miss -- but it
+predicts the direction and the size of both measurements.
+
+### And the width is capped anyway, by admission
+
+A batch of K needs K requests at the runtime at once, and the control plane will not put
+them there. `AdaptiveServer`'s `max_in_flight` defaults to `RuntimePool.size`, so the
+shipped four workers cap the batch at 4. Lifting it does not free the width:
+`AdaptiveSelector` charges an arrival `ceil(queue_depth / servers) + 1` service times and
+rejects once that outruns the deadline, which bounds the backlog at
+`servers * floor(deadline_ms / service_time_ms - 1)` -- **8 for DistilBERT, 24 for
+MiniLM**, so widest admissible batches of 9 and 25.
+`AdaptiveSelector.max_admissible_queue_depth` computes it and a test pins both numbers.
+
+**This is also the answer to a structural question that was open.** Batching the encoder
+was expected to move its concurrency model toward the decoder's and dissolve part of what
+makes merging the two lanes hard. It does not: the encoder's batch width is bounded by
+exactly the quantity that makes M/M/c valid, so widening it is an admission-model
+decision rather than a runtime one -- the same decision the merge needs, reached from the
+other side. Batching does not remove that choice; it localises it to one number.
+
+### So it ships off, and that is the result
+
+`max_batch_size=1` is the default and `serving/batching.py` is the mechanism that
+established why. It is kept rather than reverted for three reasons: it is what any future
+answer to the admission question would need, the correctness work behind it is what found
+the INT8 determinism property, and a width-2 configuration is a legitimate choice for a
+deployment that values throughput over its deadline -- it is simply not this one's.
+
+**What would change the answer**: a deadline several times the service time, a
+static-quantised export, or an execution provider where a batch-1 encoder Run is *not*
+already compute-bound. None of those is this host.
+
 ## Known limitations
 
 - **Single host, and horizontal scale is out of scope.** There is no GPU path, no
@@ -1063,9 +1213,22 @@ reproduces the configuration they were taken under.
 - Absolute service times drift with thermal state by a few percent, which is why
   they are reported as a median over passes with the range attached. Ratios between
   variants are steadier than absolutes.
-- **The encoder path still has no batching**: one request in flight per worker, so
-  every number in the variant frontier and load sweep sections describes batch size 1.
-  Batching exists on the decoder path only.
+- **The encoder path has batching now, and it is not on.** `serving/batching.py`
+  implements it and `RuntimePool(max_batch_size=...)` reaches it, but the default is 1
+  and the section above says why: 1.08x at a width whose Run already exceeds the
+  deadline. Every number in the variant frontier and load sweep sections still
+  describes batch size 1, and that is now the shipped configuration rather than a gap.
+- **Every encoder measurement here pads to 128 tokens, and SST-2's median sentence is
+  24.** So 80.3% of the tensor in every encoder number on this page is padding. That is
+  a deliberate choice -- a fixed length makes service time deterministic, which is what
+  the M/M/c model wants -- but it means the 12.893 ms service time and the 38.7 ms
+  deadline are calibrated to a 128-token request, not to an average one. Serving true
+  lengths would be faster and less predictable.
+- **INT8 answers depend on what else is in the tensor.** Both quantised variants carry
+  50 `DynamicQuantizeLinear` nodes, so the activation scale is computed from the tensor
+  actually fed and padding or batch-mates change it. It moves 0.2-0.7% of predictions
+  and at most +-0.5pp of accuracy. FP32 is unaffected to 1.1e-05 of a logit. Untested
+  is whether a static-quantised export would remove it.
 - The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
   are measured through different harnesses and their capacities are not comparable.
 - **Numbers on this page predate session sharing becoming the default**, and were
