@@ -899,8 +899,21 @@ figure could not be redrawn without running the models again. `--replot` closes 
 reads the CSV and takes the deadline, the worker count and the pool capacity from
 `configs/serving.yaml`, the same way the measured run derived them, so a redraw cannot
 retitle the picture with a capacity its numbers were never measured against. Every figure
-in `docs/img/` regenerates byte-identically from the inputs committed under `results/`,
-which is what makes the pictures checkable rather than merely present.
+in `docs/img/` regenerates from the inputs committed under `results/`, which is what makes
+the pictures checkable rather than merely present.
+
+Six files under `results/` are committed, and they are exactly the ones the figures are
+drawn from: `batch_profiles.json`, `decode_profiles.json`, `decode_sweep.json`,
+`decoder_profiles.json`, `load_sweep.csv` and `variant_profiles.json`. The per-request
+CSVs and the A/B arm directories referenced above are not -- they are large, and they
+appear under `results/` once you run the measurement that writes them. So a checkout can
+redraw every figure and re-derive every number a figure rests on, and needs a measurement
+run of its own before it can recompute a percentile from per-request rows.
+
+Regeneration is byte-identical for a given matplotlib. Across versions the numbers and
+the layout are identical and the bytes are not, because text rasterisation follows the
+freetype the wheel was built against; `tests/test_load_sweep.py` compares figure
+dimensions for that reason and puts byte equality behind `ANYTIME_FIGURE_BYTES=1`.
 
 Add `--quick` to any of these for a reduced run during development. Do not report
 `--quick` numbers: for `profile_variants.py` it drops accuracy to 128 of the 872

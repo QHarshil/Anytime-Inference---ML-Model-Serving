@@ -42,7 +42,7 @@ interpreter will import, and checked in three places:
 1. **Configure time.** The SDK version must equal the wheel version, or CMake
    fails.
 2. **Compile time.** `ORT_API_VERSION` is read out of the resolved headers and
-   asserted in `src/tensor.cpp`, so a header from a different include path breaks
+   asserted in `runtime/src/tensor.cpp`, so a header from a different include path breaks
    the build rather than the run.
 3. **Import time.** `load_extension()` compares
    `anytime_runtime.onnxruntime_version()` against `onnxruntime.__version__`,
