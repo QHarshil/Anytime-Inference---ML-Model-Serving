@@ -27,7 +27,16 @@ bitwise: see the docstring on that group for the int8 result, which is a finding
 than a tolerance.
 
 The batcher's own policy tests use a stub in place of a runtime. They are the ones that
-have to run everywhere and they carry no ONNX dependency at all.
+have to run everywhere and they carry no ONNX dependency at all. **Coalescing is made to
+happen rather than hoped for.** Each of them starts its submitters on a
+`threading.Barrier` and gives the batcher a window wide enough that the group closes on
+the last arrival rather than on the clock, so an asserted width is a property of the
+arrivals. The version before this one held the first batch for 0.15 s and assumed eight
+threads would start inside it. On CI they did not: eight requests ran at width 1, and six
+of the nine tests below assert nothing a width-1 run would violate, so they were passing
+over a batcher that had not batched. Patching `RequestBatcher` to never put two requests
+in a group is the check on that -- **three of the nine caught it before this change and
+nine of nine do now**, which is what the barrier and the window bought.
 """
 
 from __future__ import annotations
@@ -36,8 +45,11 @@ import math
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -190,17 +202,14 @@ class _StubRuntime:
     plausible one.
     """
 
-    def __init__(self, *, hold_s: float = 0.0, fail_on: str | None = None) -> None:
+    def __init__(self, *, fail_on: str | None = None) -> None:
         self.batches: list[tuple[str, dict[str, np.ndarray]]] = []
         self._lock = threading.Lock()
-        self._hold_s = hold_s
         self._fail_on = fail_on
 
     def run(self, variant: str, feeds: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
         with self._lock:
             self.batches.append((variant, {k: v.copy() for k, v in feeds.items()}))
-        if self._hold_s:
-            time.sleep(self._hold_s)
         if self._fail_on is not None and variant == self._fail_on:
             raise RuntimeError(f"unknown variant {variant!r}")
         ids = feeds["input_ids"]
@@ -219,6 +228,52 @@ def _request(token: int, length: int = 2, *, mask: bool = True) -> dict[str, np.
     return feeds
 
 
+# A barrier that never fills should fail the test rather than hang the suite, so the wait
+# is timed. It is generous because nothing here measures how long anything took.
+_BARRIER_TIMEOUT_S = 60.0
+
+# Wide enough that the clock never closes a group. Paired with `max_batch_size` set to
+# the number of arrivals, `_take_group` returns the moment the last one lands, so the
+# width these tests assert is a property of the arrivals rather than of how fast the host
+# ran them.
+#
+# Two seconds rather than something larger, because it bounds the cost of a *failing*
+# run: a batcher that stopped coalescing waits the window out once per group. At two
+# seconds this file fails such a run in under a minute; at thirty it had not finished in
+# two. It is still far longer than the arrivals need -- the barrier has already paid for
+# starting the threads, so what is left is an append under a lock.
+_UNTIL_FULL_MS = 2_000.0
+
+# Where the group is split -- two variants, or two input signatures, cannot share a Run
+# -- the remainder is smaller than `max_batch_size` and does wait the window out, once.
+# So those tests need a window short enough to pay for, and assert only what a window
+# that expired early would still leave true.
+_UNTIL_SPLIT_MS = 250.0
+
+
+def _submit_together(call: Callable[[int], Any], count: int) -> list[Future]:
+    """Run ``call(i)`` for ``i`` in ``range(count)`` on threads that start together.
+
+    The batcher can only coalesce requests that have already arrived, so a test of what
+    it coalesces is really a test of what the host let arrive. `ThreadPoolExecutor`
+    creates a thread per `submit`, and on a loaded runner the eighth can start long after
+    the first has been answered -- which is exactly what happened on CI, where eight
+    requests that pass here at width 8 ran at width 1.
+
+    The barrier removes that: every submitter is inside `call` before any of them is let
+    through, so what the batcher sees is a burst. Returns the futures, all of them
+    finished; a caller expecting an exception asks for its own results.
+    """
+    barrier = threading.Barrier(count)
+
+    def arrive(index: int) -> Any:
+        barrier.wait(timeout=_BARRIER_TIMEOUT_S)
+        return call(index)
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        return [pool.submit(arrive, index) for index in range(count)]
+
+
 def test_a_lone_request_runs_at_width_one():
     stub = _StubRuntime()
     with RequestBatcher(stub.run, max_batch_size=8) as batcher:
@@ -229,66 +284,82 @@ def test_a_lone_request_runs_at_width_one():
 
 
 def test_concurrent_requests_share_a_run():
-    # The first batch is held long enough that the rest of the arrivals queue behind
-    # it, which is the only way to make coalescing deterministic without timing.
-    stub = _StubRuntime(hold_s=0.15)
-    with RequestBatcher(stub.run, max_batch_size=8, max_concurrent_batches=1) as batcher:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(batcher.infer, "v", _request(i)) for i in range(8)]
-            results = [f.result() for f in futures]
-    assert max(stub.widths) > 1, f"nothing coalesced: widths {stub.widths}"
-    assert sum(stub.widths) == 8
-    assert len(stub.batches) < 8
-    # Every request still got its own answer back.
+    stub = _StubRuntime()
+    with RequestBatcher(
+        stub.run, max_batch_size=8, max_delay_ms=_UNTIL_FULL_MS, max_concurrent_batches=1
+    ) as batcher:
+        futures = _submit_together(lambda i: batcher.infer("v", _request(i)), 8)
+        results = [future.result() for future in futures]
+    # One Run for all eight, not "two of them happened to overlap". The window closes on
+    # the eighth arrival, so this is what the batcher does rather than what the host's
+    # scheduler allowed on the day.
+    assert stub.widths == [8], f"eight simultaneous requests ran as {stub.widths}"
+    # Every request still got its own answer back, and every one of them was told the
+    # width it came from.
     assert sorted(int(logits[0, 0]) for logits, _, _ in results) == list(range(8))
+    assert {width for _, _, width in results} == {8}
 
 
 def test_a_batch_never_exceeds_max_batch_size():
-    stub = _StubRuntime(hold_s=0.15)
-    with RequestBatcher(stub.run, max_batch_size=3, max_concurrent_batches=1) as batcher:
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            futures = [pool.submit(batcher.infer, "v", _request(i)) for i in range(12)]
-            for future in futures:
-                future.result()
-    assert stub.widths, "no batch ran"
-    assert max(stub.widths) <= 3
-    assert sum(stub.widths) == 12
+    stub = _StubRuntime()
+    with RequestBatcher(
+        stub.run, max_batch_size=3, max_delay_ms=_UNTIL_FULL_MS, max_concurrent_batches=1
+    ) as batcher:
+        futures = _submit_together(lambda i: batcher.infer("v", _request(i)), 12)
+        for future in futures:
+            future.result()
+    # Twelve arrivals against a cap of three, and the window closes each group the moment
+    # it is full: four runs of three exactly, rather than "at most three" over whatever
+    # split the host produced. `max <= 3` alone would pass over a batcher that never
+    # coalesced at all, which is how it passed on CI.
+    assert stub.widths == [3, 3, 3, 3], stub.widths
 
 
 def test_requests_for_different_variants_do_not_share_a_run():
-    stub = _StubRuntime(hold_s=0.15)
-    with RequestBatcher(stub.run, max_batch_size=8, max_concurrent_batches=1) as batcher:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [
-                pool.submit(batcher.infer, "even" if i % 2 == 0 else "odd", _request(i))
-                for i in range(8)
-            ]
-            for future in futures:
-                future.result()
-    for variant, feeds in stub.batches:
-        del variant
-        assert feeds["input_ids"].shape[0] >= 1
-    # Two graphs cannot share a Run, so no batch may mix them; the stub records the
-    # variant per batch and each batch has exactly one.
-    assert {v for v, _ in stub.batches} == {"even", "odd"}
+    stub = _StubRuntime()
+    with RequestBatcher(
+        stub.run, max_batch_size=8, max_delay_ms=_UNTIL_SPLIT_MS, max_concurrent_batches=1
+    ) as batcher:
+        futures = _submit_together(
+            lambda i: batcher.infer("even" if i % 2 == 0 else "odd", _request(i)), 8
+        )
+        for future in futures:
+            future.result()
+    # Two graphs cannot share a Run, so eight simultaneous arrivals against a cap of
+    # eight still come out as two runs. Which variant leads is the arrival order's to
+    # decide, and the remainder is what waits the window out.
     assert sum(stub.widths) == 8
+    assert {v for v, _ in stub.batches} == {"even", "odd"}
+    # A batch of one here would mean the window closed on a single arrival, 250 ms after
+    # eight already-running threads were released together. Three queued is enough for
+    # two of them to share a variant.
+    assert max(stub.widths) >= 2, f"nothing coalesced: widths {stub.widths}"
+    # Identity, not shape: `_request(i)` fills its row with `i`, so a row that reached
+    # the wrong variant's batch is the wrong parity.
+    for variant, feeds in stub.batches:
+        parity = 0 if variant == "even" else 1
+        assert (feeds["input_ids"] % 2 == parity).all(), f"{variant} batch holds another's row"
 
 
 def test_requests_declaring_different_inputs_do_not_share_a_run():
-    stub = _StubRuntime(hold_s=0.15)
-    with RequestBatcher(stub.run, max_batch_size=8, max_concurrent_batches=1) as batcher:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [
-                pool.submit(batcher.infer, "v", _request(i, mask=i % 2 == 0)) for i in range(4)
-            ]
-            for future in futures:
-                future.result()
-    for _, feeds in stub.batches:
-        # A batch is all-masked or all-unmasked; a mixed one would leave the graph
-        # missing a declared input for some rows, which is unrepresentable.
-        assert ("attention_mask" in feeds) in (True, False)
+    stub = _StubRuntime()
+    with RequestBatcher(
+        stub.run, max_batch_size=4, max_delay_ms=_UNTIL_SPLIT_MS, max_concurrent_batches=1
+    ) as batcher:
+        futures = _submit_together(lambda i: batcher.infer("v", _request(i, mask=i % 2 == 0)), 4)
+        for future in futures:
+            future.result()
+    # A batch is all-masked or all-unmasked. A mixed one would leave the graph missing a
+    # declared input for some of its rows, which is not a thing a feed can express.
     signatures = {tuple(sorted(feeds)) for _, feeds in stub.batches}
     assert signatures == {("attention_mask", "input_ids"), ("input_ids",)}
+    assert sum(stub.widths) == 4
+    assert max(stub.widths) >= 2, f"nothing coalesced: widths {stub.widths}"
+    # The masked requests are the even-numbered ones, so a row in the wrong group shows
+    # up as the wrong parity rather than only as the wrong shape.
+    for _, feeds in stub.batches:
+        parity = 0 if "attention_mask" in feeds else 1
+        assert (feeds["input_ids"] % 2 == parity).all(), "a row joined the wrong signature"
 
 
 def test_ragged_rows_without_a_mask_input_are_refused():
@@ -296,20 +367,19 @@ def test_ragged_rows_without_a_mask_input_are_refused():
     # A window rather than a held first batch: with two requests and no window the
     # first is dispatched alone before the second arrives, and a batch of one is
     # never ragged. The window is what makes the group form.
+    lengths = (2, 5)
     with RequestBatcher(
-        stub.run, max_batch_size=4, max_delay_ms=250.0, max_concurrent_batches=1
+        stub.run, max_batch_size=2, max_delay_ms=_UNTIL_FULL_MS, max_concurrent_batches=1
     ) as batcher:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(batcher.infer, "v", _request(1, length=2, mask=False)),
-                pool.submit(batcher.infer, "v", _request(2, length=5, mask=False)),
-            ]
-            errors = []
-            for future in futures:
-                try:
-                    future.result()
-                except RuntimeError as exc:
-                    errors.append(str(exc))
+        futures = _submit_together(
+            lambda i: batcher.infer("v", _request(i + 1, length=lengths[i], mask=False)), 2
+        )
+        errors = []
+        for future in futures:
+            try:
+                future.result()
+            except RuntimeError as exc:
+                errors.append(str(exc))
     # Refusing beats padding: without a mask the graph reads the zeros, and wrong
     # logits of the right shape are worse than an exception.
     assert errors, "a maskless ragged batch was served rather than refused"
@@ -318,19 +388,17 @@ def test_ragged_rows_without_a_mask_input_are_refused():
 
 def test_ragged_rows_with_a_mask_input_are_padded_to_the_longest():
     stub = _StubRuntime()
+    lengths = (2, 5, 3)
     with RequestBatcher(
-        stub.run, max_batch_size=4, max_delay_ms=250.0, max_concurrent_batches=1
+        stub.run, max_batch_size=3, max_delay_ms=_UNTIL_FULL_MS, max_concurrent_batches=1
     ) as batcher:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [
-                pool.submit(batcher.infer, "v", _request(i, length=length))
-                for i, length in enumerate((2, 5, 3), start=1)
-            ]
-            for future in futures:
-                future.result()
-    ragged = [feeds for _, feeds in stub.batches if feeds["input_ids"].shape[0] > 1]
-    assert ragged, f"nothing coalesced: widths {stub.widths}"
-    for feeds in ragged:
+        futures = _submit_together(
+            lambda i: batcher.infer("v", _request(i + 1, length=lengths[i])), 3
+        )
+        for future in futures:
+            future.result()
+    assert stub.widths == [3], f"the three rows did not share a run: {stub.widths}"
+    for _, feeds in stub.batches:
         width = feeds["input_ids"].shape[1]
         # The mask marks the real extent of each row, and it is right-aligned to
         # zero rather than to the width.
@@ -381,55 +449,65 @@ def test_delivered_rows_are_copies_not_views_into_the_batch():
 
 
 def test_the_batch_latency_is_reported_rather_than_a_share_of_it():
-    stub = _StubRuntime(hold_s=0.15)
-    with RequestBatcher(stub.run, max_batch_size=8, max_concurrent_batches=1) as batcher:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [pool.submit(batcher.infer, "v", _request(i)) for i in range(4)]
-            results = [f.result() for f in futures]
+    stub = _StubRuntime()
+    with RequestBatcher(
+        stub.run, max_batch_size=4, max_delay_ms=_UNTIL_FULL_MS, max_concurrent_batches=1
+    ) as batcher:
+        futures = _submit_together(lambda i: batcher.infer("v", _request(i)), 4)
+        results = [future.result() for future in futures]
+    # The width assertion is what gives the rest of this teeth. The stub returns 1.0
+    # whatever it is fed, so at width 1 the latency check below is true of a batcher
+    # that never batched -- which is what it was on CI.
+    assert stub.widths == [4], stub.widths
     # Every member of one batch reports the same runtime latency: the batch's, not
     # a per-request share. Dividing it by the width would report a service time no
     # request experienced.
     assert all(latency == 1.0 for _, latency, _ in results)
+    assert all(width == 4 for _, _, width in results)
 
 
 def test_counts_record_the_achieved_width_and_the_padding_it_cost():
-    stub = _StubRuntime(hold_s=0.15)
-    with RequestBatcher(stub.run, max_batch_size=4, max_concurrent_batches=1) as batcher:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [
-                pool.submit(batcher.infer, "v", _request(i, length=length))
-                for i, length in enumerate((4, 4, 4, 4), start=1)
-            ]
-            for future in futures:
-                future.result()
+    stub = _StubRuntime()
+    with RequestBatcher(
+        stub.run, max_batch_size=4, max_delay_ms=_UNTIL_FULL_MS, max_concurrent_batches=1
+    ) as batcher:
+        futures = _submit_together(lambda i: batcher.infer("v", _request(i + 1, length=4)), 4)
+        for future in futures:
+            future.result()
         counts = batcher.counts
     assert counts.requests == 4
     assert counts.rows_run == 4
-    assert sum(counts.widths.values()) == counts.runs
+    # One run of four, so the padding figures below are read off a batch that actually
+    # formed. `sum(widths.values()) == runs` holds at any width and says nothing.
+    assert counts.runs == 1
+    assert counts.widths == Counter({4: 1}), counts.widths
     # Equal lengths pad nothing, whatever the width.
     assert counts.padding_fraction == pytest.approx(0.0)
     assert counts.padded_rows == 0
 
 
 def test_padding_fraction_counts_the_slots_the_longest_row_forced():
-    stub = _StubRuntime(hold_s=0.2)
-    with RequestBatcher(stub.run, max_batch_size=2, max_concurrent_batches=1) as batcher:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(batcher.infer, "v", _request(1, length=2)),
-                pool.submit(batcher.infer, "v", _request(2, length=6)),
-            ]
-            for future in futures:
-                future.result()
+    stub = _StubRuntime()
+    lengths = (2, 6)
+    with RequestBatcher(
+        stub.run, max_batch_size=2, max_delay_ms=_UNTIL_FULL_MS, max_concurrent_batches=1
+    ) as batcher:
+        futures = _submit_together(
+            lambda i: batcher.infer("v", _request(i + 1, length=lengths[i])), 2
+        )
+        for future in futures:
+            future.result()
         counts = batcher.counts
-    if counts.runs == 1:
-        # 2 + 6 useful of 2 x 6 slots.
-        assert counts.token_slots == 12
-        assert counts.useful_token_slots == 8
-        assert counts.padding_fraction == pytest.approx(1 / 3)
-        assert counts.padded_rows == 1
-    else:  # pragma: no cover - the arrivals did not overlap on this run
-        assert counts.padding_fraction == pytest.approx(0.0)
+    # The version before this one had a branch here for "the arrivals did not overlap on
+    # this run", which is the whole disease: a test that reports zero padding when it
+    # failed to measure any. The window closes on the second arrival, so one run of two
+    # is the only outcome.
+    assert counts.runs == 1
+    # 2 + 6 useful of 2 x 6 slots.
+    assert counts.token_slots == 12
+    assert counts.useful_token_slots == 8
+    assert counts.padding_fraction == pytest.approx(1 / 3)
+    assert counts.padded_rows == 1
 
 
 def test_a_request_arriving_after_close_is_refused():
@@ -541,18 +619,21 @@ def test_batched_rows_equal_the_same_requests_run_alone(encoder_graph):
         {"enc": encoder_graph},
         backend="python",
         max_batch_size=len(requests),
-        max_batch_delay_ms=250.0,
+        max_batch_delay_ms=_UNTIL_FULL_MS,
     ) as pool:
-        with ThreadPoolExecutor(max_workers=len(requests)) as executor:
-            futures = [
-                executor.submit(pool.infer, InferenceRequest(variant="enc", inputs=f))
-                for f in requests
-            ]
-            batched = [f.result() for f in futures]
+        futures = _submit_together(
+            lambda i: pool.infer(InferenceRequest(variant="enc", inputs=requests[i])),
+            len(requests),
+        )
+        batched = [future.result() for future in futures]
         counts = pool.batch_counts
 
     assert counts is not None
+    # One Run for all eight. Without this the comparison below could be a row against
+    # itself at the same width, which is the case where nothing can go wrong.
+    assert counts.widths == Counter({len(requests): 1}), counts.widths
     assert counts.rows_run == len(requests)
+
     # Bitwise, not approximate. The pooling is a masked sum, so a padded row differs
     # from the same row run alone by the addition of exact zeros.
     for index, (one, many) in enumerate(zip(alone, batched, strict=True)):
@@ -566,6 +647,7 @@ def test_batched_rows_equal_the_same_requests_run_alone(encoder_graph):
 def test_a_short_request_is_unaffected_by_a_long_neighbour(encoder_graph):
     short = _feeds([1, 2])
     long = _feeds(list(range(1, 25)))
+    both = (short, long)
 
     with RuntimePool(1, {"enc": encoder_graph}, backend="python") as pool:
         alone = pool.infer(InferenceRequest(variant="enc", inputs=short)).logits.copy()
@@ -575,14 +657,12 @@ def test_a_short_request_is_unaffected_by_a_long_neighbour(encoder_graph):
         {"enc": encoder_graph},
         backend="python",
         max_batch_size=2,
-        max_batch_delay_ms=250.0,
+        max_batch_delay_ms=_UNTIL_FULL_MS,
     ) as pool:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(pool.infer, InferenceRequest(variant="enc", inputs=f))
-                for f in (short, long)
-            ]
-            results = [f.result() for f in futures]
+        futures = _submit_together(
+            lambda i: pool.infer(InferenceRequest(variant="enc", inputs=both[i])), 2
+        )
+        results = [future.result() for future in futures]
 
     assert results[0].batch_size == 2, "the two requests did not share a run"
     np.testing.assert_array_equal(results[0].logits, alone)
@@ -620,40 +700,38 @@ def test_a_maskless_graph_serves_one_length_and_refuses_a_ragged_batch(maskless_
         1,
         {"enc": maskless_graph},
         backend="python",
-        max_batch_size=4,
-        max_batch_delay_ms=200.0,
+        max_batch_size=2,
+        max_batch_delay_ms=_UNTIL_FULL_MS,
     ) as pool:
         # Equal lengths need no padding, so a maskless graph batches fine.
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(pool.infer, InferenceRequest(variant="enc", inputs=same))
-                for _ in range(2)
-            ]
-            for future in futures:
-                future.result()
+        futures = _submit_together(
+            lambda i: pool.infer(InferenceRequest(variant="enc", inputs=same)), 2
+        )
+        for future in futures:
+            future.result()
+        assert pool.batch_counts is not None
+        assert pool.batch_counts.widths == Counter({2: 1}), pool.batch_counts.widths
 
     with RuntimePool(
         1,
         {"enc": maskless_graph},
         backend="python",
-        max_batch_size=4,
-        max_batch_delay_ms=200.0,
+        max_batch_size=2,
+        max_batch_delay_ms=_UNTIL_FULL_MS,
     ) as pool:
         ragged = [
             {"input_ids": np.array([[1, 2]], dtype=np.int64)},
             {"input_ids": np.array([[1, 2, 3, 4, 5]], dtype=np.int64)},
         ]
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(pool.infer, InferenceRequest(variant="enc", inputs=f))
-                for f in ragged
-            ]
-            errors = []
-            for future in futures:
-                try:
-                    future.result()
-                except RuntimeError as exc:
-                    errors.append(str(exc))
+        futures = _submit_together(
+            lambda i: pool.infer(InferenceRequest(variant="enc", inputs=ragged[i])), 2
+        )
+        errors = []
+        for future in futures:
+            try:
+                future.result()
+            except RuntimeError as exc:
+                errors.append(str(exc))
     assert errors, "a maskless graph was fed padding rather than refusing it"
 
 
