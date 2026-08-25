@@ -280,3 +280,131 @@ def test_the_config_reader_still_agrees_on_a_model_it_was_written_for():
     assert _kv_geometry(_Gpt2Like()) == (12, 12, 64)
     # Grouped-query: 4 KV heads sizing the cache, not the 32 attention heads.
     assert _kv_geometry(_LlamaLike()) == (22, 4, 64)
+
+
+# -- the committed decoder profiles ----------------------------------------------------
+#
+# `results/decoder_profiles.json` and `results/decoder_profiles_tinyllama.json` are the
+# two models the decoder page quotes. They are committed, so the claims about them are
+# checkable without a 4.4 GB export. What is checked is the arithmetic that ties them
+# together, not the values themselves -- a re-measurement should be free to move a
+# perplexity without failing a test, but not free to move it in a direction that would
+# make the write-up wrong.
+
+import json  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+PROFILES = {
+    "gpt2": ROOT / "results" / "decoder_profiles.json",
+    "tinyllama": ROOT / "results" / "decoder_profiles_tinyllama.json",
+}
+
+
+@pytest.fixture(scope="module")
+def profiles() -> dict:
+    missing = [n for n, p in PROFILES.items() if not p.exists()]
+    if missing:  # pragma: no cover - both are committed in this repository
+        pytest.skip(f"missing {missing}; run scripts/export_decoder.py")
+    return {n: json.loads(p.read_text()) for n, p in PROFILES.items()}
+
+
+def test_the_kv_geometry_agrees_across_every_precision_of_a_model(profiles):
+    """The cache is a property of the architecture, not of the weights' precision.
+
+    Weight-only quantisation leaves the KV cache in float, which is what makes one
+    arena serve every precision. If a precision ever reported different geometry, the
+    arena sized for one would be wrong for another.
+    """
+    for name, payload in profiles.items():
+        shapes = {
+            (v["layers"], v["kv_heads"], v["head_dim"], v["kv_bytes_per_token"])
+            for v in payload["variants"]
+        }
+        assert len(shapes) == 1, f"{name} reports {len(shapes)} different KV geometries"
+
+
+def test_kv_bytes_per_token_is_the_geometry_times_two_for_key_and_value(profiles):
+    for name, payload in profiles.items():
+        for variant in payload["variants"]:
+            expected = 2 * variant["layers"] * variant["kv_heads"] * variant["head_dim"] * 4
+            assert variant["kv_bytes_per_token"] == expected, name
+
+
+def test_tinyllama_carries_less_kv_per_token_than_gpt2_on_more_layers(profiles):
+    """The reason a second model was exported, as an assertion rather than a sentence.
+
+    Grouped-query attention is the whole point: 4 KV heads against 12 on 22 layers
+    against 12. If a re-export ever produced 22 KV heads, the graph would be
+    multi-head after all and every expectation on the decoder page about where the
+    gather's time goes would be built on the wrong shape.
+    """
+    gpt2 = profiles["gpt2"]["variants"][0]
+    tiny = profiles["tinyllama"]["variants"][0]
+    assert tiny["layers"] > gpt2["layers"]
+    assert tiny["kv_heads"] < gpt2["kv_heads"]
+    assert tiny["kv_bytes_per_token"] < gpt2["kv_bytes_per_token"]
+    ratio = tiny["kv_bytes_per_token"] / gpt2["kv_bytes_per_token"]
+    assert ratio == pytest.approx(0.61, abs=0.02), (
+        f"KV per token is {ratio:.3f}x GPT-2's, not the 0.61x benchmarks.md quotes"
+    )
+
+
+def test_quantisation_costs_perplexity_and_never_improves_it(profiles):
+    """Weight-only quantisation is a rounding error on the weights, so it cannot help.
+
+    A negative delta would mean the measurement is noisy enough to be meaningless,
+    which for a deterministic score over fixed windows would be a real defect.
+    """
+    for name, payload in profiles.items():
+        by_precision = {v["precision"]: v for v in payload["variants"]}
+        if "fp32" not in by_precision:  # pragma: no cover - always exported
+            continue
+        for precision in ("int8", "int4"):
+            variant = by_precision.get(precision)
+            if variant is None:  # pragma: no cover - both are exported
+                continue
+            assert variant["perplexity_delta"] > 0, f"{name}/{precision}"
+            assert variant["size_ratio_vs_fp32"] < 1.0, f"{name}/{precision}"
+        if "int8" in by_precision and "int4" in by_precision:
+            assert (
+                by_precision["int4"]["perplexity_delta"] > by_precision["int8"]["perplexity_delta"]
+            ), f"{name}: INT4 costs no more perplexity than INT8, which inverts the ordering"
+
+
+def test_weight_only_quantisation_compresses_the_larger_model_further(profiles):
+    """The external-validity finding, pinned.
+
+    What stays in float -- the embedding table and the excluded output projection -- is
+    about a quarter of GPT-2 and about a twelfth of TinyLlama, so the size ratios
+    quoted for GPT-2 are a small-model artefact. If a future export inverted this, the
+    paragraph saying so on benchmarks.md would be wrong.
+    """
+    for precision in ("int8", "int4"):
+        ratios = {}
+        for name, payload in profiles.items():
+            variant = next((v for v in payload["variants"] if v["precision"] == precision), None)
+            if variant is None:  # pragma: no cover - both are exported
+                pytest.skip(f"{name} has no {precision} variant")
+            ratios[name] = variant["size_ratio_vs_fp32"]
+        assert ratios["tinyllama"] < ratios["gpt2"], precision
+
+
+def test_the_engine_and_a_separate_session_agree_bitwise(profiles):
+    """The one bitwise claim the decoder makes, and the form of it that is safe.
+
+    One graph through two sessions of the same library. Not across batch widths, where
+    the GEMM shape changes and float addition is not associative -- see
+    docs/runtime.md, and tests/test_batching.py for the assertion that had to be
+    replaced with a bound after claiming otherwise.
+    """
+    for name, payload in profiles.items():
+        assert payload["engine_vs_session_max_logit_diff"] == 0.0, name
+
+
+def test_every_profile_records_the_runtime_it_was_measured_with(profiles):
+    """pyproject.toml carries a floor, so the version is a measurement, not a constant."""
+    for name, payload in profiles.items():
+        assert payload["host"].get("onnxruntime"), (
+            f"{name} does not record its ONNX Runtime version, so its numbers can be "
+            f"neither re-derived nor falsified"
+        )

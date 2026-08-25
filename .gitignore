@@ -66,6 +66,7 @@ results/*
 !results/variant_profiles.json
 !results/encoder_batching.json
 !results/encoder_batching_timed.json
+!results/decoder_profiles_tinyllama.json
 
 # OS
 .DS_Store

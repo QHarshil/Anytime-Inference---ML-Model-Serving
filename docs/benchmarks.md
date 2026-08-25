@@ -1249,6 +1249,120 @@ deployment that values throughput over its deadline -- it is simply not this one
 static-quantised export, or an execution provider where a batch-1 encoder Run is *not*
 already compute-bound. None of those is this host.
 
+## A second decoder: what of the GPT-2 findings is about GPT-2
+
+Every decoder number above was measured on GPT-2 124M, so none of them had been asked
+whether it describes the machine, the pipeline, or that one model. TinyLlama-1.1B is
+9x the parameters, 22 layers against 12, and grouped-query attention with **4 KV heads
+against 12**.
+
+**Only the countable half is here.** Export, geometry, block sizing, parity and
+perplexity are properties of the graph and the corpus, so a contended host cannot
+corrupt them. The decode sweep, the threading ceiling and the 16.7% gather share are
+timed, none of them is gated below, and none of them is answered here.
+
+### The geometry, read off the graph
+
+Predicted before the export, then read off the exported graph's own signature -- not
+off the model config, which is the cross-check:
+
+| | GPT-2 | TinyLlama predicted | TinyLlama, off the graph |
+| --- | --- | --- | --- |
+| Layers | 12 | 22 | **22** |
+| KV heads | 12 | 4 (GQA) | **4** |
+| Head dim | 64 | 64 | **64** |
+| KV per token, fp32 | 72.0 KiB | 44 KiB | **44.0 KiB** |
+| Block at `block_tokens=64` | 4.50 MiB | 2.75 MiB | **2.75 MiB** |
+| 1024-token sequence | 75.5 MB | 46.1 MB | **46.1 MB** |
+
+Every row confirmed, three independent ways: the graph's input signature, the model
+config, and `DecoderSession`'s arena, which reports `bytes_per_block` from the geometry
+it derives for itself. **0.61x the KV per token on 1.83x the layers.**
+
+That is the setup for the gather-share question and not an answer to it. What the
+arithmetic says is that a decode step has 39% less KV to gather per token; whether the
+gather's 16.7% share moves with it is a timed measurement.
+
+### The pipeline is model-agnostic, and one place was not
+
+`--model` was a claim written before a second model existed. It holds, with one defect
+found by checking rather than trusting: **`export_decoder.py` read the KV geometry off
+`AutoConfig` rather than off the graph.** On GPT-2 the two agree so nothing showed; on
+TinyLlama that would have made the measurement circular, since the geometry is the
+thing being checked. It reads the graph now and asserts the config agrees.
+
+Everything else ran unchanged. Two problems paid for once on GPT-2 did not recur:
+
+- **No `Gemm` -> `MatMul` rewrite was needed**, as predicted. GPT-2's linear layers are
+  `Conv1D` and export as 48 `Gemm`, which `MatMulNBitsQuantizer` cannot see; without
+  the rewrite it reached one eligible node in the whole graph. TinyLlama's are
+  `nn.Linear` and export as 200 `MatMul`, of which INT4 quantised **154** -- 22 layers
+  times 7 projections -- with the rewrite pass a no-op.
+- **The Python 3.14 `functools.partial` shim does not apply.** `LlamaOnnxConfig`
+  declares `NORMALIZED_CONFIG_CLASS` as a plain class, not a partial.
+
+Opset 14 exported successfully, though optimum's own validation reports the ONNX graph
+differing from PyTorch by 3.05e-05 against its 1e-05 tolerance. `LlamaOnnxConfig`
+recommends 18.
+
+### Precision, and what changes at 1.1B
+
+Perplexity over 32 non-overlapping 1024-token windows of WikiText-2 test, scored
+through the same `RuntimeClient` the server dispatches to:
+
+| Model | Precision | Size | vs fp32 | Perplexity | Delta | Relative cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| GPT-2 | fp32 | 652.6 MB | 1.000 | 31.3073 | — | — |
+| GPT-2 | int8 | 398.5 MB | 0.611 | 31.3707 | +0.0634 | +0.20% |
+| GPT-2 | int4 | 367.3 MB | 0.563 | 32.8659 | +1.5586 | +4.98% |
+| TinyLlama | fp32 | 4401.2 MB | 1.000 | 8.8231 | — | — |
+| TinyLlama | int8 | 1497.1 MB | **0.340** | 8.9072 | +0.0841 | +0.95% |
+| TinyLlama | int4 | 1146.4 MB | **0.261** | 9.1427 | +0.3196 | **+3.62%** |
+
+Two findings, and the first is the one that generalises:
+
+- **Weight-only quantisation compresses far better at 1.1B**, 0.261x against 0.563x for
+  INT4. The parts that stay in float -- the embedding table and the deliberately
+  excluded output projection -- are about 24% of GPT-2 and about 12% of TinyLlama, so
+  the ratios quoted for GPT-2 are a small-model artefact and should not be carried
+  forward.
+- **INT4's accuracy cost survives the model change and shrinks**, +3.62% of perplexity
+  against +4.98%. The conclusion that INT4 costs real quality is not GPT-2-specific.
+
+**The absolute perplexities are not comparable and should not be read as one model
+being 3.5x better than the other.** They use different tokenisers, so per-token
+perplexity is measured in different units: TinyLlama needs 338,535 tokens for the
+WikiText-2 test split where GPT-2 needs 286,177, which is 3.815 characters per token
+against 4.513. Normalised, the two are **0.823 and 1.101 bits per character** -- about
+25% apart, not 3.5x. Only the deltas *within* one model are comparable, which is what
+they are reported for.
+
+### Parity
+
+`engine_vs_session_max_logit_diff` is **0.000e+00**: the extension and a separate ONNX
+Runtime session agree bitwise on the FP32 logits for a 1024-token prefill. That is the
+form of the claim that is safe -- one graph, two sessions, same library. **No bitwise
+claim is made across batch widths**, because changing the batch dimension changes the
+GEMM shape and may change which kernel runs; see `docs/runtime.md` and the encoder
+result above, where exactly that assumption failed CI.
+
+### The timings here are ungated and are not findings
+
+`prefill_p50_ms` is recorded because the profiler records it, not because it was
+measured under a control. This host runs about 2x slow in twenty-minute stretches, no
+arm below was gated against anything, and the INT4 arm alone ran for ten minutes.
+
+| | GPT-2 | TinyLlama |
+| --- | --- | --- |
+| fp32 prefill p50, 1024 tokens | 424 ms | 3054 ms (7.21x) |
+| int8, relative to that model's fp32 | 0.96x | **1.48x** |
+| int4, relative to that model's fp32 | 4.31x | 6.14x |
+
+The INT8 row **reverses direction** -- faster than FP32 on GPT-2, half again slower on
+TinyLlama. That is interesting and it is not established: there is no control arm, so
+it is a hypothesis for the timed half rather than a result. Treat every number in this
+table as indicative.
+
 ## Known limitations
 
 - **Single host, and horizontal scale is out of scope.** There is no GPU path, no
@@ -1295,6 +1409,14 @@ already compute-bound. None of those is this host.
   and costs MiniLM 0.46pp -- so "calibrate with minmax" is not a rule this repository
   can offer. The right method is a per-model measurement, and 512 samples of SST-2 train
   is the only calibration set anything here has been calibrated on.
+- **Every timed decoder number on this page is GPT-2's.** TinyLlama-1.1B has been
+  exported, its geometry read off the graph and its perplexity scored, but nothing
+  about it is timed under a control: not the 16.7% gather share, not the 1.8-2.2x
+  threading ceiling, not `block_tokens=64`, not the batching curve. The geometry says
+  a TinyLlama decode step has 39% less KV to gather per token on 1.83x the layers,
+  which is a reason to expect the gather share to move and not a measurement of it.
+- **TinyLlama's INT8 prefill is 1.48x its FP32 where GPT-2's is 0.92x.** No arm was
+  gated, so this is a direction to check rather than a reversal to quote.
 - The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
   are measured through different harnesses and their capacities are not comparable.
 - **Numbers on this page predate session sharing becoming the default**, and were
