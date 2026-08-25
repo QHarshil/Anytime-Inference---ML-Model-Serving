@@ -957,9 +957,11 @@ retitle the picture with a capacity its numbers were never measured against. Eve
 in `docs/img/` regenerates from the inputs committed under `results/`, which is what makes
 the pictures checkable rather than merely present.
 
-Six files under `results/` are committed, and they are exactly the ones the figures are
-drawn from: `batch_profiles.json`, `decode_profiles.json`, `decode_sweep.json`,
-`decoder_profiles.json`, `load_sweep.csv` and `variant_profiles.json`. The per-request
+Ten files under `results/` are committed and six of them are what the figures are drawn
+from: `batch_profiles.json`, `decode_profiles.json`, `decode_sweep.json`,
+`decoder_profiles.json`, `load_sweep.csv` and `variant_profiles.json`. The other four
+back measured claims that have no figure -- the two session-sharing arms and the two
+encoder-batching ones. The per-request
 CSVs and the A/B arm directories referenced above are not -- they are large, and they
 appear under `results/` once you run the measurement that writes them. So a checkout can
 redraw every figure and re-derive every number a figure rests on, and needs a measurement
@@ -969,6 +971,9 @@ Regeneration is byte-identical for a given matplotlib. Across versions the numbe
 the layout are identical and the bytes are not, because text rasterisation follows the
 freetype the wheel was built against; `tests/test_load_sweep.py` compares figure
 dimensions for that reason and puts byte equality behind `ANYTIME_FIGURE_BYTES=1`.
+`tests/test_batching.py` puts bitwise batched logits behind `ANYTIME_BATCH_BITWISE=1` for
+the same reason in the other domain: both are exact on the machine that wrote them and
+neither is a property of the code.
 
 Add `--quick` to any of these for a reduced run during development. Do not report
 `--quick` numbers: for `profile_variants.py` it drops accuracy to 128 of the 872
@@ -1090,6 +1095,16 @@ is logically independent of the quantisation question below, so it is what says 
 harness is sound rather than the finding. Its accuracies -- 91.06% for DistilBERT, 90.14%
 for MiniLM -- are exactly the ones in `configs/serving.yaml`, which ties this measurement
 to the profiler that wrote the config.
+
+**That 1.1e-05 is not measurement noise and it is not the same on every machine.** A
+batched row is padded, padding changes how many terms the pooled reduction sums, and a
+vectorised reduction regroups its terms by lane -- so the same addends are added in a
+different order and float addition is not associative. How far the answer moves therefore
+depends on which kernel ran. `tests/test_batching.py` asserted a synthetic case of this
+bitwise; it held on arm64, and x86-64 differed by 7.6e-06 the first time CI saw it. The
+assertion is a bound derived from the graph's own weights now, with bitwise behind
+`ANYTIME_BATCH_BITWISE=1`. **Read the FP32 row of this table as "unchanged to within
+float32's licence at this width", not as "identical".**
 
 For INT8, **no**. Both quantised graphs carry 50 `DynamicQuantizeLinear` nodes, so the
 activation scale is computed at runtime from the tensor actually fed; batching changes
@@ -1227,8 +1242,11 @@ already compute-bound. None of those is this host.
 - **INT8 answers depend on what else is in the tensor.** Both quantised variants carry
   50 `DynamicQuantizeLinear` nodes, so the activation scale is computed from the tensor
   actually fed and padding or batch-mates change it. It moves 0.2-0.7% of predictions
-  and at most +-0.5pp of accuracy. FP32 is unaffected to 1.1e-05 of a logit. Untested
-  is whether a static-quantised export would remove it.
+  and at most +-0.5pp of accuracy. FP32 changes no prediction and its logits move by at
+  most 1.1e-05, which is reduction order rather than quantisation: padding changes how
+  many terms the pooling sums, so how far the answer moves depends on which kernel ran
+  and on the architecture. Untested is whether a static-quantised export would remove
+  the INT8 half.
 - The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
   are measured through different harnesses and their capacities are not comparable.
 - **Numbers on this page predate session sharing becoming the default**, and were

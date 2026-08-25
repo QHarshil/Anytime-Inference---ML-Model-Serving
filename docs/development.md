@@ -66,6 +66,19 @@ supposed to provide and a missing one fails instead:
 ANYTIME_REQUIRE_BACKENDS=extension,python pytest -q tests/test_runtime_engine.py
 ```
 
+Two switches go the other way: they make an assertion stricter than the suite can
+afford by default, because what they demand is a property of one machine rather than
+of the code.
+
+| Variable | Demands |
+| --- | --- |
+| `ANYTIME_FIGURE_BYTES=1` | a redrawn figure matches the committed PNG byte for byte, not just in dimensions. A PNG's bytes follow the freetype its text was rasterised with. |
+| `ANYTIME_BATCH_BITWISE=1` | a batched encoder row equals the same request run alone bit for bit, not within `tests/test_batching.py`'s reassociation bound. Padding changes the length of a float reduction, and a NEON reduction and an AVX one regroup it differently. |
+
+Both are worth setting on the machine that produced the committed artefacts and
+nowhere else. Both exist because a test that only passes where it was written was
+shipped once each: the first cost a clean clone, the second cost a red CI run.
+
 ## Lint and types
 
 ```bash

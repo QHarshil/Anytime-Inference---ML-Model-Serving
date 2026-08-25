@@ -18,13 +18,28 @@ than about shapes:
   _the_wrong_columns` is what says that assertion has teeth: it injects the bug and
   requires the graph to notice.
 
-The synthetic graph gives **bitwise** equality between a batched row and the same
-request run alone -- its pooling is a masked sum, so appending masked zeros to a row
-adds exactly nothing. That is asserted exactly rather than within a tolerance, because
-a tolerance here would hide the very drift it was chosen to absorb. The real encoder
-variants are a separate group, skipped when `models/` is absent, and they are *not*
-bitwise: see the docstring on that group for the int8 result, which is a finding rather
-than a tolerance.
+A batched row is **not** bitwise equal to the same request run alone, and the first
+version of this file asserted that it was. The argument was that the pooling is a masked
+sum, so appending masked zeros adds exactly nothing -- true of the addends and false of
+the sum. Padding changes how many terms the reduction has and a vectorised reduction
+groups its terms by lane, so the same addends are added in a different order, and float
+addition is not associative. It came out exact on arm64, which is the only reason the
+assertion ever passed; CI's x86-64 differed by 7.6e-06. `docs/runtime.md` already says
+this about batched decode -- "changing the batch dimension changes the GEMM shape and may
+change which MLAS kernel runs" -- so the lesson was written down before this file was and
+was not applied to it.
+
+The equality is asserted within `_reassociation_bound` instead, computed from the
+fixture's own weights rather than chosen by eye. It is the classical bound on summing a
+row's terms in *any* order, so no kernel on any architecture can exceed it: 6.7e-04 at
+worst here, against logits reaching 112 and against the 7.6e-06 CI actually produced. It
+keeps its teeth because the fixture's rows are nothing like each other -- the closest two
+differ by 11.3, which is 1.7e+04 times the bound, so a row handed to the wrong request
+cannot hide inside it. `ANYTIME_BATCH_BITWISE=1` demands exact equality as well, which is
+worth doing on the machine that gives it and nowhere else. The real encoder variants are
+measured separately and are not bitwise either: `scripts/count_encoder_batching.py`
+records what padding does to an int8 answer, and its FP32 control moves a logit by
+1.1e-05.
 
 The batcher's own policy tests use a stub in place of a runtime. They are the ones that
 have to run everywhere and they carry no ONNX dependency at all. **Coalescing is made to
@@ -42,11 +57,12 @@ nine of nine do now**, which is what the barrier and the window bought.
 from __future__ import annotations
 
 import math
+import os
 import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -62,6 +78,22 @@ from anytime_serving.serving.batching import (
 )
 
 VOCAB, HIDDEN, CLASSES = 32, 8, 3
+
+
+def _fixture_weights() -> tuple[np.ndarray, np.ndarray]:
+    """The fixture graph's embedding and projection.
+
+    Drawn here rather than inside `build_encoder_graph` so that the graph and the
+    numeric bound `_reassociation_bound` computes from it cannot be built from different
+    numbers. A bound derived from weights the session is not actually running would be a
+    tolerance with nothing behind it, which is the thing it exists to avoid.
+    """
+    rng = np.random.default_rng(20260824)
+    # Offset off zero, so a padded position that leaked past the mask would contribute
+    # something rather than nothing.
+    embedding = (rng.standard_normal((VOCAB, HIDDEN)) + 1.0).astype(np.float32)
+    projection = rng.standard_normal((HIDDEN, CLASSES)).astype(np.float32)
+    return embedding, projection
 
 
 def build_encoder_graph(path: Path, *, include_mask: bool = True) -> None:
@@ -82,7 +114,7 @@ def build_encoder_graph(path: Path, *, include_mask: bool = True) -> None:
     import onnx
     from onnx import TensorProto, helper, numpy_helper
 
-    rng = np.random.default_rng(20260824)
+    embedding, projection = _fixture_weights()
     inputs = [helper.make_tensor_value_info("input_ids", TensorProto.INT64, ["batch", "sequence"])]
     if include_mask:
         inputs.append(
@@ -92,14 +124,8 @@ def build_encoder_graph(path: Path, *, include_mask: bool = True) -> None:
         )
 
     initializers = [
-        # Offset off zero, so a padded position that leaked past the mask would
-        # contribute something rather than nothing.
-        numpy_helper.from_array(
-            (rng.standard_normal((VOCAB, HIDDEN)) + 1.0).astype(np.float32), "embedding"
-        ),
-        numpy_helper.from_array(
-            rng.standard_normal((HIDDEN, CLASSES)).astype(np.float32), "projection"
-        ),
+        numpy_helper.from_array(embedding, "embedding"),
+        numpy_helper.from_array(projection, "projection"),
         numpy_helper.from_array(np.array([1], dtype=np.int64), "axis_1"),
         numpy_helper.from_array(np.array([2], dtype=np.int64), "axis_2"),
         numpy_helper.from_array(np.array(0, dtype=np.int64), "zero"),
@@ -582,6 +608,44 @@ def _feeds(tokens: list[int]) -> dict[str, np.ndarray]:
     }
 
 
+def _reassociation_bound(tokens: Sequence[int], width: int) -> float:
+    """How far apart two float32 evaluations of one row's logits can be.
+
+    Padding changes how many terms the pooling sums, and a vectorised reduction adds its
+    terms lane by lane, so the same addends are summed in a different order at a
+    different width. Float addition is not associative, so the answer moves -- which is
+    what CI found and this machine cannot see.
+
+    This is the classical bound on that movement. Summing `n` floats in *any* order lands
+    within ``(n - 1) * u * sum|x|`` of the exact value, `u` being half an ulp, and the
+    projection that follows is itself an eight-term sum of products with the same bound.
+    Twice that, because two evaluations can sit on opposite sides of the exact answer.
+
+    A bound over every order rather than over the orders some host happened to use, which
+    is the property the assertion needs: what it permits must not depend on the machine.
+    And it is computed from `_fixture_weights`, the same numbers the session is running,
+    so it cannot drift the way a constant in a docstring would.
+    """
+    embedding, projection = _fixture_weights()
+    # The row's real tokens sit at [0, len) and are weighted by position + 1; the padded
+    # positions are masked and contribute exactly zero, so they change the length of the
+    # sum without adding to it.
+    ids = list(tokens)
+    terms = (
+        embedding[ids].astype(np.float64) * np.arange(1, len(ids) + 1, dtype=np.float64)[:, None]
+    )
+    unit = float(np.finfo(np.float32).eps) / 2.0
+    pooled_error = (width - 1) * unit * np.abs(terms).sum(axis=0)
+    weights = np.abs(projection.astype(np.float64))
+    products = np.abs(terms.sum(axis=0))[:, None] * weights
+    logit_error = (
+        (weights * pooled_error[:, None]).sum(axis=0)  # the pooling's error, projected
+        + unit * products.sum(axis=0)  # rounding each of the eight products
+        + (HIDDEN - 1) * unit * products.sum(axis=0)  # and summing them
+    )
+    return float(2.0 * logit_error.max())
+
+
 def test_the_fixture_can_see_a_mask_in_the_wrong_columns(encoder_graph):
     """Fixture validity: inject the bug the padding tests are aimed at.
 
@@ -607,7 +671,18 @@ def test_the_fixture_can_see_a_mask_in_the_wrong_columns(encoder_graph):
     assert not np.allclose(injected, alone), "the graph cannot see a misplaced mask"
 
 
-def test_batched_rows_equal_the_same_requests_run_alone(encoder_graph):
+def test_batched_rows_agree_with_the_same_requests_run_alone(encoder_graph):
+    """Eight ragged requests in one Run give each one the answer it would have alone.
+
+    Within `_reassociation_bound`, not bitwise. This assertion was exact until CI failed
+    it: row 1 moved by 7.6e-06 on x86-64 and by nothing at all here, because padding a
+    row to nine changes the order its terms are summed in and a NEON reduction and an AVX
+    one make different choices. See the module docstring -- the exact version of this was
+    a test that only passed on the machine that wrote it.
+
+    Set `ANYTIME_BATCH_BITWISE=1` to demand bitwise equality as well, which holds on this
+    machine and is not a property of the code.
+    """
     lengths = [2, 7, 4, 9, 3, 6, 5, 8]
     requests = [_feeds(list(range(1, n + 1))) for n in lengths]
 
@@ -634,14 +709,44 @@ def test_batched_rows_equal_the_same_requests_run_alone(encoder_graph):
     assert counts.widths == Counter({len(requests): 1}), counts.widths
     assert counts.rows_run == len(requests)
 
-    # Bitwise, not approximate. The pooling is a masked sum, so a padded row differs
-    # from the same row run alone by the addition of exact zeros.
+    width = max(lengths)
     for index, (one, many) in enumerate(zip(alone, batched, strict=True)):
-        np.testing.assert_array_equal(
+        message = f"row {index} (length {lengths[index]}) changed under batching"
+        if os.environ.get("ANYTIME_BATCH_BITWISE") == "1":
+            np.testing.assert_array_equal(many.logits, one, err_msg=message)
+        np.testing.assert_allclose(
             many.logits,
             one,
-            err_msg=f"row {index} (length {lengths[index]}) changed under batching",
+            rtol=0.0,
+            atol=_reassociation_bound(range(1, lengths[index] + 1), width),
+            err_msg=message,
         )
+
+
+def test_the_reassociation_bound_is_far_too_small_to_hide_a_swapped_row(encoder_graph):
+    """What makes the tolerance above a tolerance rather than a shrug.
+
+    A bound is only worth having if it is far below the defect it must not absorb, and
+    the defect these tests exist for is a row attributed to the wrong request. The
+    fixture is built so no two rows resemble each other: the closest pair of the eight
+    differ by more than 11, against a widest bound under a thousandth. Four orders of
+    magnitude of loosening would be needed before a swapped row could pass.
+
+    The numbers are asserted rather than quoted so that changing the fixture's weights,
+    its lengths or its hidden size cannot leave the claim behind.
+    """
+    import onnxruntime as ort
+
+    lengths = [2, 7, 4, 9, 3, 6, 5, 8]
+    session = ort.InferenceSession(str(encoder_graph), providers=["CPUExecutionProvider"])
+    rows = [session.run(None, _feeds(list(range(1, n + 1))))[0] for n in lengths]
+
+    widest = max(_reassociation_bound(range(1, n + 1), max(lengths)) for n in lengths)
+    closest = min(float(np.abs(a - b).max()) for i, a in enumerate(rows) for b in rows[i + 1 :])
+    # Small in absolute terms against logits that reach 112, and comfortably above the
+    # 7.6e-06 that CI's x86-64 actually produced, so it bounds without being a shrug.
+    assert 1e-4 < widest < 1e-3, widest
+    assert closest > 1e4 * widest, (closest, widest)
 
 
 def test_a_short_request_is_unaffected_by_a_long_neighbour(encoder_graph):
@@ -665,7 +770,15 @@ def test_a_short_request_is_unaffected_by_a_long_neighbour(encoder_graph):
         results = [future.result() for future in futures]
 
     assert results[0].batch_size == 2, "the two requests did not share a run"
-    np.testing.assert_array_equal(results[0].logits, alone)
+    # A two-token row padded to twenty-four: twelve times the sequence axis, and the same
+    # reassociation as above. It came out bitwise on both architectures, which is not
+    # something to assert -- see `test_batched_rows_agree_with_the_same_requests_run_alone`.
+    np.testing.assert_allclose(
+        results[0].logits,
+        alone,
+        rtol=0.0,
+        atol=_reassociation_bound([1, 2], 24),
+    )
 
 
 def test_the_response_records_the_width_it_came_from(encoder_graph):
