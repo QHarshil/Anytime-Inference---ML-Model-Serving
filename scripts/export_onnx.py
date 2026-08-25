@@ -30,8 +30,6 @@ import platform
 import sys
 from pathlib import Path
 
-import torch
-
 from anytime_serving.utils.logger import get_logger
 
 LOGGER = get_logger("scripts.export_onnx")
@@ -249,6 +247,11 @@ def _export_text(
 
 
 def _export_vision(output_dir: Path) -> None:
+    # torch is imported here rather than at module scope so the constants above can
+    # be read without it. `torch` is in the `research` extra and CI's test job
+    # installs `bench`, so a module-level import would make every test that reads
+    # CALIBRATION_SPLIT pass here and fail there.
+    import torch
     from torchvision import models
     from torchvision.models import MobileNet_V2_Weights
 
