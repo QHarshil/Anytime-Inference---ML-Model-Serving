@@ -220,3 +220,185 @@ def test_int8_accuracy_moves_little_in_either_direction(committed):
         for arm in variant["arms"]:
             assert abs(arm["accuracy_delta_pp"]) <= 1.0, f"{variant['variant']} {arm['arm']}"
             assert arm["flip_percent"] < 2.0, f"{variant['variant']} {arm['arm']}"
+
+
+# -- the static export, and whether it removes the mechanism ---------------------------
+#
+# `distilbert_int8_static` and `minilm_int8_static` are exported by
+# `scripts/export_onnx.py --quantization static`. They exist to answer one question
+# that `benchmarks.md` carried as untested: the INT8 answers move because the
+# activation scale is computed at runtime, so does calibrating it away remove the
+# movement?
+#
+# The tests below are written so that the *controls* fail first. A static graph with
+# no `DynamicQuantizeLinear` is not evidence on its own -- the FP32 graph has none
+# either -- so what is asserted first is that the static graph is genuinely 8-bit and
+# that it quantised the same operators as the dynamic one. Only then does an
+# assertion about flips mean anything.
+
+
+def _static(committed) -> list[dict]:
+    return [v for v in committed["variants"] if "int8_static" in v["variant"]]
+
+
+def _dynamic(committed) -> list[dict]:
+    return [v for v in committed["variants"] if v["variant"].endswith("int8")]
+
+
+def test_the_static_variants_are_genuinely_quantised(committed):
+    """The control for the claim below. Zero DynamicQuantizeLinear is also true of FP32."""
+    variants = _static(committed)
+    if not variants:  # pragma: no cover - present in this repository
+        pytest.skip("no static variant measured; run scripts/export_onnx.py --quantization static")
+    for variant in variants:
+        census = variant["graph"]
+        assert census["int8_weight_elements"] > 0, (
+            f"{variant['variant']} carries no 8-bit weights, so 'no DynamicQuantizeLinear' "
+            f"says only that it is not quantised"
+        )
+        # QDQ keeps float MatMul in the saved graph and fuses at session load, so the
+        # evidence of quantisation is the Q/DQ pairs and the 8-bit initialisers.
+        assert census["nodes"]["QuantizeLinear"] > 0
+        assert census["nodes"]["DequantizeLinear"] > 0
+
+
+def test_the_two_int8_flavours_quantised_the_same_operators(committed):
+    """What makes static-versus-dynamic a controlled comparison rather than two changes.
+
+    Static QDQ left to its own defaults quantises 24 operator types, dynamic quantises
+    three. Exported that way the two would differ in how much of the graph is 8-bit as
+    well as in where the activation scale comes from, and the flip counts could not be
+    attributed to either. `QUANTISED_OPERATORS` pins them together and this checks the
+    result: the same weights, to within the handful of elements the two conventions
+    round differently.
+    """
+    by_name = {v["variant"]: v for v in committed["variants"]}
+    for static in _static(committed):
+        dynamic = by_name.get(static["variant"].removesuffix("_static"))
+        if dynamic is None:  # pragma: no cover - both are exported together
+            pytest.skip(f"no dynamic counterpart for {static['variant']}")
+        one = static["graph"]["int8_weight_elements"]
+        other = dynamic["graph"]["int8_weight_elements"]
+        assert one == pytest.approx(other, rel=0.01), (
+            f"{static['variant']} holds {one} 8-bit weight elements against "
+            f"{other} for {dynamic['variant']}; the two are not quantising the "
+            f"same operators, so their flip counts are not comparable"
+        )
+
+
+def test_the_static_export_removes_the_mechanism(committed):
+    """The countable half of the question: no scale is computed from the tensor fed."""
+    variants = _static(committed)
+    if not variants:  # pragma: no cover - present in this repository
+        pytest.skip("no static variant measured")
+    for variant in variants:
+        assert variant["dynamic_quantize_nodes"] == 0
+        assert variant["graph"]["nodes"]["MatMulInteger"] == 0
+
+
+def test_a_static_answer_does_not_depend_on_who_shares_its_batch(committed):
+    """The prediction this experiment was run to test, on the axis it holds on.
+
+    With the activation scales calibrated into the graph, no prediction moves with the
+    shape of the tensor, at any width. That is the half of the prediction that came
+    out right.
+    """
+    variants = _static(committed)
+    if not variants:  # pragma: no cover - present in this repository
+        pytest.skip("no static variant measured")
+    for variant in variants:
+        for arm in variant["arms"]:
+            assert arm["flips"] == 0, (
+                f"{variant['variant']} {arm['arm']}: a statically quantised graph still "
+                f"changes {arm['flips']} prediction(s) with the shape of the tensor, so "
+                f"DynamicQuantizeLinear is not the whole cause the write-up names"
+            )
+
+
+def test_what_static_quantisation_actually_removes_is_the_incidence(committed):
+    """The half of the prediction that came out wrong, pinned so the write-up cannot drift.
+
+    The prediction was that `max_abs_logit_delta` would fall to the FP32 control's
+    1.1e-05. **It does not** -- it falls from around 1.0 to around 0.3, which is four
+    orders of magnitude short. What collapses instead is how many requests are affected
+    at all: a dynamically quantised graph moves *every* request's logits, because every
+    request gets its own activation scale, and a statically quantised one moves a
+    handful, because the only way a fixed grid can move is if a float perturbation
+    crosses a rounding boundary.
+
+    So the two are not the same effect at different sizes. `rows_moved` separates them
+    and the maximum does not, which is why both are recorded.
+    """
+    static, dynamic = _static(committed), _dynamic(committed)
+    if not static or not dynamic:  # pragma: no cover - present in this repository
+        pytest.skip("both flavours are needed to compare them")
+
+    for variant in dynamic:
+        for arm in variant["arms"]:
+            if arm["arm"].startswith("batch 1, pad to longest"):
+                continue  # the reference compared against itself
+            assert arm["rows_moved"] == arm["requests"], (
+                f"{variant['variant']} {arm['arm']}: dynamic quantisation no longer "
+                f"moves every request, so the stated mechanism has changed"
+            )
+
+    for variant in static:
+        for arm in variant["arms"]:
+            assert arm["rows_moved"] <= 0.05 * arm["requests"], (
+                f"{variant['variant']} {arm['arm']}: {arm['rows_moved']} of "
+                f"{arm['requests']} requests moved, which is not the handful a fixed "
+                f"quantisation grid should produce"
+            )
+
+
+def test_the_fp32_control_moves_everything_a_little_and_static_moves_little_a_lot(committed):
+    """The two signatures, told apart by their shape rather than by their size.
+
+    Float reassociation touches most requests and moves each of them by about a
+    millionth of a logit. A rounding-boundary crossing touches almost none and moves
+    those by a hundredth or more. This asserts the difference in kind, which is what
+    the attribution on `benchmarks.md` rests on.
+    """
+    for variant in committed["variants"]:
+        arm = next(a for a in variant["arms"] if a["arm"].startswith("batch 1, pad to 128"))
+        if variant["variant"].endswith("fp32"):
+            assert arm["rows_moved"] > 0.4 * arm["requests"]
+            assert arm["median_abs_logit_delta_of_moved"] < 1e-5
+        elif "int8_static" in variant["variant"]:
+            assert arm["rows_moved"] < 0.05 * arm["requests"]
+            assert arm["median_abs_logit_delta_of_moved"] > 1e-3
+
+
+def test_static_quantisation_costs_accuracy_and_the_cost_is_recorded(committed):
+    """The trade, so that "it is deterministic" cannot be quoted without its price.
+
+    Neither calibration method wins on both models: percentile clipping helps
+    DistilBERT and hurts MiniLM. What is asserted is the bound the write-up quotes --
+    the best static variant of each model is within 0.5pp of that model's dynamic one.
+    """
+    by_name = {v["variant"]: v["reference_accuracy"] for v in committed["variants"]}
+    for model in ("distilbert", "minilm"):
+        dynamic = by_name.get(f"{model}_int8")
+        static = [a for n, a in by_name.items() if n.startswith(f"{model}_int8_static")]
+        if dynamic is None or not static:  # pragma: no cover - present in this repository
+            pytest.skip(f"{model} was not measured in both flavours")
+        assert max(static) >= dynamic - 0.005, (
+            f"{model}: the best static export scores {100 * max(static):.2f}% against "
+            f"{100 * dynamic:.2f}% for the dynamic one, a wider gap than benchmarks.md "
+            f"records"
+        )
+
+
+def test_calibration_never_touches_the_split_the_accuracy_is_scored_on(committed):
+    """Calibrating on validation is how a quantisation result reports a borrowed accuracy."""
+    import export_onnx
+
+    assert export_onnx.CALIBRATION_SPLIT == "train"
+    assert committed["dataset"].endswith("validation")
+
+
+def test_calibration_tokenises_the_way_the_benchmarks_feed_the_model():
+    """A fourth script now depends on this length; all four are pinned together."""
+    import export_onnx
+
+    assert export_onnx.CALIBRATION_SEQUENCE_LENGTH == BENCHMARK_SEQUENCE_LENGTH

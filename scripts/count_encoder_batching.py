@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -83,9 +84,31 @@ DEFAULT_WIDTHS = (1, 2, 4, 8, 16, 32)
 VARIANT_PATHS = {
     "distilbert_fp32": Path("models/onnx/text_distilbert_fp32/model.onnx"),
     "distilbert_int8": Path("models/onnx/text_distilbert_int8/model_quantized.onnx"),
+    "distilbert_int8_static": Path("models/onnx/text_distilbert_int8_static/model_quantized.onnx"),
+    "distilbert_int8_static_percentile": Path(
+        "models/onnx/text_distilbert_int8_static_percentile/model_quantized.onnx"
+    ),
     "minilm_fp32": Path("models/onnx/text_minilm_fp32/model.onnx"),
     "minilm_int8": Path("models/onnx/text_minilm_int8/model_quantized.onnx"),
+    "minilm_int8_static": Path("models/onnx/text_minilm_int8_static/model_quantized.onnx"),
+    "minilm_int8_static_percentile": Path(
+        "models/onnx/text_minilm_int8_static_percentile/model_quantized.onnx"
+    ),
 }
+
+# The op types the census below reports. `DynamicQuantizeLinear` is the mechanism
+# under test; the rest are there because counting zero of it proves nothing on its
+# own -- an FP32 graph also has zero. What distinguishes a static INT8 graph from an
+# unquantised one is that the weights are 8-bit and the scales are initialisers.
+CENSUS_OPS = (
+    "DynamicQuantizeLinear",
+    "QuantizeLinear",
+    "DequantizeLinear",
+    "MatMulInteger",
+    "QLinearMatMul",
+    "MatMul",
+    "Gemm",
+)
 
 
 def group_in_arrival_order(count: int, width: int) -> list[list[int]]:
@@ -160,8 +183,49 @@ def _quantise_nodes(path: Path) -> int:
     """
     import onnx
 
-    model = onnx.load(str(path))
+    model = onnx.load(str(path), load_external_data=False)
     return sum(1 for node in model.graph.node if node.op_type == "DynamicQuantizeLinear")
+
+
+def graph_census(path: Path) -> dict:
+    """Op-type counts and weight element counts by dtype, for one graph.
+
+    Reported so that "the static export has no `DynamicQuantizeLinear`" is a claim
+    with a control attached. Zero of them is also true of the FP32 graph, so the
+    census carries the two things that separate the cases: how many 8-bit weight
+    elements the graph holds, and how many `QuantizeLinear`/`DequantizeLinear` pairs
+    surround the operators that were quantised.
+
+    `int8_weight_elements` is what says the two INT8 flavours quantised the same
+    operators. They land within a rounding error of each other, and the FP32 graph
+    reads zero.
+    """
+    import onnx
+
+    model = onnx.load(str(path), load_external_data=False)
+    counts = dict.fromkeys(CENSUS_OPS, 0)
+    for node in model.graph.node:
+        if node.op_type in counts:
+            counts[node.op_type] += 1
+
+    quantised_elements = 0
+    float_elements = 0
+    for initialiser in model.graph.initializer:
+        elements = 1
+        for dimension in initialiser.dims:
+            elements *= dimension
+        name = onnx.TensorProto.DataType.Name(initialiser.data_type)
+        if name in ("INT8", "UINT8"):
+            quantised_elements += elements
+        elif name in ("FLOAT", "FLOAT16"):
+            float_elements += elements
+
+    return {
+        "nodes": counts,
+        "int8_weight_elements": quantised_elements,
+        "float_weight_elements": float_elements,
+        "graph_bytes": path.stat().st_size,
+    }
 
 
 def measure_variant(
@@ -198,6 +262,13 @@ def measure_variant(
         logits = np.concatenate([run(f) for f in outputs])
         flips = int((logits.argmax(1) != reference.argmax(1)).sum())
         accuracy = float((logits.argmax(1) == labels).mean())
+        # Per request rather than over the whole array, because a maximum cannot tell
+        # one sentence sitting on a rounding boundary apart from every sentence
+        # wobbling. `rows_moved` is what separates those two, and they have different
+        # causes: a threshold crossing in a fixed quantisation grid against float
+        # reassociation, which moves everything a little.
+        per_row = np.abs(logits - reference).max(axis=1)
+        moved = per_row > 0.0
         return {
             "arm": label,
             "runs": len(groups),
@@ -206,7 +277,12 @@ def measure_variant(
             "flip_percent": round(100.0 * flips / len(reference), 3),
             "accuracy": round(accuracy, 4),
             "accuracy_delta_pp": round(100.0 * (accuracy - reference_accuracy), 3),
-            "max_abs_logit_delta": float(np.abs(logits - reference).max()),
+            "max_abs_logit_delta": float(per_row.max()),
+            "rows_moved": int(moved.sum()),
+            "rows_moved_percent": round(100.0 * float(moved.mean()), 3),
+            "median_abs_logit_delta_of_moved": (
+                float(np.median(per_row[moved])) if moved.any() else 0.0
+            ),
         }
 
     arms = [
@@ -229,6 +305,7 @@ def measure_variant(
     return {
         "variant": variant,
         "dynamic_quantize_nodes": _quantise_nodes(path),
+        "graph": graph_census(path),
         "reference": "batch 1, true length, no padding",
         "reference_accuracy": round(reference_accuracy, 4),
         "arms": arms,
@@ -286,18 +363,24 @@ def main() -> int:
         )
         latest = variants[-1]
         LOGGER.info(
-            "  %s: %d DynamicQuantizeLinear node(s), reference accuracy %.2f%%",
+            "  %s: %d DynamicQuantizeLinear node(s), %.1fM 8-bit weight element(s), "
+            "%.1f MB on disk, reference accuracy %.2f%%",
             variant,
             latest["dynamic_quantize_nodes"],
+            latest["graph"]["int8_weight_elements"] / 1e6,
+            latest["graph"]["graph_bytes"] / 1e6,
             100.0 * latest["reference_accuracy"],
         )
         for entry in latest["arms"]:
             LOGGER.info(
-                "    %-44s flips %3d/%d (%.2f%%)  accuracy %+.2fpp  max|dlogit| %.2e",
+                "    %-44s flips %3d/%d (%.2f%%)  moved %3d (%.1f%%)  accuracy %+.2fpp  "
+                "max|dlogit| %.2e",
                 entry["arm"],
                 entry["flips"],
                 entry["requests"],
                 entry["flip_percent"],
+                entry["rows_moved"],
+                entry["rows_moved_percent"],
                 entry["accuracy_delta_pp"],
                 entry["max_abs_logit_delta"],
             )
@@ -339,10 +422,22 @@ def main() -> int:
         ),
     )
 
+    import onnxruntime as ort
+
     payload = {
         "measurement": "what encoder batching costs in padding and changes in answers",
         "dataset": "glue/sst2 validation",
         "gated": False,
+        "host": {
+            # Recorded rather than pinned. The counts here do not depend on the host,
+            # but `max_abs_logit_delta` does: it is reduction order, the kernel that
+            # runs follows the ONNX Runtime version, and pyproject.toml carries a
+            # floor rather than a pin. See docs/runtime.md, "Why the floor is not a
+            # pin".
+            "onnxruntime": ort.__version__,
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
         "note": (
             "counts and numerics only. No timing here, so a contended host cannot "
             "corrupt it; the throughput arm of encoder batching is a separate, gated "
