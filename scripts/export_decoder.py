@@ -324,7 +324,10 @@ def _copy_tokenizer(source_dir: Path, target_dir: Path) -> None:
 
 
 def _kv_geometry(config) -> tuple[int, int, int]:
-    """Layers, KV heads, and head dimension, whatever the config calls them."""
+    """Layers, KV heads, and head dimension, whatever the config calls them.
+
+    This is the *cross-check*, not the authority. See `kv_geometry_from_graph`.
+    """
     layers = getattr(config, "num_hidden_layers", None) or config.n_layer
     heads = getattr(config, "num_attention_heads", None) or config.n_head
     # Grouped-query models publish fewer KV heads than attention heads, and it is
@@ -332,6 +335,53 @@ def _kv_geometry(config) -> tuple[int, int, int]:
     kv_heads = getattr(config, "num_key_value_heads", None) or heads
     hidden = getattr(config, "hidden_size", None) or config.n_embd
     return int(layers), int(kv_heads), int(hidden) // int(heads)
+
+
+def kv_geometry_from_graph(graph: Path) -> tuple[int, int, int]:
+    """Layers, KV heads and head dimension, read off the graph's own signature.
+
+    The graph is the authority and the config is the cross-check, for the reason
+    `DecoderSession::derive_geometry` gives on the C++ side: a config that disagrees
+    with the graph it describes produces a KV cache of the wrong shape, and the
+    failure is wrong logits rather than an error. This is the Python mirror of that
+    function, and it is deliberately the same rule -- count `past_key_values.{i}.key`
+    inputs for the layers, and take `kv_heads` and `head_dim` off the static
+    dimensions of the first one.
+
+    Reading it off the config was what this script did until a second model existed
+    to disagree; on GPT-2 the two agree exactly, so nothing showed.
+    """
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    session = ort.InferenceSession(
+        str(graph), sess_options=options, providers=["CPUExecutionProvider"]
+    )
+    shapes = {spec.name: spec.shape for spec in session.get_inputs()}
+
+    layers = 0
+    while f"past_key_values.{layers}.key" in shapes:
+        layers += 1
+    if layers == 0:
+        raise SystemExit(
+            f"{graph} declares no past_key_values.0.key. Export with the "
+            f"'-with-past' task so the KV cache is in the signature."
+        )
+
+    shape = shapes["past_key_values.0.key"]
+    if len(shape) != 4:
+        raise SystemExit(
+            f"past_key_values.0.key has {len(shape)} dimension(s); "
+            f"[batch, kv_heads, past, head_dim] is expected"
+        )
+    kv_heads, head_dim = shape[1], shape[3]
+    if not isinstance(kv_heads, int) or not isinstance(head_dim, int):
+        raise SystemExit(
+            f"past_key_values.0.key has a dynamic kv_heads or head_dim ({shape}). "
+            f"Both size the block pool, so neither can be resolved per request."
+        )
+    return layers, int(kv_heads), int(head_dim)
 
 
 def _empty_past(layers: int, kv_heads: int, head_dim: int) -> dict[str, np.ndarray]:
@@ -530,16 +580,31 @@ def main() -> int:
 
     from transformers import AutoConfig, AutoTokenizer
 
-    config = AutoConfig.from_pretrained(args.model)
-    layers, kv_heads, head_dim = _kv_geometry(config)
+    layers, kv_heads, head_dim = kv_geometry_from_graph(_graph_path(fp32_dir))
     kv_bytes_per_token = 2 * layers * kv_heads * head_dim * 4
     LOGGER.info(
-        "KV geometry: %d layers, %d kv heads, head dim %d -> %.1f KiB per token (fp32)",
+        "KV geometry, off the graph: %d layers, %d kv heads, head dim %d -> "
+        "%.1f KiB per token (fp32)",
         layers,
         kv_heads,
         head_dim,
         kv_bytes_per_token / 1024,
     )
+
+    # The config is the cross-check. It is what this script used to trust, and it is
+    # the thing that would be wrong if the exporter reshaped the cache.
+    config = AutoConfig.from_pretrained(args.model)
+    from_config = _kv_geometry(config)
+    if from_config != (layers, kv_heads, head_dim):
+        raise SystemExit(
+            f"the graph and the model config disagree about the KV geometry: the "
+            f"graph declares {(layers, kv_heads, head_dim)} and the config says "
+            f"{from_config} (layers, kv_heads, head_dim). The graph is what runs, so "
+            f"the config is what is wrong -- but the arena is sized from one of them "
+            f"and every KV number below is derived from it, so this is not something "
+            f"to proceed through."
+        )
+    LOGGER.info("  the model config agrees: %s", from_config)
 
     tokenizer = AutoTokenizer.from_pretrained(fp32_dir)
     token_ids = _wikitext_tokens(tokenizer, windows * args.context)
@@ -626,16 +691,24 @@ def main() -> int:
         for measurement in measurements:
             measurement.perplexity_delta = round(measurement.perplexity - reference.perplexity, 4)
 
+    import onnxruntime as ort
+
     payload = {
         "host": {
             "platform": platform.platform(),
             "machine": platform.machine(),
             "python": platform.python_version(),
             "backend": "extension",
+            # Recorded rather than pinned. `onnxruntime` is a floor in pyproject.toml,
+            # so two clones can resolve different versions; the kernel that runs
+            # follows the version and the reduction order follows the kernel. See
+            # docs/runtime.md, "Why the floor is not a pin".
+            "onnxruntime": ort.__version__,
         },
         "model": args.model,
         "task": "text-generation-with-past",
         "opset": args.opset,
+        "kv_geometry_read_from": "graph, cross-checked against the model config",
         "perplexity_dataset": "wikitext-2-raw-v1 test",
         "context_length": args.context,
         "windows": windows,

@@ -25,8 +25,10 @@ from onnx import TensorProto, helper, numpy_helper  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from export_decoder import (  # noqa: E402
+    _kv_geometry,
     apply_partial_descriptor_shim,
     find_output_projection,
+    kv_geometry_from_graph,
     rewrite_gemm_as_matmul,
 )
 
@@ -192,3 +194,89 @@ def test_partial_descriptor_shim_matches_the_interpreter():
     # optimum declares a partial on every decoder config needing renamed fields; if it
     # stops doing so the shim is no longer needed.
     assert apply_partial_descriptor_shim() > 0
+
+
+# -- KV geometry, read off the graph rather than off a config --------------------------
+#
+# `export_decoder.py` read this off the model config until a second model existed for
+# the config to disagree with. The graph is what runs, so the graph is the authority;
+# the config is the cross-check. `DecoderSession::derive_geometry` has said so on the
+# C++ side since the arena was written, and the last test here is the one that keeps
+# the Python mirror honest: it asserts the two implementations agree on the same file,
+# so the mirror cannot drift into being a second opinion.
+
+
+def test_geometry_comes_off_the_graphs_own_signature(tmp_path):
+    """Grouped-query shape, so kv_heads cannot be confused with the head count."""
+    from tests.conftest import build_decoder_graph
+
+    path = tmp_path / "gqa.onnx"
+    build_decoder_graph(path, layers=5, kv_heads=2, head_dim=8)
+    assert kv_geometry_from_graph(path) == (5, 2, 8)
+
+
+def test_a_graph_without_its_cache_in_the_signature_is_refused(tmp_path):
+    from tests.conftest import build_decoder_graph
+
+    path = tmp_path / "no_past.onnx"
+    build_decoder_graph(path, include_past=False)
+    with pytest.raises(SystemExit, match="with-past"):
+        kv_geometry_from_graph(path)
+
+
+def test_a_dynamic_kv_head_or_head_dim_is_refused(tmp_path):
+    """Both size the block pool, so neither can be discovered per request."""
+    from tests.conftest import build_decoder_graph
+
+    path = tmp_path / "dynamic.onnx"
+    build_decoder_graph(path, static_kv_dims=False)
+    with pytest.raises(SystemExit, match="dynamic kv_heads or head_dim"):
+        kv_geometry_from_graph(path)
+
+
+@pytest.mark.parametrize(
+    ("layers", "kv_heads", "head_dim"),
+    [(3, 2, 4), (5, 1, 8), (2, 4, 16)],
+)
+def test_the_python_reader_agrees_with_the_c_plus_plus_one(tmp_path, layers, kv_heads, head_dim):
+    """The mirror is asserted against the authority, not merely written to match it.
+
+    `DecoderSession::derive_geometry` is what sizes the arena that actually holds the
+    cache. If these two ever disagree, the numbers this script writes describe a
+    different cache from the one the runtime allocates.
+    """
+    from anytime_serving.serving.onnx_runtime import extension_available, load_extension
+
+    if not extension_available():  # pragma: no cover - present in this environment
+        pytest.skip("anytime_runtime is not built; the C++ reader is what is compared")
+    from tests.conftest import build_decoder_graph
+
+    path = tmp_path / "mirror.onnx"
+    build_decoder_graph(path, layers=layers, kv_heads=kv_heads, head_dim=head_dim)
+
+    session = load_extension().DecoderSession(str(path), 8, 4)
+    native = session.geometry
+    assert kv_geometry_from_graph(path) == (native.layers, native.kv_heads, native.head_dim)
+    assert (native.layers, native.kv_heads, native.head_dim) == (layers, kv_heads, head_dim)
+
+
+def test_the_config_reader_still_agrees_on_a_model_it_was_written_for():
+    """`_kv_geometry` is kept as the cross-check, so it has to keep working.
+
+    GPT-2 names none of its geometry the way a Llama config does -- `n_layer`,
+    `n_head`, `n_embd` against `num_hidden_layers`, `num_attention_heads`,
+    `hidden_size` -- which is what the fallback chain in `_kv_geometry` is for.
+    """
+    transformers = pytest.importorskip("transformers")
+
+    class _Gpt2Like:
+        n_layer, n_head, n_embd = 12, 12, 768
+
+    class _LlamaLike:
+        num_hidden_layers, num_attention_heads = 22, 32
+        num_key_value_heads, hidden_size = 4, 2048
+
+    assert transformers is not None
+    assert _kv_geometry(_Gpt2Like()) == (12, 12, 64)
+    # Grouped-query: 4 KV heads sizing the cache, not the 32 attention heads.
+    assert _kv_geometry(_LlamaLike()) == (22, 4, 64)
