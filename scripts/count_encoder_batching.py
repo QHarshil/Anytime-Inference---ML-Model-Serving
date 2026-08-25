@@ -22,8 +22,14 @@ Three questions, and the third is the one that produced a finding.
    per-Run work it removes.
 
 3. **Does a request's answer depend on who shares its batch?** For FP32, no -- to
-   1.1e-05 of a logit, which is float noise and is the control here: it is logically
-   independent of the quantisation question, so it says the harness is sound.
+   1.1e-05 of a logit, and it is the control here: logically independent of the
+   quantisation question, so it says the harness is sound.
+
+   That 1.1e-05 is reduction order rather than noise. A padded row makes the pooled
+   sum longer, a vectorised reduction regroups its terms by lane, and float addition
+   is not associative -- so how far the answer moves depends on which kernel ran, and
+   differs by architecture. `tests/test_batching.py` bounds a synthetic case of it
+   rather than asserting equality, having first asserted equality and failed CI.
 
    For INT8, **yes**. Both quantised variants carry 50 `DynamicQuantizeLinear` nodes,
    which compute an activation scale at runtime from the tensor actually fed. Batching
