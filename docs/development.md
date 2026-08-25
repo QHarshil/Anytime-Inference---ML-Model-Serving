@@ -79,6 +79,31 @@ Both are worth setting on the machine that produced the committed artefacts and
 nowhere else. Both exist because a test that only passes where it was written was
 shipped once each: the first cost a clean clone, the second cost a red CI run.
 
+## A teardown abort that leaves every test passing
+
+Running the `test-minimal` job's test list on macOS aborts at process teardown in about
+3 of 10 runs, on Python 3.12 and 3.14 and on ONNX Runtime 1.26.0 and 1.29.0:
+
+```
+libc++abi: terminating due to uncaught exception of type std::__1::system_error:
+recursive_mutex lock failed: Invalid argument
+```
+
+**Every test passes and pytest reports success. Exit code 134 is the only signal.** So:
+
+- **Check `$?`, and distinguish 0 from 134 from anything else.** A loop that counts
+  non-zero cannot tell an abort from a harness that failed to run the tests at all.
+- **`pytest -q 2>&1 | tail -3` reports tail's exit code, not pytest's.**
+- **In zsh, an unquoted `$VAR` holding a list of paths is one argument.** `pytest -q
+  $TESTS` exits 4 with "file or directory not found", which reads as a failure if only
+  the exit code is checked. Use an array and `"${TESTS[@]}"`.
+
+The full suite is far less affected than the minimal list, which is the odd part.
+`recursive_mutex` is a C++ mutex, so `EINVAL` means locking storage that is already
+destroyed -- something touches ONNX Runtime state at static-destructor time. It has
+never fired on CI, and the likeliest reason is that CI is Linux and this message is
+libc++'s. `.claude/PROGRESS.md` has the captured `pip freeze` and the bisect so far.
+
 ## Lint and types
 
 ```bash
