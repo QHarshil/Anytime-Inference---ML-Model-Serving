@@ -139,8 +139,14 @@ tests/            unit, integration, engine-parity, and import-boundary tests
 `models/` is ignored, and so is most of `results/`. Both are reproducible:
 
 ```bash
-python scripts/export_onnx.py --task text     # models/, encoder variants
+python scripts/export_onnx.py --task text     # models/, encoder variants, FP32 + dynamic INT8
+python scripts/export_onnx.py --task text --quantization static
+                                              # models/text_*_int8_static/; calibrated on SST-2 train
+python scripts/export_onnx.py --task text --quantization static --calibration-method percentile
+                                              # models/text_*_int8_static_percentile/
 python scripts/export_decoder.py              # models/, decoder variants + results/decoder_profiles.json
+python scripts/export_decoder.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
+    --output results/decoder_profiles_tinyllama.json
 python scripts/profile_variants.py            # results/variant_profiles.json, configs/serving.yaml
 python scripts/profile_decode.py              # results/decode_profiles.json
 python scripts/plot_decode_profiles.py        # docs/img/ decoder figures, from that JSON
@@ -152,6 +158,18 @@ python scripts/ab_session_sharing.py          # results/ab_session_sharing.json;
 python scripts/count_encoder_batching.py      # results/encoder_batching.json; counts and numerics, ungated
 python scripts/profile_encoder_batching.py    # results/encoder_batching_timed.json; timed, gated, needs a quiet host
 ```
+
+`export_onnx.py` reuses an FP32 graph that is already on disk rather than rebuilding it:
+every committed encoder number was measured against the graph that is there, and a
+re-export differing by so much as a node would silently make those numbers describe
+something else. Delete the directory to force a rebuild.
+
+`export_decoder.py` takes `--model` and is model-agnostic, which was a claim until a
+second model existed to check it against. It holds, with one defect found and fixed:
+the KV geometry was read off the model config rather than off the graph. It now reads
+the graph, the way `DecoderSession::derive_geometry` does on the C++ side, and asserts
+the config agrees. **Give a second model its own `--output`**; the default would
+overwrite the GPT-2 profile.
 
 The last two are the two halves of the encoder-batching question and they are separate
 on purpose. `count_encoder_batching.py` measures padding shares, run counts and whether

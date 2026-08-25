@@ -1117,8 +1117,48 @@ same order as any batched width. The true-length batch-1 arm flips exactly 0 wit
 logit delta of 0.0, which is the pair that localises the cause: it is dynamic
 quantisation meeting a non-tight tensor, and the shipped configuration is already inside
 it. Accuracy moves by at most +-0.46pp and does not systematically fall, so this is a
-determinism property rather than an accuracy regression. Whether a statically quantised
-export removes it is untested.
+determinism property rather than an accuracy regression.
+
+**A statically quantised export removes it, and it is still not worth shipping.**
+`scripts/export_onnx.py --quantization static` calibrates the activation scales over 512
+SST-2 *train* sentences, so no `DynamicQuantizeLinear` survives. Measured over the same
+872 validation sentences, ungated:
+
+| Variant | `DynamicQuantizeLinear` | Flips, w2-w32 | Requests whose logits move | Median move of those | Accuracy |
+| --- | --- | --- | --- | --- | --- |
+| `distilbert_fp32` | 0 | 0 | 614 / 872 | 9.5e-07 | 91.06% |
+| `distilbert_int8` | 50 | 4-6 | **872 / 872** | 2.5e-02 | 90.37% |
+| `distilbert_int8_static` | **0** | **0** | **1 / 872** | 2.9e-01 | 89.45% |
+| `distilbert_int8_static`, percentile | **0** | **0** | 5 / 872 | 3.6e-02 | **89.91%** |
+| `minilm_fp32` | 0 | 0 | 600 / 872 | 4.8e-07 | 90.14% |
+| `minilm_int8` | 50 | 2-5 | **872 / 872** | 1.5e-02 | 89.91% |
+| `minilm_int8_static` | **0** | **0** | 5 / 872 | 2.7e-02 | **90.02%** |
+| `minilm_int8_static`, percentile | **0** | **0** | 3 / 872 | 2.7e-02 | 89.56% |
+
+The comparison is controlled: both flavours quantise `MatMul`, `Gemm` and the embedding
+`Gather` and nothing else, so the only difference between them is where the activation
+scale comes from. Static QDQ left to its defaults would have quantised 24 operator types
+and confounded the two.
+
+**The prediction was half right, and the wrong half is the useful one.** Flips go to
+zero at every width. `max_abs_logit_delta` was predicted to fall to the FP32 control's
+1.1e-05; it falls from 1.18 to 0.29, four orders of magnitude short. What collapses is
+the *incidence* -- 872 of 872 requests to 1 -- not the size. Dynamic quantisation gives
+every request its own scale so every request moves a little; a fixed grid only moves when
+a float perturbation crosses a rounding boundary, which almost none do, and the one that
+does moves by a whole quantisation step. **A maximum over 872 requests cannot tell those
+apart, which is why `rows_moved` is recorded beside it.**
+
+Read the FP32 row as the third signature and the one that makes the other two legible:
+614 of 872 requests move, by a median of 9.5e-07. Everything wobbles infinitesimally.
+That is reassociation and no precision removes it.
+
+**It is declined, and not on accuracy.** Taking the better calibration per model the
+price is 0.46pp on DistilBERT and nothing on MiniLM. But both INT8 encoder variants were
+already *dominated* before determinism was ever the question -- `distilbert_int8` serves
+in 17.17 ms against FP32's 12.89 ms, `minilm_int8` in 7.16 ms against 5.19 ms -- so
+`configs/serving.yaml` carries only the FP32 pair. Static quantisation improves an axis
+that was not the reason INT8 lost. `docs/quantization.md` has the full table.
 
 ### The timed half, gated
 
@@ -1239,14 +1279,22 @@ already compute-bound. None of those is this host.
   the M/M/c model wants -- but it means the 12.893 ms service time and the 38.7 ms
   deadline are calibrated to a 128-token request, not to an average one. Serving true
   lengths would be faster and less predictable.
-- **INT8 answers depend on what else is in the tensor.** Both quantised variants carry
-  50 `DynamicQuantizeLinear` nodes, so the activation scale is computed from the tensor
-  actually fed and padding or batch-mates change it. It moves 0.2-0.7% of predictions
-  and at most +-0.5pp of accuracy. FP32 changes no prediction and its logits move by at
-  most 1.1e-05, which is reduction order rather than quantisation: padding changes how
-  many terms the pooling sums, so how far the answer moves depends on which kernel ran
-  and on the architecture. Untested is whether a static-quantised export would remove
-  the INT8 half.
+- **INT8 answers depend on what else is in the tensor.** Both dynamically quantised
+  variants carry 50 `DynamicQuantizeLinear` nodes, so the activation scale is computed
+  from the tensor actually fed and padding or batch-mates change it. It moves 0.2-0.7%
+  of predictions and at most +-0.5pp of accuracy. FP32 changes no prediction and its
+  logits move by at most 1.1e-05, which is reduction order rather than quantisation:
+  padding changes how many terms the pooling sums, so how far the answer moves depends
+  on which kernel ran and on the architecture. **A statically quantised export removes
+  it** -- 0 flips at every width, and the number of requests whose logits move at all
+  falls from 872 of 872 to 1 -- at a cost of 0.46pp on DistilBERT and nothing on MiniLM.
+  It is not shipped, because both INT8 encoder variants are dominated on latency
+  regardless. Both flavours are exportable from one flag; see `docs/quantization.md`.
+- **Static quantisation was measured on two encoders and one dataset.** Neither
+  calibration method wins on both models -- percentile clipping halves DistilBERT's loss
+  and costs MiniLM 0.46pp -- so "calibrate with minmax" is not a rule this repository
+  can offer. The right method is a per-model measurement, and 512 samples of SST-2 train
+  is the only calibration set anything here has been calibrated on.
 - The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
   are measured through different harnesses and their capacities are not comparable.
 - **Numbers on this page predate session sharing becoming the default**, and were

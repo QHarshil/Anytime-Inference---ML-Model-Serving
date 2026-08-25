@@ -181,6 +181,88 @@ Retargeting to `arm64` narrowed but did not close the gap.
 x86 feature detection reads `/proc/cpuinfo` and falls back to `avx2`, which still
 uses real integer kernels.
 
+## Static quantisation: it removes the determinism problem, and it ships nowhere
+
+Both dynamically quantised encoder graphs carry 50 `DynamicQuantizeLinear` nodes, so
+the activation scale is computed at runtime from the tensor actually fed. A request's
+logits therefore depend on its own padding and on whoever shares its batch. The
+question `benchmarks.md` carried as untested was whether that is the export's doing or
+the runtime's. It is the export's, and calibrating the scales away removes it.
+
+`python scripts/export_onnx.py --task text --quantization static` calibrates over 512
+SST-2 **train** sentences -- never validation, which is what all 872 accuracies here
+are scored on -- tokenised at 128 tokens, the length the benchmarks feed.
+
+**The comparison is controlled, and that took one deliberate choice.** Static QDQ left
+to its defaults quantises 24 operator types; dynamic quantises three. Exported that way
+the two would differ in how much of the graph is 8-bit *as well as* in where the scale
+comes from, and neither result would be attributable. `QUANTISED_OPERATORS` pins both to
+`MatMul`, `Gemm` and the embedding `Gather` -- which is what the dynamic exporter picks
+on its own, checked against the shipped graph rather than assumed. The two then hold the
+same number of 8-bit weight elements to within the 100 that are the scales themselves:
+66,892,840 against 66,892,940 for DistilBERT.
+
+### What it removes, and what it does not
+
+| Variant | `DynamicQuantizeLinear` | Predictions flipped, w2-w32 | Requests whose logits move | Median move of those |
+| --- | --- | --- | --- | --- |
+| `distilbert_fp32` | 0 | 0 | 614 / 872 | 9.5e-07 |
+| `distilbert_int8` | 50 | 4-6 | **872 / 872** | 2.5e-02 |
+| `distilbert_int8_static` | **0** | **0** | **1 / 872** | 2.9e-01 |
+| `minilm_fp32` | 0 | 0 | 600 / 872 | 4.8e-07 |
+| `minilm_int8` | 50 | 2-5 | **872 / 872** | 1.5e-02 |
+| `minilm_int8_static` | **0** | **0** | **5 / 872** | 2.7e-02 |
+
+**Half the prediction was right and half was wrong, and the wrong half is the more
+useful.** Flips go to zero at every width, as expected. `max_abs_logit_delta` was
+predicted to fall to the FP32 control's 1.1e-05 and it does not -- it falls from 1.18 to
+0.29, four orders of magnitude short.
+
+What collapses is not the size of the movement but **how many requests move at all**:
+872 of 872 to 1 of 872. Those are two different mechanisms with two different
+signatures, and the maximum alone cannot tell them apart:
+
+- **Dynamic quantisation** gives every request its own scale, so every request moves,
+  each by a hundredth of a logit or so.
+- **A static grid** cannot move unless a float perturbation crosses a rounding
+  boundary. Almost none do. The one that does moves by a whole quantisation step,
+  which is why the maximum stays large while the incidence collapses.
+- **The FP32 control is the third signature** and it is what makes the other two
+  legible: 614 of 872 requests move, by a median of 9.5e-07. Everything wobbles
+  infinitesimally. That is float reassociation, and it does not go away at any
+  precision.
+
+Counting `rows_moved` beside the maximum is what separated these. A maximum over 872
+requests cannot distinguish one sentence on a knife-edge from every sentence wobbling.
+
+### What it costs, and why it ships nowhere
+
+| Model | FP32 | INT8 dynamic | INT8 static, minmax | INT8 static, percentile |
+| --- | --- | --- | --- | --- |
+| DistilBERT | 91.06% | 90.37% | 89.45% | **89.91%** |
+| MiniLM | 90.14% | 89.91% | **90.02%** | 89.56% |
+
+**Neither calibration method wins on both models.** Percentile clipping at 99.999 halves
+DistilBERT's loss and costs MiniLM 0.46pp. Taking the better of the two per model, the
+price of determinism is **0.46pp on DistilBERT and nothing on MiniLM**, which is a
+genuinely small price.
+
+**It is declined anyway, and not on accuracy.** Both INT8 encoder variants were already
+*dominated* before determinism was ever the question -- `distilbert_int8` serves in
+17.17 ms against `distilbert_fp32`'s 12.89 ms, and `minilm_int8` in 7.16 ms against
+5.19 ms. They are slower **and** no more accurate, which is why `configs/serving.yaml`
+carries only the two FP32 variants. Static quantisation improves an axis that was not
+the reason INT8 lost. A graph that nothing selects does not become selectable by
+answering a question about it.
+
+So this is filed as an answered question rather than a shipped variant. The exports are
+reproducible from one flag and the counts are committed in
+`results/encoder_batching.json`; nothing in the serving path changes.
+
+**What would change the answer**: an execution provider where INT8 is actually faster
+than FP32 on this graph, which would put INT8 back on the frontier and make its
+determinism a property worth paying 0.46pp for.
+
 ## Export notes
 
 `torch.onnx.export` is not used for the text models. Its current exporter emits
@@ -193,9 +275,17 @@ cleanly, so the text path uses `ORTModelForSequenceClassification` and
 ## Reproducing
 
 ```bash
-python scripts/export_onnx.py --task text     # both models, FP32 and INT8
+python scripts/export_onnx.py --task text     # both models, FP32 and dynamic INT8
+python scripts/export_onnx.py --task text --quantization static
+python scripts/export_onnx.py --task text --quantization static \
+    --calibration-method percentile
 python scripts/profile_variants.py            # measure and rank
+python scripts/count_encoder_batching.py      # the determinism counts above
 ```
+
+An FP32 graph already on disk is reused rather than rebuilt, because every committed
+encoder number was measured against the one that is there. Delete the directory to
+force a rebuild.
 
 The verdict per variant, the host, and the ONNX Runtime version are all recorded
 in `results/variant_profiles.json`.
