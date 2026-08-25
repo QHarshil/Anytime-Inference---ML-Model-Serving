@@ -52,6 +52,48 @@ A related consequence: CI no longer pins a version anywhere. It had been buildin
 the C++ side against 1.26.0 while `pip` installed 1.28.0, since the dependency
 floor is `>=1.16`. That was harmless only because the two never shared a process.
 
+## Why the floor is not a pin
+
+The three checks above guarantee **agreement, not version**. They make the two copies
+of ONNX Runtime inside one process equal; they say nothing about which version that
+is. Two clones can each be perfectly self-consistent at different versions, and one
+did: clones taken weeks apart resolved 1.26.0 and then 1.29.0 with no change to this
+repository. That is not cosmetic. The kernel that runs follows the version, the
+reduction order follows the kernel, and the low-order bits of every float follow the
+reduction order -- which is the same mechanism as the batch-width trap below.
+
+`onnxruntime>=1.16` stays a floor anyway, for three reasons:
+
+- **A pin would contradict the resolution it sits beside.**
+  `runtime/cmake/ResolveOnnxRuntime.cmake` reads the wheel the *target* interpreter
+  will import and only falls back to the `pyproject.toml` specifier. The whole point
+  is that the SDK follows the environment rather than a constant. An `==` makes that
+  machinery dead code.
+- **This installs as a library.** An exact pin in `[project].dependencies` makes
+  `anytime-serving` uninstallable alongside anything else that wants a different
+  ONNX Runtime.
+- **Nothing would detect the staleness.** CI resolves whatever is current, so a pin
+  would silently diverge from every environment that matters until someone bumped it
+  by hand. A floor that has become a stale pin is worse than a floor, because it
+  reads as a guarantee.
+
+**What is done instead: every result payload records the version it was measured
+at.** A number whose ONNX Runtime version is not recorded can be neither re-derived
+nor falsified; one that records it can be checked against the environment that reads
+it. `results/decode_sweep.json` and `results/batch_profiles.json` already carried
+`host.onnxruntime`; `results/decoder_profiles.json` and
+`results/encoder_batching.json` now do too.
+
+This is a decision about **reproducibility of measurements**, not about correctness.
+Correctness is already covered: the assertions in the test suite are bounds that hold
+over every reduction order rather than equalities that hold on one host, which is
+what makes them survive a version change. See `tests/test_batching.py`.
+
+**If the teardown SIGABRT returns, capture `pip freeze` from the aborting run before
+anything else.** A reproduction attempt weeks later is a different experiment unless
+the environment is pinned, and the resolved dependency set is the one thing the
+investigation that chased it could not recover.
+
 ## Cost of the transport it replaced
 
 Measured on DistilBERT at batch size one, 60 requests after warm-up:
