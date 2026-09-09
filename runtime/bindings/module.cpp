@@ -1,6 +1,6 @@
 // pybind11 bindings for the in-process engine.
 //
-// Two things here are load-bearing beyond wiring:
+// Two things here do more than wiring:
 //
 // Tensors cross the boundary without copying. Inputs are borrowed straight from
 // the numpy buffer, so the references are held on the stack for the whole call.
@@ -41,7 +41,7 @@ anytime::DType dtype_from_numpy(const py::array& array, const std::string& name)
         "feed '" + name + "' has dtype " +
         py::str(dtype).cast<std::string>() +
         ", which the engine does not accept. Supported: float32, float64, int32, "
-        "int64, bool. Cast before submitting rather than relying on an implicit "
+        "int64, bool. Cast before submitting instead of relying on an implicit "
         "conversion.");
 }
 
@@ -90,8 +90,8 @@ py::array wrap_output(Ort::Value&& value) {
 }
 
 // Hands a vector's buffer to numpy without a second copy. The logits in a
-// StepResult are already the one deliberate copy the decoder makes -- the last row
-// of a much larger output -- so copying them again into a numpy array would be
+// StepResult are already the one deliberate copy the decoder makes, the last row
+// of a much larger output, so copying them again into a numpy array would be
 // gratuitous.
 py::array wrap_logits(std::vector<float>&& logits) {
     auto* owned = new std::vector<float>(std::move(logits));
@@ -105,7 +105,7 @@ py::array wrap_logits(std::vector<float>&& logits) {
 }
 
 // What a prefill or decode step returns to Python. Separate from
-// anytime::StepResult so the logits cross as a numpy view rather than being copied
+// anytime::StepResult so the logits cross as a numpy view instead of being copied
 // again by the stl caster.
 struct PyStepResult {
     py::array logits;
@@ -153,7 +153,7 @@ py::tuple run_engine(anytime::Engine& engine, const std::string& variant,
         const auto name = py::cast<std::string>(item.first);
         // ONNX Runtime reads the buffer directly, so it has to be C-contiguous.
         // ensure() returns the same object when it already is, and converts only
-        // when it is not, rather than misreading a strided array.
+        // when it is not, instead of misreading a strided array.
         py::array array = py::array::ensure(item.second, py::array::c_style);
         if (!array) {
             throw std::invalid_argument("feed '" + name + "' is not array-like");
@@ -186,7 +186,7 @@ py::tuple run_engine(anytime::Engine& engine, const std::string& variant,
 PYBIND11_MODULE(anytime_runtime, module) {
     module.doc() =
         "In-process ONNX Runtime engine for the Anytime Inference Planner.\n\n"
-        "Tensors cross the boundary as borrowed buffers rather than copies, and "
+        "Tensors cross the boundary as borrowed buffers and not copies, and "
         "the GIL is released around inference so a pool of workers runs "
         "concurrently.";
 
@@ -238,12 +238,12 @@ PYBIND11_MODULE(anytime_runtime, module) {
     // Derives from RuntimeError, so the error contract in serving/onnx_runtime.py
     // still holds: this means "the runtime could not serve this request". It is a
     // distinct type because it is the one such error the admission policy is meant
-    // to handle -- by evicting or refusing -- rather than propagate.
+    // to handle by evicting or refusing, instead of propagating.
     py::register_exception<anytime::CacheExhausted>(module, "CacheExhausted",
                                                    PyExc_RuntimeError);
 
     py::class_<anytime::KvGeometry>(module, "KvGeometry",
-        "Shape of a decoder's KV cache, read off the graph rather than a config.")
+        "Shape of a decoder's KV cache, read off the graph and not a config.")
         .def_readonly("layers", &anytime::KvGeometry::layers)
         .def_readonly("kv_heads", &anytime::KvGeometry::kv_heads)
         .def_readonly("head_dim", &anytime::KvGeometry::head_dim)
@@ -270,7 +270,7 @@ PYBIND11_MODULE(anytime_runtime, module) {
         "present-prefix invariant, once per sequence. pad_ms is non-zero only for a "
         "batched step, where rows shorter than the batch's longest are right-padded "
         "and the padding is cleared; it scales with the batch's length variance "
-        "rather than with its size.")
+        "and not with its size.")
         .def_readonly("gather_ms", &anytime::StepTimings::gather_ms)
         .def_readonly("pad_ms", &anytime::StepTimings::pad_ms)
         .def_readonly("run_ms", &anytime::StepTimings::run_ms)
@@ -281,7 +281,7 @@ PYBIND11_MODULE(anytime_runtime, module) {
     py::class_<PyStepResult>(module, "StepResult",
         "Result of one prefill or one decode step.\n\n"
         "logits holds the distribution for the next token only. The graph returns "
-        "one row per position it was given -- 206 MB for a 1024-token prefill -- "
+        "one row per position it was given, 206 MB for a 1024-token prefill, "
         "when sampling reads one row of 50257, so the last row is copied out and "
         "the rest is dropped.")
         .def_readonly("logits", &PyStepResult::logits)
@@ -301,8 +301,8 @@ PYBIND11_MODULE(anytime_runtime, module) {
         "Batching a decode step pays, and how much depends on how full the caches "
         "are: only the cache-independent term of a step amortises across a batch, "
         "while the per-cached-token term is per sequence and grows with the batch's "
-        "total cache. The measured curve lives in docs/benchmarks.md rather than "
-        "here. It is deliberately not quoted in this docstring -- an earlier version "
+        "total cache. The measured curve lives in docs/benchmarks.md and not "
+        "here. It is deliberately not quoted in this docstring. An earlier version "
         "cited a Run-only probe that measurement through the scheduler later "
         "overturned by about 20%, and a number embedded in a C++ string literal is "
         "the last copy anyone thinks to update.")
@@ -397,9 +397,9 @@ PYBIND11_MODULE(anytime_runtime, module) {
              "refuses a non-empty sequence, which is what a caller wanting a whole "
              "prompt run needs. A scheduler needs the chunks driven from outside, "
              "because the chunk boundary is where a long prefill can be interrupted: "
-             "otherwise a resident sequence stalls for a whole prompt rather than "
+             "otherwise a resident sequence stalls for a whole prompt instead of "
              "for one chunk, 372 ms against 93 ms on GPT-2 at FP32.\n\n"
-             "Reserves per chunk rather than for the whole prompt, so ask admission "
+             "Reserves per chunk, not for the whole prompt, so ask admission "
              "before driving a prompt through this.")
         .def("decode",
              [](anytime::DecoderSession& self, const std::string& sequence_id,
@@ -428,7 +428,7 @@ PYBIND11_MODULE(anytime_runtime, module) {
              "Decode only. The graph takes one sequence dimension as well as one "
              "past_sequence_length, so a prefill chunk and a decode step cannot "
              "share a run without padding the decode row out to the chunk width; a "
-             "scheduler over this alternates rather than fusing.\n\n"
+             "scheduler over this alternates instead of fusing.\n\n"
              "Rows are right-padded to the longest past in the batch, with a "
              "per-row attention_mask and true absolute position_ids. Every sequence "
              "must be open and non-empty and no id may repeat. Blocks are all or "

@@ -15,7 +15,7 @@ planner used was simply false.
 
 To keep that from recurring in a form the engine cannot see, each variant is also
 measured through a separate ONNX Runtime session and the two are required to agree.
-A divergence beyond --agreement-tolerance fails the run rather than being written
+A divergence beyond --agreement-tolerance fails the run instead of being written
 to disk. This is the check whose absence made Stage 1's numbers wrong.
 
 Writes:
@@ -69,7 +69,7 @@ QUICK_MEASURE_ITERATIONS = 40
 QUICK_ACCURACY_SAMPLES = 128
 # Independent measurement passes per variant. One pass is not enough: the same
 # 200-request p50 measured eight times ranged over 6.5% for DistilBERT and 3.6%
-# for MiniLM on this host, driven by thermal state rather than by anything the
+# for MiniLM on this host, driven by thermal state instead of by anything the
 # code does.
 DEFAULT_REPEATS = 3
 # Matched versions measured within 0.4% on this host, and Stage 1 saw 8% across a
@@ -238,7 +238,7 @@ def _measure_direct_session(
     """The same graph through a separate session, for the agreement check.
 
     Repeated the same number of times as the engine measurement, so the two are
-    compared like for like rather than one median against a noisier one.
+    compared like for like instead of one median against a noisier one.
     """
     fed = _declared(session, feeds)
     pass_p50: list[float] = []
@@ -518,7 +518,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Profile even when the anytime_runtime extension is unavailable. The "
-            "numbers then describe the Python fallback rather than the serving path"
+            "numbers then describe the Python fallback instead of the serving path"
         ),
     )
     parser.add_argument("--output", type=Path, default=Path("results/variant_profiles.json"))
@@ -528,7 +528,7 @@ def main() -> int:
     if not extension_available() and not args.allow_fallback_backend:
         raise SystemExit(
             "anytime_runtime is not available, so profiling would measure the Python "
-            "fallback rather than the path that serves traffic. That divergence is "
+            "fallback instead of the path that serves traffic. That divergence is "
             "what made Stage 1's service times wrong. Build the extension with:\n"
             "    pip install -e .\n"
             "or pass --allow-fallback-backend to record fallback numbers deliberately."

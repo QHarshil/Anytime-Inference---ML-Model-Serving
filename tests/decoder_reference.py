@@ -3,7 +3,7 @@
 `DecoderSession` replaces the obvious way to decode over an exported graph: keep the
 `present` tensors ONNX Runtime hands back and feed them straight in as the next
 `past`. That costs no gather at all and is the fastest thing available, so it is the
-right reference. The block allocator does not claim to beat it -- it claims to
+right reference. The block allocator does not claim to beat it, it claims to
 compute the same thing while making the arena's occupancy a number somebody can
 admit or evict against.
 

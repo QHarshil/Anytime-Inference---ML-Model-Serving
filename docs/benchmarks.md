@@ -47,8 +47,8 @@ Both INT8 variants are strictly dominated: slower with no accuracy gain. See
 
 One pass is not enough on this host. Measuring the same 200-request p50 eight
 times gave 13.84 to 14.73 ms for DistilBERT and 5.62 to 5.83 ms for MiniLM, a
-range of 6.5% and 3.6%, driven by thermal state and scheduler placement rather
-than by anything in the code. The within-pass standard deviation is around 0.45 ms
+range of 6.5% and 3.6%, driven by thermal state and scheduler placement and not
+by anything in the code. The within-pass standard deviation is around 0.45 ms
 and says nothing about that, so a single p50 quoted with a within-pass spread
 overstates its own precision. Reporting the median of three passes, with the range
 across them, is why the spread column exists.
@@ -60,9 +60,9 @@ on that drift while still catching anything structural.
 ## Load sweep
 
 Offered load is expressed as a fraction of measured pool capacity
-(4 workers / 12.89 ms = 310 rps) rather than as a bare request rate. Both
+(4 workers / 12.89 ms = 310 rps), not as a bare request rate. Both
 policies see the same Poisson arrival stream of real SST-2 sentences, tokenised
-before the run so the measurement is inference rather than preprocessing. Three
+before the run so the measurement covers inference and not preprocessing. Three
 seconds of arrivals per point, which is the script's default.
 
 Goodput counts only requests that completed within the deadline; it is the metric
@@ -129,7 +129,7 @@ neither phase.
 | `int4` | 359.7 ms (31.1%) | 7.22 ms (18.2%) | 49.8x | 16.6% |
 
 TTFT is a chunked prefill at the 256-token default; the percentage is the range across
-seven passes. "Arena cost" is the gather plus scatter as a share of the decode step --
+seven passes. "Arena cost" is the gather plus scatter as a share of the decode step,
 what block accounting costs, and it rose from 11-13% because threading the *session*
 shrank the step around a gather that is this process's own memcpy and did not move. The
 copy can now be threaded too, and is not here: `copy_threads` defaults to 1 and every
@@ -146,7 +146,7 @@ one, though: a prefill divided across a thread pool varies more than one that is
 ### TPOT grows with the cache, so one figure is not enough
 
 A decode step re-reads the whole cache before it runs, so its cost is a line in the
-number of cached tokens rather than a constant:
+number of cached tokens, not a constant:
 
 | Cached tokens | Cache size | `fp32` TPOT | Gather | Scatter | Arena cost |
 | --- | --- | --- | --- | --- | --- |
@@ -155,8 +155,8 @@ number of cached tokens rather than a constant:
 | 960 | 71 MB | 8.15 ms | 1.139 ms | 0.016 ms | 14.2% |
 
 The gather is pure `memcpy`, so it comes out the same at every precision to within a
-few percent -- 0.19, 0.64 and 1.14 ms at the three lengths, spreading 5% across
-precisions at 128 tokens and 2% at 960 -- because it moves the same bytes whatever the
+few percent. It reads 0.19, 0.64 and 1.14 ms at the three lengths, spreading 5% across
+precisions at 128 tokens and 2% at 960, because it moves the same bytes whatever the
 weights are.
 
 70.8 MB in 1.139 ms is 62 GB/s. That is **not** near this host's peak memory
@@ -165,38 +165,38 @@ a plain 70.8 MB `np.copyto` on the same host measures 1.049 ms as the median of 
 passes, against the gather's 1.139. The gather is therefore already running at about
 the rate one thread copies at, and the only ways to make it cheaper are to move fewer
 bytes or to use more than one thread. It is now the largest single item in a decode
-step that this repository owns rather than delegates to ONNX Runtime, which is what
-makes both of those worth doing rather than noting.
+step that this repository owns instead of delegating to ONNX Runtime, which is what
+makes both of those worth doing and not just noting.
 
-The second of those is now built and measured — see *Splitting the gather across
+The second of those is now built and measured. See *Splitting the gather across
 threads* below. It is worth 1.8x to 2.2x and takes the gather from a quarter of a wide
 decode step to a sixth. Every number in this section and the tables above is still the
 serial copy, which remains the default.
 
-The scatter stays near zero because it writes only the new token rather than the
-whole `present` tensor, which is worth about 1 ms a step at full context.
+The scatter stays near zero because it writes only the new token and not the whole
+`present` tensor, which is worth about 1 ms a step at full context.
 
 ![What the gather costs, absolutely and as a share of a decode step](img/arena_cost.png)
 
 So the price of block accounting is about 4% of a decode step at short context and
 14-17% at long, having risen from 11-13% because threading shrank the step around it.
-`scripts/profile_decode.py` also runs the same generation over contiguous KV and fails
-rather than reporting anything if the two disagree on the tokens they emit, or if the
+`scripts/profile_decode.py` also runs the same generation over contiguous KV. It fails
+instead of reporting anything if the two disagree on the tokens they emit, or if the
 arena takes more than 15% longer inside `Session::Run`. Measured, the two agree on
 tokens exactly.
 
-That timing check is one-sided, and the reason is a measurement rather than a
+That timing check is one-sided, and the reason is a measurement and not a
 convenience. At INT4 with a full cache the arena comes out **faster** than contiguous
-KV inside `Run` -- 0.83x to 0.88x over three runs, with the arena's own time stable to
+KV inside `Run`, at 0.83x to 0.88x over three runs, with the arena's own time stable to
 2% and the contiguous side the one that moves. The gather leaves the staging buffer hot
 in cache; the contiguous path feeds freshly allocated arrays that are cold, and INT4
 shows it because its weights are compressed, so cache traffic is a larger share of what
 the step reads. Identical shapes cannot make the graph do *more* work, so the arena
 being slower would still mean a fault; being faster has an explanation. None of this
-makes the arena a speedup -- the arena cost above is positive and is the honest
+makes the arena a speedup. The arena cost above is positive and is the honest
 number.
 
-`kv_admission.CacheCost` is fitted to these points rather than written down: FP32
+`kv_admission.CacheCost` is fitted to these points instead of written down. FP32
 comes out at 4.71 ms plus 0.00362 ms per cached token, which reproduces all three
 measurements to within 0.09 ms. Recompute is 0.27 ms per token, fitted from the chunked
 prefill because that is the width a resume actually runs at. Drawing it from
@@ -204,7 +204,7 @@ the single-pass sweep beside it instead would overstate every recompute by 13% a
 leave the eviction policy needlessly unwilling to act.
 
 The whole run was repeated to check it. Medians reproduced within 3% between a
-three-pass and a seven-pass run -- FP32 TPOT at 960 cached read 8.02 then 8.15 ms, INT8
+three-pass and a seven-pass run. FP32 TPOT at 960 cached read 8.02 then 8.15 ms, INT8
 7.03 then 7.22. Started back to back with no pause it drifts further, which is worth
 knowing before comparing two runs.
 
@@ -212,7 +212,7 @@ knowing before comparing two runs.
 
 Splitting a prefill into chunks re-reads the growing cache, so it ought to cost more.
 It does not, because a single pass over 1024 tokens also allocates logits for every
-position -- 206 MB -- when sampling reads one row of them. Chunking a prefill is the
+position, 206 MB of them, when sampling reads one row. Chunking a prefill is the
 first half of [SARATHI](https://arxiv.org/abs/2308.16369); the second half, sharing
 a run with decode steps, is not reachable over this graph, for the reason in
 [`architecture.md`](architecture.md).
@@ -225,8 +225,8 @@ a run with decode steps, is not reachable over this graph, for the reason in
 | one pass | 292.0 ms | 1.000x | 206 MB |
 
 **Chunking still wins, and the widths can no longer be ranked against each other.** At
-128 tokens all three precisions beat a single pass — 0.89x at FP32, 0.75x at INT8,
-0.88x at INT4 — so the memory argument holds. But the run-to-run ranges at eight threads
+128 tokens all three precisions beat a single pass, at 0.89x for FP32, 0.75x for INT8
+and 0.88x for INT4, so the memory argument holds. But the run-to-run ranges at eight threads
 are 3% to 41%, far wider than the gaps between adjacent widths, so any claim that one
 width beats its neighbour is not supported by this measurement. The earlier one-thread
 run could rank them (256 clearly fastest at 0.858x); this one cannot, and saying which
@@ -254,13 +254,13 @@ Stage 1 found INT8 strictly dominated on this host, and
 | `int4` | 4.53 ms | 6.24 ms | 7.22 ms | 0.88x to 0.94x |
 
 INT8 leads by 28% at 128 cached tokens and 11% at 960. At +0.063 perplexity for 0.61x
-the graph size it is the decode variant to serve here — but it does not dominate, and
-the difference matters when reading the frontier. INT4 is smaller (367 MB against 398)
+the graph size it is the decode variant to serve here. It does not dominate, though,
+and the difference matters when reading the frontier. INT4 is smaller (367 MB against 398)
 and FP32 is more accurate (31.307 against 31.371), so all three sit on the frontier and
 what INT8 wins is speed. "Not dominated" is the claim; "wins on every axis" would not
 be true of any of them.
 
-**INT4 stopped being the slow one, and that is a threading result rather than a
+**INT4 stopped being the slow one, and that is a threading result and not a
 quantisation one.** On a single thread its decode step was 1.74x to 2.39x FP32's and
 its 1024-token prefill was 1772 ms. On eight it decodes *faster* than FP32 at every
 occupancy and prefills in 360 ms. Unpacking 4-bit weights to float per matrix multiply
@@ -280,17 +280,17 @@ Three things differ between the encoder measurement and this one, not one:
   per-tensor across the graph. `export_decoder.py` runs `quantize_dynamic` with
   `per_channel=True` over `MatMul` and `Gemm` only, with the output projection
   excluded, because including it measured 44.4 perplexity against 26.8 for the
-  unquantised graph in that same early run — a smaller scoring configuration than the
-  32 windows above, so those two numbers compare with each other and not with this
-  page's table.
+  unquantised graph in that same early run. That was a smaller scoring configuration
+  than the 32 windows above, so those two numbers compare with each other and not with
+  this page's table.
 
 So the honest conclusion is that the encoder result does not generalise to the
 decoder. It is not evidence that decode shape alone is responsible, and the usual
-explanation — that decode at length 1 is a matrix-vector product bound by the
-bandwidth to read weights — does not even cover the whole result, because INT8 also
-wins the 256-token chunked prefill, which is not a matrix-vector product.
+explanation does not even cover the whole result. That explanation is that decode at
+length 1 is a matrix-vector product bound by the bandwidth to read weights, but INT8
+also wins the 256-token chunked prefill, which is not a matrix-vector product.
 
-What the fitted cost model does isolate is the part of the step precision acts on:
+What the fitted cost model does isolate is the part of the step precision acts on.
 
 | Precision | Cache-independent term | Per cached token | Cache-independent share at 960 |
 | --- | --- | --- | --- |
@@ -299,18 +299,17 @@ What the fitted cost model does isolate is the part of the step precision acts o
 | `int4` | 4.28 ms | 3.21 µs | 59% |
 
 The per-token coefficients agree within 36% across precisions while the constant terms
-span 1.5x. Reading the cache is precision-invariant, as it must be — the arena is
-float32 whatever the weights are — and quantisation acts on the constant part. That is
-enough to explain the narrowing lead without claiming to have identified the
-bottleneck: by the same fit, the term INT8 shrinks is 85% of an FP32 step at 128 cached
-tokens and 44% at 960.
+span 1.5x. Reading the cache is precision-invariant, as it must be, since the arena is
+float32 whatever the weights are. Quantisation acts on the constant part. That explains
+the narrowing lead without claiming to have identified the bottleneck. By the same fit,
+the term INT8 shrinks is 85% of an FP32 step at 128 cached tokens and 44% at 960.
 
 INT4 is no longer dominated on speed, and that is the largest thing threading changed
 here. On one thread its constant term carried the per-run cost of unpacking 4-bit
 weights and it was 1.7x to 2.4x FP32 on decode; on eight that unpacking is divided
 across the pool, its fitted constant falls from 10.76 ms to 4.28 ms, and it decodes
 faster than FP32 at every occupancy. It still loses on prefill and still costs 1.559
-perplexity, so it is not the variant to serve — but "it buys memory and nothing else"
+perplexity, so it is not the variant to serve. But "it buys memory and nothing else"
 was a statement about one core, not about the format.
 
 ## Batching a decode step: a throughput win that decays with the cache
@@ -322,7 +321,7 @@ by about 20% at short context because it left out the gather, the padding, the s
 and the scheduler. Those numbers are gone; these replace them.
 
 Speedup is against the same sequences stepped **one at a time at the same cached
-length**, through the same scheduler — not against nothing, and not against a batch
+length**, through the same scheduler. Not against nothing, and not against a batch
 divided by its width. A batched step's duration is what every sequence in it waited.
 
 | Batch | `fp32` 128 | 512 | 960 | `int8` 128 | 512 | 960 | `int4` 128 | 512 | 960 |
@@ -339,16 +338,16 @@ tokens; at 960 cached it runs 123 and 210.
 **These are measured with the decoder session on eight threads**, which is what
 `serving/decoder.py` now defaults to and therefore what would serve. An earlier round
 of this table was taken with the session pinned to one thread, inherited from the
-encoder without being revisited, and it understated batching at every point — most at
-full context, where batch 32 read 1.37x against the 1.71x here. Why the two compound is
+encoder without being revisited, and it understated batching at every point. The worst
+case was full context, where batch 32 read 1.37x against the 1.71x here. Why the two compound is
 in [Threading the decoder session](#threading-the-decoder-session) below.
 
 **The gain decays with cache occupancy, which is what the fitted split predicts.** Only
 the cache-independent term of a decode step can be shared across a batch; the
 per-cached-token term is per sequence, because each sequence reads its own cache. So the
-more cache there is, the less of a step is amortisable. INT4 gains most at full context
-— 1.9x against FP32's 1.4x — because its cache-independent term is the largest share of
-its step, which is the same fitted split that explains its prefill penalty.
+more cache there is, the less of a step is amortisable. INT4 gains most at full context, 1.9x
+against FP32's 1.4x, because its cache-independent term is the largest share of its
+step. That is the same fitted split that explains its prefill penalty.
 
 **Three things the curve says that the prediction did not.**
 
@@ -356,37 +355,37 @@ its step, which is the same fitted split that explains its prefill penalty.
   at 16 at 128 and 960 cached. Only INT4, whose step is dominated by the shared term, is
   still gaining at 32, and only at short context.
 - **Measured always falls short of predicted**, by 17-65% at short context and 9-28% at
-  long. The shortfall is inside `Session::Run` rather than in the gather, the padding or
+  long. The shortfall is inside `Session::Run`, not in the gather, the padding or
   the scheduler, all three of which are timed separately and add up to a small fraction
   of it.
 - **A per-row constant does not explain the shortfall either.** Fitting
   `shared + per_row × B + per_token × B × L` over every point leaves worst-case errors
   of 21-29%, and fitting it on batches of 4 and above and extrapolating down puts batch
   1 off the line in *opposite directions* for FP32 and INT8. So the honest statement is
-  that the split predicts the shape — the decay with occupancy, and INT4 gaining most —
-  and does not predict the level.
+  that the split predicts the shape, meaning the decay with occupancy and INT4 gaining
+  most, and does not predict the level.
 
 **The batch-2 loss was a threading artefact, and saying so retires a hypothesis.** With
-the session on one thread, FP32 at batch 2 was a genuine loss at every occupancy —
-0.92x, 0.93x, 0.91x, reproduced in two runs at sub-1% spreads. On eight threads it is a
+the session on one thread, FP32 at batch 2 was a genuine loss at every occupancy, at
+0.92x, 0.93x and 0.91x, reproduced in two runs at sub-1% spreads. On eight threads it is a
 1.53x / 1.40x / 1.28x gain. Earlier versions of this page offered "a batch-1 decode step
 takes a different kernel from a batched one" as an unmeasured hypothesis for the
 shortfall above, and cited the batch-2 loss as consistent with it. That evidence is
 gone: a batch of two on one core doubles the work with no extra parallelism to exploit
 while still paying the gather and the padding, which is a sufficient explanation and
 does not need a kernel switch. The shortfall against the fitted split remains
-unexplained, and now has no supporting evidence for that particular mechanism, so the
-hypothesis is withdrawn rather than restated.
+unexplained and now has no supporting evidence for that particular mechanism, so the
+hypothesis is withdrawn.
 
 ![Speedup against batch width per cache occupancy, and measured against predicted](img/batch_scaling.png)
 
 ### Threading the decoder session
 
 The encoder pins ONNX Runtime to one intra-op thread per worker, and there it is
-load-bearing: N single-threaded workers are N independent servers, which is what makes
+necessary: N single-threaded workers are N independent servers, which is what makes
 the M/M/c model in [`planner.md`](planner.md) valid. The decoder lane inherited that pin
-and it should not have. There is no worker pool here — one scheduler over one arena — so
-there is no per-worker budget to protect.
+and it should not have. There is no worker pool here, just one scheduler over one
+arena, so there is no per-worker budget to protect.
 
 `fp32`, 960 cached tokens, median of three passes, confirmed by a second run:
 
@@ -398,14 +397,14 @@ there is no per-worker budget to protect.
 | 14 | erratic | erratic | 0.63x at 128 cached |
 
 **Threading and batching compound.** Eight threads is 1.50x on the step, and it also
-makes batching itself pay more — 1.35x to 1.79x over stepping one at a time. A batch-1
+makes batching itself pay more, 1.35x to 1.79x over stepping one at a time. A batch-1
 decode is a skinny GEMV with little for a thread pool to divide; a wide batch is a real
 GEMM. Batching supplies the parallelism that threading then exploits, which is why the
 gain no longer decays so sharply with occupancy.
 
-**Fourteen — this host's core count — is a loss.** So is ten. "Use every core" would
-have been a regression, and the useful figure is a measurement rather than a property of
-the machine. Eight is what this host measured; re-measure before trusting it elsewhere.
+**Fourteen threads, this host's core count, is a loss.** So is ten. "Use every core"
+would have been a regression, and the useful figure is a measurement and not a property
+of the machine. Eight is what this host measured; re-measure before trusting it elsewhere.
 
 **The fitted split says where the time went.** `fp32` moves from 4.176 ms + 6.010 µs per
 cached token to 4.765 ms + 3.550 µs. The per-cached-token term nearly halves while the
@@ -415,8 +414,8 @@ parallelisable part.
 Two controls, because a 1.5x is the kind of number worth disbelieving:
 
 - **The gather, the padding and the scatter do not move.** They are this process's own
-  serial memcpy loops rather than ONNX Runtime's, so they must be flat across thread
-  counts, and they are — within 4.2% across seven runs while `Run` fell 40%. They do
+  serial memcpy loops and not ONNX Runtime's, so they must be flat across thread
+  counts, and they are, within 4.2% across seven runs while `Run` fell 40%. They do
   drift mildly upward with the thread count. That was attributed to ORT's intra-op pool
   spin-waiting for bandwidth after `Run` returns, and measuring it says otherwise:
   parking the pool moves the gather by 1.9%, which is far too little to be the
@@ -425,22 +424,22 @@ Two controls, because a 1.5x is the kind of number worth disbelieving:
 - **The encoder did not move.** DistilBERT measured 12.99 ms against a recorded 12.893
   and MiniLM 5.32 against 5.189, both accuracies exact. `DecoderSession` and `Engine`
   hold separate `Ort::Env` instances and separate per-session thread pools with no
-  global pool, so this is what the code separation predicts — but it is measured rather
-  than argued, because the Stage 1 service times are what the headline result rests on.
+  global pool, so this is what the code separation predicts. It is measured anyway,
+  because the Stage 1 service times are what the headline result rests on.
 
 One consequence for where the remaining time is. At batch 32 and 960 cached, the gather
-was 17.1% of a decode step at one intra-op thread and is **26.5% at eight** — 39 ms that
+was 17.1% of a decode step at one intra-op thread and is **26.5% at eight**, 39 ms that
 did not move while everything around it shrank. It is now the largest item in a decode
-step that this repository owns rather than delegates to ONNX Runtime, and splitting it
-across cores takes it back to 16.7% rather than removing it.
+step that this repository owns instead of delegating to ONNX Runtime, and splitting it
+across cores takes it back to 16.7% without removing it.
 
 ![Where a decode step goes as the batch widens](img/step_composition.png)
 
 The middle panel is the argument for threading the copy: `Session::Run` keeps roughly
 three quarters of a step at every width, and what grows into the rest as the batch widens
 is the gather. The right-hand panel drops `Run` so the other two copies are visible at
-all — zeroing the padding is 1.7% of a step at the widest point and the scatter is 0.5%,
-which is why the padding regimes below are a statement about `Run` rather than about
+all. Zeroing the padding is 1.7% of a step at the widest point and the scatter is 0.5%,
+which is why the padding regimes below are a statement about `Run` and not about
 `pad_ms`.
 
 ### Right-padding costs a third of a step, and it is not the zeroing
@@ -461,27 +460,27 @@ The gather is identical between those two regimes, as it must be: they hold the 
 number of real tokens.
 
 So `pad_ms` is the cheap part, and the ceiling on what bucketing could recover is
-11.2 ms — the difference between a batch of the mean length and a batch of the longest.
+11.2 ms, the difference between a batch of the mean length and a batch of the longest.
 INT8 and INT4 measure the same effect at 33% of their steps each. Threading the session
 shrank the absolute cost by about half and left the *proportion* almost unchanged, which
-is what made bucketing worth building rather than a problem that went away.
+is what made bucketing worth building instead of a problem that went away.
 
 That is a ceiling on the mechanism, not a prediction of the result. What bucketing
 actually recovered under load is measured separately below, and it is about a third of
-it — for the reason that a ceiling measured over a full batch cannot show.
+it, for a reason that a ceiling measured over a full batch cannot show.
 
 ### Splitting the gather across threads
 
 The gather is `memcpy` at about one thread's copy rate, so the two ways to make it
 cheaper are to move fewer bytes or to use more cores. This is the second.
-`DecoderSession` owns a small pool and divides the copy over slots — the `layers * 2`
-key/value halves, 24 on GPT-2 — because each slot has its own staging buffer and the
-tasks then share nothing at all. Dividing over batch rows instead would leave nothing to
+`DecoderSession` owns a small pool and divides the copy over slots, the `layers * 2`
+key/value halves, 24 on GPT-2. Each slot has its own staging buffer, so the tasks share
+nothing at all. Dividing over batch rows instead would leave nothing to
 split at batch 1.
 
 Paired arms, order alternated between pairs, three pairs, `fp32`. Every arm here passed a
 host check described under *what the numbers were gated on* below; the first attempt at
-this measurement did not, and the difference is large enough to matter — see the same
+this measurement did not, and the difference is large enough to matter. See the same
 section.
 
 | Batch | Cached | Gather, 1 thread → 8 | Pad, 1 → 8 | Step, 1 → 8 |
@@ -493,26 +492,26 @@ section.
 | 8 | 960 | 1.77 / 1.82 / 1.82x | 2.30x | 1.11x |
 | 32 | 960 | 1.90 / 1.84 / 1.77x | 5.37x | 1.16x |
 
-**1.8x to 2.2x, and that is the right order of magnitude rather than a disappointment.**
-A `memcpy` is bound by memory bandwidth, not by how many threads are pointed at it, so
-eight runners were never going to give eight times. The gain shrinks as occupancy rises,
-which is what a bandwidth bound predicts: more cached tokens means more bytes per slot and
-less of the copy is per-slot overhead that parallelism can hide.
+**1.8x to 2.2x, which is the right order of magnitude.** A `memcpy` is bound by memory
+bandwidth, not by how many threads are pointed at it, so eight runners were never going
+to give eight times. The gain shrinks as occupancy rises, which is what a bandwidth bound
+predicts. More cached tokens means more bytes per slot, and less of the copy is per-slot
+overhead that parallelism can hide.
 
 **What it buys is the share.** At batch 32 and 960 cached the gather falls from 26.5% of a
 decode step to 16.7%; at 128 cached, from 18.2% to 9.5%. Those are within-run ratios, and
-they are quoted from the gated runs rather than the first attempt for a reason given below.
+they are quoted from the gated runs and not the first attempt, for a reason given below.
 
 **The step-level gain is separable at every point measured, and it is about 1.15x.** Batch
 32 improves 1.12x / 1.16x / 1.16x at 128 / 512 / 960 cached and batch 8 improves 1.04x /
 1.14x / 1.11x, each from three paired passes. The honest reading is still that this makes
-the part of a step this repository owns roughly twice as cheap rather than making a step
-15% faster in general: the step gain is what is left after `Session::Run`, which threading
+the part of a step this repository owns roughly twice as cheap, without making a step
+15% faster in general. The step gain is what is left once `Session::Run`, which threading
 the copy does not touch, keeps its share.
 
 Batch 1 is not in the table because it cannot carry a ratio. Its gather is 0.18 ms at 128
-cached, where three paired passes read 1.39 / 0.52 / 1.47x — sub-microsecond noise on a
-5 ms step. At 512 and 960 cached it settles at 1.72x and 1.65x.
+cached, where three paired passes read 1.39 / 0.52 / 1.47x, which is sub-microsecond
+noise on a 5 ms step. At 512 and 960 cached it settles at 1.72x and 1.65x.
 
 **The inline floor is measured, and measuring moved it by 32x.** Below some size,
 synchronising costs more than splitting saves, so the copy runs on the calling thread.
@@ -520,7 +519,7 @@ That threshold started at 1<<20 staged floats on the reasoning that thread hand-
 tens of microseconds; the crossover sweep says threading already wins 1.85x at batch 8
 and 128 cached, which 1<<20 would have excluded. The measured crossover at batch 1 is
 between 24,576 floats (0.72x, a loss) and 49,152 (1.29x, a win), and the default sits in
-that gap at 1<<15. It is a constructor argument rather than a constant, because a
+that gap at 1<<15. It is a constructor argument and not a constant, because a
 threshold nothing can set is a threshold nothing can test.
 
 #### What the numbers were gated on, and what an earlier attempt reported instead
@@ -537,17 +536,17 @@ free of the thing under test and can be checked against a run recorded when the 
 known good. Every arm above is within 8% of that reference; healthy arms land in
 0.96-1.04x, and the arms that were thrown away read 1.19x to 2.06x.
 
-**A busy host inflates this particular ratio rather than adding noise to it**, which is why
-the earlier number was wrong in a consistent direction. Contention costs a bandwidth-bound
-copy about 1.9x where it costs a partly-compute-bound graph 1.5-1.6x, so the serial arm —
-the one doing all the copying on one thread — loses more than the threaded arm, and their
-ratio grows. The same script on the same evening read **2.91x** on a degraded pair and
+**A busy host inflates this particular ratio; it does not just add noise to it**, which
+is why the earlier number was wrong in a consistent direction. Contention costs a
+bandwidth-bound copy about 1.9x where it costs a partly-compute-bound graph 1.5-1.6x. The
+serial arm does all the copying on one thread, so it loses more than the threaded arm and
+their ratio grows. The same script on the same evening read **2.91x** on a degraded pair and
 **1.87x** on a healthy pair twenty-two minutes later.
 
 **Within-run shares are not immune to this, and an earlier version of this page said they
-were.** The claim was that the gather's share of a step is a ratio taken inside one run and
-therefore survives host drift. It does not: the same code reads 11.3% degraded and 16.7%
-healthy at batch 32 and 960 cached, because contention moves `Run` and the gather by
+were.** The claim was that the gather's share of a step is a ratio taken inside one run
+and therefore survives host drift. It does not. The same code reads 11.3% degraded and
+16.7% healthy at batch 32 and 960 cached, because contention moves `Run` and the gather by
 different factors and so moves their ratio to each other. A share is safer than an absolute
 and it is not safe.
 
@@ -557,12 +556,12 @@ The gather re-copies each sequence's entire past into its row of the staged tens
 step. The obvious remaining lever is not to: if a row still holds the sequence it held
 last step, its KV is already staged and only the new token needs appending. That would
 take the gather from ~2.11 GiB a step at batch 32 and 960 cached to ~2.25 MiB, and it is
-the last idea that would have made the copy cheap rather than merely parallel.
+the last idea that would have made the copy cheap and not merely parallel.
 
-**It is worth about 1.02x, and the reason is the schedule rather than the copy.** How
+**It is worth about 1.02x, and the reason is the schedule and not the copy.** How
 often a row keeps its sequence is a property of `ContinuousBatchScheduler`, so it is
-counted rather than timed -- no wall clock is involved, which also means a busy host
-cannot move it. Measured over the spread workload, against the contention that actually
+counted and not timed. No wall clock is involved, which also means a busy host cannot
+move it. Measured over the spread workload, against the contention that actually
 matters, which is the mean decoding set over the batch width:
 
 | Contention | Mean batch | Rows keeping their index | Reuse would give |
@@ -585,7 +584,7 @@ and a full batch is exactly the regime where the rows move.
 recovered.** `_select_batch` proves that an unserved sequence's queue index strictly
 decreases, so every sequence is served at least once in any window of N decode steps, and
 the rotation is what makes that true. Moving the survivors to the front of the queue
-instead of the back lifts row stability from 6.4% to 86.6% -- and fails
+instead of the back lifts row stability from 6.4% to 86.6%, and fails
 `test_no_sequence_waits_longer_than_the_decoding_set` on the same run. Row stability and
 the starvation bound are one mechanism. There is no version of this that keeps both.
 
@@ -593,15 +592,15 @@ the starvation bound are one mechanism. There is no version of this that keeps b
 suspect.** Bucketing re-picks who shares a step, so it looks like the thing moving
 sequences between rows. The rotation happens with bucketing off too: at contention 2.15
 stability is 6.4% plain against 9.6% bucketed, so bucketing is neutral to slightly
-favourable rather than harmful.
+favourable, not harmful.
 
 **So the gather stays.** It is the price of feeding a stock exported graph, which declares
 `past_key_values.{i}` as inputs and gives no way for attention to read scattered blocks.
-Production servers avoid the copy with a block-aware attention kernel rather than a
-cleverer staging buffer -- ONNX Runtime has a `PagedAttention` contrib operator that does
-exactly this, and it is CUDA-only, so it is not reachable from this host's CPU and CoreML
+Production servers avoid the copy with a block-aware attention kernel, not a cleverer
+staging buffer. ONNX Runtime has a `PagedAttention` contrib operator that does exactly
+this, and it is CUDA-only, so it is not reachable from this host's CPU and CoreML
 providers. The two ways to force stability without it both cost more than the 1.2x
-ceiling they are chasing: freezing batch membership for K steps gives the bound up, and
+ceiling they are chasing. Freezing batch membership for K steps gives the bound up, and
 running a fixed-width tensor with inactive rows masked wastes compute in inverse
 proportion to occupancy. `tests/test_batch_scheduler.py` pins the cliff and the
 bucketing result so this does not have to be rediscovered.
@@ -609,7 +608,7 @@ bucketing result so this does not have to be rediscovered.
 ### Stopping ONNX Runtime's workers spinning is a 1.65x regression
 
 The obvious next lever, and it goes the wrong way. ONNX Runtime's intra-op workers
-busy-wait rather than sleeping when there is no parallel section to run, and what runs
+busy-wait instead of sleeping when there is no parallel section to run, and what runs
 between two decode runs here is a bandwidth-bound gather, so parking them should hand the
 gather the memory system. It does. The amount is 1.9%.
 
@@ -623,8 +622,9 @@ at batch 32 and 960 cached:
 | Step | 127.5 / 132.4 / 131.4 ms | 215.1 / 216.4 / 215.4 ms | **1.65x worse** |
 
 **The prediction was right about the sign and wrong about the size.** Every copy phase
-gains with the workers asleep — gather, padding and scatter, in 3 of 3 pairs at batch 32
-and in 9 of 9 comparisons across the three padding regimes, where it reaches 8.3%. So
+gains with the workers asleep. That covers gather, padding and scatter, in 3 of 3 pairs
+at batch 32 and in 9 of 9 comparisons across the three padding regimes, where it reaches
+8.3%. So
 spin-waiting workers really are taking bandwidth from the gather, and it is worth about
 2% of it.
 
@@ -640,30 +640,30 @@ number was taken with. `--no-spinning` is kept as the control that establishes i
 
 **`copy_threads` defaults to 1**, the serial copy every other number on this page was
 taken with. It is a separate budget from the intra-op count because it divides a
-different thing — that one divides the graph, this one divides the staging copy — and
-the two never run at the same moment.
+different thing. The intra-op count divides the graph, this one divides the staging
+copy, and the two never run at the same moment.
 
 ### Reproducibility, and what moved between two runs
 
 The whole measurement was run twice, about 25 minutes apart. Absolute step times moved
 by at most 9.1% and speedups by at most 17.5%. Both worst cases are the same kind of
-point — INT8 at batch 2, where the step is 5-6 ms and the smallest absolute wobble is a
-large proportion — and the 17.5% is a ratio of ratios, so it compounds two moves.
+point, INT8 at batch 2, where the step is 5-6 ms and the smallest absolute wobble is a
+large proportion. The 17.5% is a ratio of ratios, so it compounds two moves.
 Away from batch 2 the speedups agree far more closely: FP32 at 960 cached read 1.71x
 then 1.77x at batch 32. Every qualitative statement above held in both runs: the gain
 at batch 2 across all three precisions, the decay with occupancy, returns flattening
 by 16, and INT8 not improving past it. **Prefer the ratios to the milliseconds**, and
-treat a difference under 10% between any two runs on this host as noise — except at
-batch 2, where the bar is closer to 20%.
+treat a difference under 10% between any two runs on this host as noise. The exception
+is batch 2, where the bar is closer to 20%.
 
 The fitted split reproduces well across the two: FP32 came out 4.765 ms + 3.550 µs per
 cached token and then 4.811 ms + 3.578 µs, agreeing to 1.0% on the constant and 0.8% on
 the per-token term.
 
-Two figures worth quoting for what they cross-check rather than for themselves.
+Two figures worth quoting for what they cross-check, not for themselves.
 Refitting the cost split from this script's own batch-1 points gives FP32
 4.765 ms + 3.550 µs per cached token, against the 4.662 ms + 3.538 µs
-`profile_decode.py` fitted independently through a different code path — the per-token
+`profile_decode.py` fitted independently through a different code path. The per-token
 term agrees to 0.3% and the constant to 2.2%. And the scheduler's own overhead, the wall
 time around `step()` beyond what the runtime reports, is 0.05 to 0.81 ms per step across
 all 54 points, so the Python control loop is not what any of this measures.
@@ -684,9 +684,9 @@ At `int4` a chunk is 428 ms and the worst gap is 790 ms at one chunk per decode 
 1145 ms at four.
 
 The worst gap is larger than one chunk plus one step, and the reason is not only
-prefill: this trace has six sequences resident against a batch width of four, so a
-sequence can also miss a turn to round-robin. The figure records what was measured —
-the longest a decoding sequence went without a token — rather than attributing it.
+prefill. This trace has six sequences resident against a batch width of four, so a
+sequence can also miss a turn to round-robin. The figure records what was measured,
+the longest a decoding sequence went without a token, and does not attribute it.
 
 ![One schedule over time, at two settings of the alternation knob](img/alternation.png)
 
@@ -694,20 +694,20 @@ the longest a decoding sequence went without a token — rather than attributing
 
 The mechanism above is one measurement; what a scheduler does to traffic is another.
 `scripts/run_decode_sweep.py` drives `ContinuousBatchScheduler` with an **open-loop
-Poisson arrival stream** at a swept rate, the same shape as the encoder load sweep and
-for the same reason: a closed-loop burst measures a makespan and cannot show a
+Poisson arrival stream** at a swept rate, matching the encoder load sweep and
+for the same reason. A closed-loop burst measures a makespan and cannot show a
 saturation knee or a queueing tail, and the tail is what a scheduler is judged on.
 
-Load is a fraction of *measured* capacity — the 4.82 completions/s the batched policy
-sustains with a full backlog, measured before the sweep rather than derived from a
+Load is a fraction of *measured* capacity, the 4.82 completions/s the batched policy
+sustains with a full backlog. It is measured before the sweep, not derived from a
 service time. GPT-2 FP32, 256-token prompts, 64 generated, 150 requests per point, and
 all three policies see the same arrivals and the same prompts.
 
 Measured with the session on eight threads, as above. That matters for reading the
 serial column: ρ is a fraction of the *batched* policy's capacity, and threading raised
 that by 33%, so every policy now faces a correspondingly higher absolute arrival rate.
-Serial gains almost nothing from threads — a batch-1 decode is a skinny GEMV — so it is
-pushed further past its own saturation point than in the one-thread run, and the
+Serial gains almost nothing from threads, since a batch-1 decode is a skinny GEMV, so
+it is pushed further past its own saturation point than in the one-thread run, and the
 batched-against-serial ratios below are **not like-for-like against that earlier
 table**. The comparison that is like-for-like is between the three policies here, which
 all saw the same stream.
@@ -719,10 +719,10 @@ all saw the same stream.
 | `batched-8-preempting` | 4 sequences | 8, so `BlockAdmission` must evict |
 
 Attainment counts a request only if it finished **and** met both targets: 500 ms to
-first token and 50 ms a token. Those are stated absolutely rather than derived from the
-unloaded measurement (42 ms and 5.7 ms here), because a target set at a multiple of what
-one sequence achieves alone is a target defined by the absence of batching, which
-batching would then fail by construction.
+first token and 50 ms a token. Those are stated absolutely and not derived from the
+unloaded measurement (42 ms and 5.7 ms here). A target set at a multiple of what one
+sequence achieves alone is a target defined by the absence of batching, which batching
+would then fail by construction.
 
 | ρ | TTFT p95, serial | batched | preempting | Attainment, serial | batched | preempting |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -738,37 +738,35 @@ batching would then fail by construction.
 Three things worth separating out of that table.
 
 **Serial decoding collapses immediately, and the throughput result understates why.**
-Its time per output token is the best of the three at every load — 5.7 to 6.0 ms,
+Its time per output token is the best of the three at every load, 5.7 to 6.0 ms and
 flat, because it never shares a step with anybody. It fails anyway: by ρ = 0.8 its p95
 time to first token is 20.2 seconds against a 500 ms target. Its own capacity is about
 2.4 requests/s, so it is already past saturation at the lowest point of a sweep scaled
 to the batched policy. Goodput at ρ = 0.8 is 3.22 requests/s batched against 0.09
-serial, a factor of 36, and essentially all of that is queueing rather than speed. Read
-that factor as "batching survives a rate serial cannot" rather than as a speed ratio;
-it grows when capacity grows, because the rate both policies face is scaled to the
-batched one.
+serial, a factor of 36, and essentially all of that is queueing and not speed. Read
+that factor as "batching survives a rate serial cannot", not as a speed ratio. It grows
+when capacity grows, because the rate both policies face is scaled to the batched one.
 
 **Batching trades time per output token for time to first token, and the trade is
-worth it until saturation.** As load rises the batch fills — mean decode batch goes
-from 1.5 at ρ = 0.4 to 6.9 at ρ = 1.3 — and each sequence's tokens arrive further
+worth it until saturation.** As load rises the batch fills, with the mean decode batch
+going from 1.5 at ρ = 0.4 to 6.9 at ρ = 1.3, and each sequence's tokens arrive further
 apart, 7.4 ms to 19.5 ms. That is the mechanism from the section above running in
-reverse: a decode step's cost grows with the number of sequences in it, so a fuller
+reverse. A decode step's cost grows with the number of sequences in it, so a fuller
 batch is slower per step for every member of it.
 
 **Past saturation, limiting concurrency beats sharing.** This is the result that was
-not predicted. The preempting policy is slightly *worse* below ρ = 0.8 — eviction is
-not free, and it paid 9 to 140 preemptions to hold a resident set of four — and then
-it wins by increasingly large margins: 79% attainment against 34% at ρ = 1.1, and 71%
-against 13% at ρ = 1.3. Its time per output token stays between 7.6 and 12.5 ms while
+not predicted. The preempting policy is slightly *worse* below ρ = 0.8, because
+eviction is not free and it paid 9 to 140 preemptions to hold a resident set of four.
+Above that it wins by increasingly large margins: 79% attainment against 34% at
+ρ = 1.1, and 71% against 13% at ρ = 1.3. Its time per output token stays between 7.6 and 12.5 ms while
 the unconstrained batch degrades to 19.5 ms, because it never lets more than four
 sequences into a step.
 
-The cost is a bimodal distribution rather than a uniformly better one. Its *median*
-time to first token stays between 65 and 118 ms at every load while its p95 runs to 19
-seconds:
-most requests are served promptly and a tail waits a very long time. That is what
-admission control does, and whether it is the right shape depends on whether the tail
-is a queue or a dropped request — here it is a queue, because nothing is shed.
+The cost is a bimodal distribution and not a uniformly better one. Its *median* time
+to first token stays between 65 and 118 ms at every load while its p95 runs to 19
+seconds. Most requests are served promptly and a tail waits a very long time. That is
+what admission control does, and whether it is the right shape depends on whether the
+tail is a queue or a dropped request. Here it is a queue, because nothing is shed.
 
 ### Prompt and generation length move capacity more than any of this
 
@@ -782,10 +780,10 @@ Measured at ρ = 0.95 under `batched-8`, each shape against its own measured cap
 | 896 | 64 | 1.84 rps | 2033 ms | 39.2 ms | 58.7% | 103 tok/s |
 | 256 | 192 | 1.84 rps | 3387 ms | 22.0 ms | 65.3% | 291 tok/s |
 
-**These come from a short run rather than from the sweep above, and that is not a
-detail.** Measured at the end of a full six-point sweep — about 25 minutes of sustained
-load — the same shapes read up to 2x lower capacity and a third of the attainment: the
-256/64 row came out at 4.58 rps and 22.7% against the 4.80 rps and 77.3% here. Each
+**These come from a short run, not from the sweep above, and that is not a detail.**
+Measured at the end of a full six-point sweep, about 25 minutes of sustained load, the
+same shapes read up to 2x lower capacity and a third of the attainment. The 256/64 row
+came out at 4.58 rps and 22.7% against the 4.80 rps and 77.3% here. Each
 shape measures its own capacity with a short backlog probe, and after 25 minutes at
 eight threads that probe reads a rate the machine can no longer sustain, so every shape
 point is then offered more load than it can take. The check that catches it is the
@@ -795,7 +793,7 @@ intra-op thread this did not happen. Run the shape matrix in a short sweep.
 
 Capacity falls 3.7x between a 128-token prompt and an 896-token one, and at 896 the
 50 ms per-token target is close to missed outright at 39.2 ms p95. The last row is the
-other axis — three times the generated tokens gives the highest output rate in the
+other axis. Three times the generated tokens gives the highest output rate in the
 table and a poor attainment, because every request holds its blocks three times as
 long and its time to first token is what suffers.
 
@@ -811,17 +809,17 @@ bucketing did about it.
 
 A batched step runs at its longest row, so the scheduler can choose *who shares a step*
 to make the rows more alike. `ContinuousBatchScheduler` does it by anchoring the batch
-on the head of the decoding queue — the sequence that has waited longest — and filling
-the remaining slots by nearest cached length. Anchoring rather than sorting is what
-bounds starvation: the anchor is always at the front and always moves to the back, so an
-unserved sequence's position strictly decreases and it becomes the anchor within N
-steps. That bound comes from the rule rather than from a tuned age guard.
+on the head of the decoding queue, the sequence that has waited longest, and filling
+the remaining slots by nearest cached length. Anchoring bounds starvation where sorting
+the whole batch would not. The anchor is always at the front and always moves to the
+back, so an unserved sequence's position strictly decreases and it becomes the anchor
+within N steps. That bound comes from the rule and not from a tuned age guard.
 
 **None of the three policies above can show this.** Bucketing needs more sequences
 decoding than fit in one step, and `serial` is a batch of one while `batched-8` and
 `batched-8-preempting` hold no more sequences than the width. So it is measured by its
-own pair — one arena for 24 sequences against a batch width of 8, with the ordering rule
-off and on, over the spread workload — run by `--bucketing-ab` into its own files.
+own pair: one arena for 24 sequences against a batch width of 8, with the ordering rule
+off and on, over the spread workload, run by `--bucketing-ab` into its own files.
 Three passes, medians below, `fp32`, admission off in both arms so nothing was evicted.
 
 | ρ | output tokens/s | time per output token, p50, by prompt length |
@@ -834,22 +832,23 @@ Three passes, medians below, `fp32`, admission off in both arms so nothing was e
 
 **Throughput is the robust half.** Bucketing is ahead in **12 of 12** paired
 comparisons, and the gain grows with load. At ρ = 1.1 the three passes read 1.059,
-1.057, 1.058 — a 0.2% spread, the tightest ratio on this page. Capacity moves the same
-way, 4.23 → 4.47 completions/s, but read that one more carefully: the arrival arm
+1.057 and 1.058, a 0.2% spread and the tightest ratio on this page. Capacity moves the
+same way, 4.23 → 4.47 completions/s, but read that one more carefully. The arrival arm
 reproduces to 0.8% across passes while the bucketed arm spreads 6.3%, and the three
-ratios are 1.061, 1.014 and 1.081. The direction held every time; the magnitude did not.
+ratios are 1.061, 1.014 and 1.081. The direction held every time. The magnitude did
+not.
 
-**Fairness is what it costs, and it is dispersion rather than starvation.** Nothing
+**Fairness is what it costs, and what it costs is dispersion, not starvation.** Nothing
 starved: no request went uncompleted under either arm, and at ρ = 1.3 the worst-served
 request is *better* bucketed (127.6 against 131.4 ms a token). What changes is that
-round-robin gives every prompt length the same service rate — the four lengths sit
-within 0.1 to 1.8 ms of each other at every load — and bucketing does not, fanning out
-to a 12.0 ms range at ρ = 1.1 and 24.8 ms at ρ = 1.3.
+round-robin gives every prompt length the same service rate, with the four lengths
+sitting within 0.1 to 1.8 ms of each other at every load. Bucketing does not, fanning
+out to a 12.0 ms range at ρ = 1.1 and 24.8 ms at ρ = 1.3.
 
 The shape is the mechanism showing through. The middle of the length distribution has
 near-neighbours on both sides and gets picked as filler constantly; 64 and 448 are the
 extremes, have fewer neighbours, and wait to become the anchor. So the middle gains most
-and the tails gain least, and below saturation the tails lose outright — which is what
+and the tails gain least, and below saturation the tails lose outright. That is what
 drives SLO attainment at ρ = 0.95 from 1.000 down to 0.85, the one place the arrival arm
 was perfectly stable across all three passes and the bucketed arm was not.
 
@@ -860,34 +859,34 @@ throughput. Past it, every length is faster than round-robin and the aggregate g
 
 **It recovers about a third of what variance costs, and the reason is not the rule.**
 Variance costs 16% of capacity; bucketing returns about 6%. The mean decode batch is
-3.36 / 5.01 / 5.85 / 6.24 across the four load points — **below the batch width of 8 at
-every one of them**. On a step where fewer than 8 sequences are decoding, every one of
+3.36 / 5.01 / 5.85 / 6.24 across the four load points, which is **below the batch width
+of 8 at every one of them**. On a step where fewer than 8 sequences are decoding, every one of
 them is in the batch and the ordering rule has nothing to choose. Residency reaches 39
 sequences at ρ = 1.3, but most of them are still prefilling, and alternation means a
-sequence spends its prompt in the prefill queue rather than the decode set. What limits
+sequence spends its prompt in the prefill queue and not the decode set. What limits
 bucketing here is how many sequences are *decoding at once*, which is a property of the
 alternation, not of how the batch is filled.
 
 ### What is weak about these numbers
 
 - **Attainment near the knee is the noisiest thing on this page.** The sweep measures
-  ρ = 0.95 under `batched-8` twice — once in the main sweep and once as the first row
-  of the shape table — and the two read 66.7% and 76.0% about ten minutes apart. Treat
+  ρ = 0.95 under `batched-8` twice, once in the main sweep and once as the first row
+  of the shape table, and the two read 66.7% and 76.0% about ten minutes apart. Treat
   differences of that size as noise, and the ordering between policies, which is much
   larger, as the result.
 - **150 requests a point** supports p50 and p95. The p99 in
-  `results/decode_sweep.json` is six samples from the tail and is recorded rather than
+  `results/decode_sweep.json` is six samples from the tail. It is recorded, not
   reported.
 - **One precision.** The sweep is FP32 only. It answers a scheduling question, and the
   precision comparison is the section above.
 - **A busy host penalises the gather more than it penalises the graph**, so contention is
-  not a scale factor that cancels out of a comparison between them: `Session::Run` slows
-  1.5-1.6x where the gather slows 1.9x. This is not a caveat on the threading section any
-  more — those numbers were re-measured, each arm gated on `Session::Run` against a
+  not a scale factor that cancels out of a comparison between them. `Session::Run` slows
+  1.5-1.6x where the gather slows 1.9x. This is no longer a caveat on the threading
+  section. Those numbers were re-measured, each arm gated on `Session::Run` against a
   known-good reference, and the section says what the ungated attempt reported instead.
   It is a caveat on anything measured here in future, and on the assumption it took with
-  it: **a share taken within one run is safer than an absolute and is not safe**, because
-  the two things whose ratio it is do not degrade together.
+  it. **A share taken within one run is safer than an absolute and is still not safe**,
+  because the two things whose ratio it is do not degrade together.
 - **`AllowIntraOpSpinning=0` is answered and it is not a lever.** It buys the gather 1.9%
   and costs `Session::Run` 1.79x, for a 1.65x worse step; the section above has the
   numbers. Recorded here because the reasoning behind it was sound and the measurement
@@ -927,12 +926,12 @@ python scripts/plot_batching.py               # draw the three batching figures
 `run_decode_sweep.py` about 24 for one, most of it spent deliberately idle while the
 arrival process waits. `run_decode_sweep.py` reads the fitted cost model out of
 `results/decode_profiles.json`, so `profile_decode.py` has to have run first; it says
-so rather than substituting coefficients, and the two must run at the same
+so instead of substituting coefficients, and the two must run at the same
 `--intra-op-threads` or the eviction policy is reasoning about a different machine
 from the one it is running on.
 
-**Run the shape matrix separately, in a short sweep** — `--utilisations 0.95` — rather
-than reading it out of a full six-point run. It is measured last, and 25 minutes of
+**Run the shape matrix separately, in a short sweep** with `--utilisations 0.95`,
+instead of reading it out of a full six-point run. It is measured last, and 25 minutes of
 sustained eight-thread load leaves the machine unable to sustain what its own capacity
 probe reads.
 
@@ -940,7 +939,7 @@ probe reads.
 `requests / (utilisation × measured capacity)`, and capacity is measured at the start
 of the run: taking that reading while something else is busy makes it come out low and
 stretches every later point. One run took 9h34m against a 28-minute predecessor that
-way. `--point-budget-s` (default 900) now fails a point that overruns rather than
+way. `--point-budget-s` (default 900) now fails a point that overruns instead of
 truncating it, because a truncated point is a latency distribution missing its slowest
 requests and would read better than an honest one.
 
@@ -955,15 +954,15 @@ reads the CSV and takes the deadline, the worker count and the pool capacity fro
 `configs/serving.yaml`, the same way the measured run derived them, so a redraw cannot
 retitle the picture with a capacity its numbers were never measured against. Every figure
 in `docs/img/` regenerates from the inputs committed under `results/`, which is what makes
-the pictures checkable rather than merely present.
+the pictures checkable and not merely present.
 
 Ten files under `results/` are committed and six of them are what the figures are drawn
 from: `batch_profiles.json`, `decode_profiles.json`, `decode_sweep.json`,
 `decoder_profiles.json`, `load_sweep.csv` and `variant_profiles.json`. The other four
-back measured claims that have no figure -- the two session-sharing arms and the two
-encoder-batching ones. The per-request
-CSVs and the A/B arm directories referenced above are not -- they are large, and they
-appear under `results/` once you run the measurement that writes them. So a checkout can
+back measured claims that have no figure: the two session-sharing arms and the two
+encoder-batching ones. The per-request CSVs and the A/B arm directories referenced above
+are not committed. They are large, and they appear under `results/` once you run the
+measurement that writes them. So a checkout can
 redraw every figure and re-derive every number a figure rests on, and needs a measurement
 run of its own before it can recompute a percentile from per-request rows.
 
@@ -984,7 +983,7 @@ Outputs land in `results/` and `docs/img/`. Every script writes only the paths n
 in its `--help`, all of which are overridable, and the decoder profiler deliberately
 writes no config: the decoder path is not wired into the adaptive serving harness yet.
 The scripts are deterministic given a seed except for wall-clock effects, which is why
-latency is reported as percentiles over repeated passes rather than as single figures.
+latency is reported as percentiles over repeated passes and not as single figures.
 
 ## Sharing the sessions across the pool saves two thirds of the memory and costs nothing
 
@@ -1019,7 +1018,7 @@ rests on.
 **The latency question is answered, and it goes the other way.** The concern was ONNX
 Runtime's per-session CPU arena, which sharing puts every worker on. Paired arms,
 alternated between passes, three passes each, every pair gated on single-worker service
-time against the recorded 12.893 ms -- a control that **cannot depend on the treatment,
+time against the recorded 12.893 ms. That control **cannot depend on the treatment,
 because at one worker there is nothing to share**. Ratios are shared over unshared, so
 below one means sharing is faster:
 
@@ -1030,35 +1029,35 @@ below one means sharing is faster:
 | 8 | 0.929x | 0.993x | 1.074x | 0 |
 
 **Sharing is never worse, and at eight workers it is 7% better.** The eight-worker point
-reproduced across two independent invocations of the driver -- 0.929x and 0.930x on p50,
-1.074x and 1.079x on throughput -- against a within-sweep spread of 0.3%, so the effect is
-several times the noise rather than inside it.
+reproduced across two independent invocations of the driver, at 0.929x and 0.930x on
+p50 and 1.074x and 1.079x on throughput, against a within-sweep spread of 0.3%. The
+effect is several times the noise.
 
 **Why it is faster is a hypothesis and is labelled as one.** Eight unshared workers stream
 eight distinct copies of the same 256 MB of weights, so the shared cache levels see eight
-working sets where sharing gives them one. That fits the shape of the result -- the gain
-appears where the copies do, growing from 1.015x at two workers to 1.074x at eight -- but
-nothing here measured a cache miss, and the machine has 24 GB against 2.9 GB resident at
-eight unshared workers, so it is not paging either. The mechanism is unconfirmed; the
-direction and the size are measured.
+working sets where sharing gives them one. That fits the shape of the result, since the
+gain appears where the copies do, growing from 1.015x at two workers to 1.074x at eight.
+But nothing here measured a cache miss, and the machine has 24 GB against 2.9 GB
+resident at eight unshared workers, so it is not paging either. The mechanism is
+unconfirmed. The direction and the size are measured.
 
 **So sharing is the default now.** `--no-share-sessions` is kept on `run_load_sweep.py` as
 the control that says so, the way `--no-spinning` is kept on the decoder path. **The
 numbers elsewhere on this page were recorded before the flip, unshared.** At the four
-workers `configs/serving.yaml` sets, that is worth about 2% of p50 -- small, but a future
+workers `configs/serving.yaml` sets, that is worth about 2% of p50. Small, but a future
 comparison that forgets it would read a 2% gain as a code change. `--no-share-sessions`
 reproduces the configuration they were taken under.
 
 ## Encoder batching is worth 1.01-1.14x, and the width that earns it misses the deadline
 
 The encoder path had no batching, so every number above it describes batch size 1.
-`serving/batching.py` implements it: `RuntimePool(max_batch_size=K)` coalesces concurrent
-`infer` calls into one `Session::Run`, right-padding ragged rows and splitting the output
-back per request. `infer` keeps its per-request signature, so a batched sweep and an
+`serving/batching.py` implements it. `RuntimePool(max_batch_size=K)` coalesces
+concurrent `infer` calls into one `Session::Run`, right-padding ragged rows and splitting
+the output back per request. `infer` keeps its per-request signature, so a batched sweep and an
 unbatched one are the same harness.
 
 **The default is 1.** What follows is why, and it is the second item this repository has
-closed by measuring it rather than building on it.
+closed by measuring it instead of building on it.
 
 ### The counting half, which needed no quiet host
 
@@ -1085,39 +1084,39 @@ than batching.** `run_load_sweep.py` and `profile_variants.py` tokenise with
 (mean 25.16, p95 44, max 55). So **80.3% of every tensor the encoder benchmarks have ever
 run is padding**, and a batched tensor of true lengths is the *cheaper* of the two at
 every width up to 32. That is a property of the measurement, not of batching, and it means
-the 12.893 ms service time and the 38.7 ms deadline are calibrated to a 128-token request
-rather than an average one. A fixed length is a defensible choice -- deterministic service
-time is what the M/M/c model wants -- but it was undocumented.
+the 12.893 ms service time and the 38.7 ms deadline are calibrated to a 128-token
+request and not an average one. A fixed length is a defensible choice, since
+deterministic service time is what the M/M/c model wants, but it was undocumented.
 
-**Whether a batched answer is the same answer.** For FP32, yes: zero prediction changes
+**Whether a batched answer is the same answer.** For FP32, yes. Zero prediction changes
 at every width, with logits agreeing to 1.1e-05. **That arm is the control here** and it
-is logically independent of the quantisation question below, so it is what says the
-harness is sound rather than the finding. Its accuracies -- 91.06% for DistilBERT, 90.14%
-for MiniLM -- are exactly the ones in `configs/serving.yaml`, which ties this measurement
+is logically independent of the quantisation question below, so it says the harness is
+sound and is not itself the finding. Its accuracies of 91.06% for DistilBERT and 90.14%
+for MiniLM are exactly the ones in `configs/serving.yaml`, which ties this measurement
 to the profiler that wrote the config.
 
 **That 1.1e-05 is not measurement noise and it is not the same on every machine.** A
 batched row is padded, padding changes how many terms the pooled reduction sums, and a
-vectorised reduction regroups its terms by lane -- so the same addends are added in a
+vectorised reduction regroups its terms by lane. So the same addends are added in a
 different order and float addition is not associative. How far the answer moves therefore
 depends on which kernel ran. `tests/test_batching.py` asserted a synthetic case of this
-bitwise; it held on arm64, and x86-64 differed by 7.6e-06 the first time CI saw it. The
+bitwise. It held on arm64, and x86-64 differed by 7.6e-06 the first time CI saw it. The
 assertion is a bound derived from the graph's own weights now, with bitwise behind
 `ANYTIME_BATCH_BITWISE=1`. **Read the FP32 row of this table as "unchanged to within
 float32's licence at this width", not as "identical".**
 
 For INT8, **no**. Both quantised graphs carry 50 `DynamicQuantizeLinear` nodes, so the
-activation scale is computed at runtime from the tensor actually fed; batching changes
+activation scale is computed at runtime from the tensor actually fed. Batching changes
 that tensor and so changes every row's scale. Over the same 872 sentences it moves a logit
 by up to 1.18 and flips 0.23-0.69% of predictions.
 
-**The attribution matters and it is not batching.** Padding alone at batch 1 -- which is
-what the committed benchmarks already do -- flips 4 of 872 for both INT8 variants, the
-same order as any batched width. The true-length batch-1 arm flips exactly 0 with a
-logit delta of 0.0, which is the pair that localises the cause: it is dynamic
-quantisation meeting a non-tight tensor, and the shipped configuration is already inside
-it. Accuracy moves by at most +-0.46pp and does not systematically fall, so this is a
-determinism property rather than an accuracy regression.
+**The attribution matters and it is not batching.** Padding alone at batch 1, which is
+what the committed benchmarks already do, flips 4 of 872 for both INT8 variants. That is
+the same order as any batched width. The true-length batch-1 arm flips exactly 0 with a
+logit delta of 0.0, and that pair localises the cause. It is dynamic quantisation
+meeting a non-tight tensor, and the shipped configuration is already inside it. Accuracy
+moves by at most +-0.46pp and does not systematically fall, so this is a determinism
+property and not an accuracy regression.
 
 **A statically quantised export removes it, and it is still not worth shipping.**
 `scripts/export_onnx.py --quantization static` calibrates the activation scales over 512
@@ -1142,11 +1141,11 @@ and confounded the two.
 
 **The prediction was half right, and the wrong half is the useful one.** Flips go to
 zero at every width. `max_abs_logit_delta` was predicted to fall to the FP32 control's
-1.1e-05; it falls from 1.18 to 0.29, four orders of magnitude short. What collapses is
-the *incidence* -- 872 of 872 requests to 1 -- not the size. Dynamic quantisation gives
-every request its own scale so every request moves a little; a fixed grid only moves when
-a float perturbation crosses a rounding boundary, which almost none do, and the one that
-does moves by a whole quantisation step. **A maximum over 872 requests cannot tell those
+1.1e-05. It falls from 1.18 to 0.29, four orders of magnitude short. What collapses is
+the *incidence*, 872 of 872 requests down to 1, and not the size. Dynamic quantisation
+gives every request its own scale so every request moves a little. A fixed grid only
+moves when a float perturbation crosses a rounding boundary, which almost none do, and
+the one that does moves by a whole quantisation step. **A maximum over 872 requests cannot tell those
 apart, which is why `rows_moved` is recorded beside it.**
 
 Read the FP32 row as the third signature and the one that makes the other two legible:
@@ -1155,8 +1154,8 @@ That is reassociation and no precision removes it.
 
 **It is declined, and not on accuracy.** Taking the better calibration per model the
 price is 0.46pp on DistilBERT and nothing on MiniLM. But both INT8 encoder variants were
-already *dominated* before determinism was ever the question -- `distilbert_int8` serves
-in 17.17 ms against FP32's 12.89 ms, `minilm_int8` in 7.16 ms against 5.19 ms -- so
+already *dominated* before determinism was ever the question. `distilbert_int8` serves
+in 17.17 ms against FP32's 12.89 ms and `minilm_int8` in 7.16 ms against 5.19 ms, so
 `configs/serving.yaml` carries only the FP32 pair. Static quantisation improves an axis
 that was not the reason INT8 lost. `docs/quantization.md` has the full table.
 
@@ -1169,7 +1168,7 @@ GEMM effect alone. `intra_op_num_threads` is 1, as in serving.
 Every pass re-measures **DistilBERT FP32 at width 1** against the recorded 12.893 ms and
 is discarded if it falls outside 20%. That control cannot depend on the treatment,
 because at width 1 there is no batching. All four variants kept 4 of 4 passes, with
-controls landing at 12.928, 13.084, 13.156 and 13.315 ms -- within 3.3% of the record.
+controls landing at 12.928, 13.084, 13.156 and 13.315 ms, within 3.3% of the record.
 
 | Variant | w1 | w2 | w4 | w8 | w16 | Peak | Widest Run inside 38.7 ms |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1181,22 +1180,23 @@ controls landing at 12.928, 13.084, 13.156 and 13.315 ms -- within 3.3% of the r
 Speedups are per request against that variant's own width 1. Within-width spread is
 0.3-3.9%, and the DistilBERT FP32 column reproduced across two independent invocations of
 the driver (1.049/1.057x at width 2, 1.081/1.079x at width 8), so 8% is several times the
-noise -- real, and small.
+noise. Real, and small.
 
 **Three things in that table decide the feature.**
 
 1. **The ceiling is 1.14x, against 3.00x for a decode step at the same width 8.** Batching
    the encoder is a different regime, not a smaller version of the same win.
 2. **Almost nothing amortises.** A width-16 DistilBERT Run takes 196.2 ms against 12.95 ms
-   at width 1 -- 15.1x the time for 16x the work. So a batched Run occupies one worker for
-   very nearly K times as long, while the pool would have spent the same core-seconds
-   running those K requests *concurrently* on K workers. At `intra_op_num_threads = 1` a
-   speedup below K is not a win; it is the same work made less parallelisable.
+   at width 1, which is 15.1x the time for 16x the work. So a batched Run occupies one
+   worker for very nearly K times as long, while the pool would have spent the same
+   core-seconds running those K requests *concurrently* on K workers. At
+   `intra_op_num_threads = 1` a speedup below K is not a win. It is the same work made
+   less parallelisable.
 3. **The width that peaks does not fit the deadline.** A Run is indivisible: every request
    in a batch waits for all of it. DistilBERT FP32 peaks at width 8, whose Run alone is
    96.0 ms against a 38.7 ms deadline, so nothing in it can meet its target however empty
-   the queue. The widest width that fits is 2, worth 1.057x -- for which a request pays
-   24.5 ms instead of 12.95 ms, **91% more latency for 5.7% less work**. MiniLM FP32 is
+   the queue. The widest width that fits is 2, worth 1.057x, and for that a request pays
+   24.5 ms instead of 12.95 ms: **91% more latency for 5.7% less work**. MiniLM FP32 is
    the only row where the peak fits at all, and its width-8 Run consumes 38.2 ms of a
    38.7 ms budget, leaving 0.5 ms for every queueing delay in the system.
 
@@ -1210,14 +1210,14 @@ dimensions at hidden 768:
 | | Batch 1 | Batch 8 | Batch 32 |
 | --- | --- | --- | --- |
 | GPT-2 decode step (M = batch) | **0.50** | 3.9 | 14.8 |
-| DistilBERT encoder, seq 128 (M = 128 x batch) | **48-53** | 140-192 | -- |
+| DistilBERT encoder, seq 128 (M = 128 x batch) | **48-53** | 140-192 | n/a |
 
 **A hundredfold difference in where the two start.** The decoder at width 1 is far below
 any plausible machine balance and batching moves it toward compute-bound, which is worth
 3x. The encoder at width 1 is already well above it, so widening the GEMM buys the few
 percent that better cache blocking gives and nothing more. This is reasoning from
-dimensions rather than a measured roofline -- nothing here counted a cache miss -- but it
-predicts the direction and the size of both measurements.
+dimensions and not a measured roofline, since nothing here counted a cache miss. It
+still predicts the direction and the size of both measurements.
 
 ### And the width is capped anyway, by admission
 
@@ -1226,24 +1226,24 @@ them there. `AdaptiveServer`'s `max_in_flight` defaults to `RuntimePool.size`, s
 shipped four workers cap the batch at 4. Lifting it does not free the width:
 `AdaptiveSelector` charges an arrival `ceil(queue_depth / servers) + 1` service times and
 rejects once that outruns the deadline, which bounds the backlog at
-`servers * floor(deadline_ms / service_time_ms - 1)` -- **8 for DistilBERT, 24 for
+`servers * floor(deadline_ms / service_time_ms - 1)`: **8 for DistilBERT, 24 for
 MiniLM**, so widest admissible batches of 9 and 25.
 `AdaptiveSelector.max_admissible_queue_depth` computes it and a test pins both numbers.
 
 **This is also the answer to a structural question that was open.** Batching the encoder
 was expected to move its concurrency model toward the decoder's and dissolve part of what
-makes merging the two lanes hard. It does not: the encoder's batch width is bounded by
+makes merging the two lanes hard. It does not. The encoder's batch width is bounded by
 exactly the quantity that makes M/M/c valid, so widening it is an admission-model
-decision rather than a runtime one -- the same decision the merge needs, reached from the
-other side. Batching does not remove that choice; it localises it to one number.
+decision and not a runtime one. That is the same decision the merge needs, reached from
+the other side. Batching does not remove the choice, it localises it to one number.
 
 ### So it ships off, and that is the result
 
 `max_batch_size=1` is the default and `serving/batching.py` is the mechanism that
-established why. It is kept rather than reverted for three reasons: it is what any future
-answer to the admission question would need, the correctness work behind it is what found
-the INT8 determinism property, and a width-2 configuration is a legitimate choice for a
-deployment that values throughput over its deadline -- it is simply not this one's.
+established why. It is kept for three reasons. It is what any future answer to the
+admission question would need, the correctness work behind it is what found the INT8
+determinism property, and a width-2 configuration is a legitimate choice for a deployment
+that values throughput over its deadline. It is simply not this one's.
 
 **What would change the answer**: a deadline several times the service time, a
 static-quantised export, or an execution provider where a batch-1 encoder Run is *not*
@@ -1263,8 +1263,8 @@ timed, none of them is gated below, and none of them is answered here.
 
 ### The geometry, read off the graph
 
-Predicted before the export, then read off the exported graph's own signature -- not
-off the model config, which is the cross-check:
+Predicted before the export, then read off the exported graph's own signature. The
+model config is the cross-check, not the source:
 
 | | GPT-2 | TinyLlama predicted | TinyLlama, off the graph |
 | --- | --- | --- | --- |
@@ -1286,18 +1286,17 @@ gather's 16.7% share moves with it is a timed measurement.
 ### The pipeline is model-agnostic, and one place was not
 
 `--model` was a claim written before a second model existed. It holds, with one defect
-found by checking rather than trusting: **`export_decoder.py` read the KV geometry off
-`AutoConfig` rather than off the graph.** On GPT-2 the two agree so nothing showed; on
-TinyLlama that would have made the measurement circular, since the geometry is the
-thing being checked. It reads the graph now and asserts the config agrees.
+found by checking. **`export_decoder.py` read the KV geometry off `AutoConfig` and not
+off the graph.** On GPT-2 the two agree so nothing showed. On TinyLlama that would have
+made the measurement circular, since the geometry is the thing being checked. It reads the graph now and asserts the config agrees.
 
 Everything else ran unchanged. Two problems paid for once on GPT-2 did not recur:
 
 - **No `Gemm` -> `MatMul` rewrite was needed**, as predicted. GPT-2's linear layers are
-  `Conv1D` and export as 48 `Gemm`, which `MatMulNBitsQuantizer` cannot see; without
+  `Conv1D` and export as 48 `Gemm`, which `MatMulNBitsQuantizer` cannot see. Without
   the rewrite it reached one eligible node in the whole graph. TinyLlama's are
-  `nn.Linear` and export as 200 `MatMul`, of which INT4 quantised **154** -- 22 layers
-  times 7 projections -- with the rewrite pass a no-op.
+  `nn.Linear` and export as 200 `MatMul`, of which INT4 quantised **154**, being 22
+  layers times 7 projections, with the rewrite pass a no-op.
 - **The Python 3.14 `functools.partial` shim does not apply.** `LlamaOnnxConfig`
   declares `NORMALIZED_CONFIG_CLASS` as a plain class, not a partial.
 
@@ -1312,18 +1311,18 @@ through the same `RuntimeClient` the server dispatches to:
 
 | Model | Precision | Size | vs fp32 | Perplexity | Delta | Relative cost |
 | --- | --- | --- | --- | --- | --- | --- |
-| GPT-2 | fp32 | 652.6 MB | 1.000 | 31.3073 | — | — |
+| GPT-2 | fp32 | 652.6 MB | 1.000 | 31.3073 | n/a | n/a |
 | GPT-2 | int8 | 398.5 MB | 0.611 | 31.3707 | +0.0634 | +0.20% |
 | GPT-2 | int4 | 367.3 MB | 0.563 | 32.8659 | +1.5586 | +4.98% |
-| TinyLlama | fp32 | 4401.2 MB | 1.000 | 8.8231 | — | — |
+| TinyLlama | fp32 | 4401.2 MB | 1.000 | 8.8231 | n/a | n/a |
 | TinyLlama | int8 | 1497.1 MB | **0.340** | 8.9072 | +0.0841 | +0.95% |
 | TinyLlama | int4 | 1146.4 MB | **0.261** | 9.1427 | +0.3196 | **+3.62%** |
 
 Two findings, and the first is the one that generalises:
 
 - **Weight-only quantisation compresses far better at 1.1B**, 0.261x against 0.563x for
-  INT4. The parts that stay in float -- the embedding table and the deliberately
-  excluded output projection -- are about 24% of GPT-2 and about 12% of TinyLlama, so
+  INT4. The parts that stay in float, the embedding table and the deliberately
+  excluded output projection, are about 24% of GPT-2 and about 12% of TinyLlama, so
   the ratios quoted for GPT-2 are a small-model artefact and should not be carried
   forward.
 - **INT4's accuracy cost survives the model change and shrinks**, +3.62% of perplexity
@@ -1331,20 +1330,20 @@ Two findings, and the first is the one that generalises:
 
 **The absolute perplexities are not comparable and should not be read as one model
 being 3.5x better than the other.** They use different tokenisers, so per-token
-perplexity is measured in different units: TinyLlama needs 338,535 tokens for the
+perplexity is measured in different units. TinyLlama needs 338,535 tokens for the
 WikiText-2 test split where GPT-2 needs 286,177, which is 3.815 characters per token
-against 4.513. Normalised, the two are **0.823 and 1.101 bits per character** -- about
-25% apart, not 3.5x. Only the deltas *within* one model are comparable, which is what
+against 4.513. Normalised, the two are **0.823 and 1.101 bits per character**, about
+25% apart and not 3.5x. Only the deltas *within* one model are comparable, which is what
 they are reported for.
 
 ### Parity
 
-`engine_vs_session_max_logit_diff` is **0.000e+00**: the extension and a separate ONNX
+`engine_vs_session_max_logit_diff` is **0.000e+00**. The extension and a separate ONNX
 Runtime session agree bitwise on the FP32 logits for a 1024-token prefill. That is the
-form of the claim that is safe -- one graph, two sessions, same library. **No bitwise
-claim is made across batch widths**, because changing the batch dimension changes the
-GEMM shape and may change which kernel runs; see `docs/runtime.md` and the encoder
-result above, where exactly that assumption failed CI.
+safe form of the claim: one graph, two sessions, same library. **No bitwise claim is
+made across batch widths**, because changing the batch dimension changes the GEMM shape
+and may change which kernel runs. See `docs/runtime.md` and the encoder result above,
+where exactly that assumption failed CI.
 
 ### The timings here are ungated and are not findings
 
@@ -1358,10 +1357,10 @@ arm below was gated against anything, and the INT4 arm alone ran for ten minutes
 | int8, relative to that model's fp32 | 0.96x | **1.48x** |
 | int4, relative to that model's fp32 | 4.31x | 6.14x |
 
-The INT8 row **reverses direction** -- faster than FP32 on GPT-2, half again slower on
-TinyLlama. That is interesting and it is not established: there is no control arm, so
-it is a hypothesis for the timed half rather than a result. Treat every number in this
-table as indicative.
+The INT8 row **reverses direction**, faster than FP32 on GPT-2 and half again slower
+on TinyLlama. That is interesting and it is not established. There is no control arm, so
+it is a hypothesis for the timed half and not a result. Treat every number in this table
+as indicative.
 
 ## Known limitations
 
@@ -1377,7 +1376,7 @@ table as indicative.
   late in a long run should be treated as a lower bound, and a capacity probe is only
   valid for the machine state it was taken in.
 - Threading is measured on this host only. Eight intra-op threads is what an M4 Pro
-  measured, ten is erratic and fourteen — its core count — is slower than one. Treat
+  measured, ten is erratic, and fourteen, its core count, is slower than one. Treat
   `DEFAULT_INTRA_OP_THREADS` as a measurement to repeat, not a constant to carry.
 - Absolute service times drift with thermal state by a few percent, which is why
   they are reported as a median over passes with the range attached. Ratios between
@@ -1386,27 +1385,28 @@ table as indicative.
   implements it and `RuntimePool(max_batch_size=...)` reaches it, but the default is 1
   and the section above says why: 1.08x at a width whose Run already exceeds the
   deadline. Every number in the variant frontier and load sweep sections still
-  describes batch size 1, and that is now the shipped configuration rather than a gap.
+  describes batch size 1, and that is now the shipped configuration and not a gap.
 - **Every encoder measurement here pads to 128 tokens, and SST-2's median sentence is
   24.** So 80.3% of the tensor in every encoder number on this page is padding. That is
-  a deliberate choice -- a fixed length makes service time deterministic, which is what
-  the M/M/c model wants -- but it means the 12.893 ms service time and the 38.7 ms
+  a deliberate choice, since a fixed length makes service time deterministic and that
+  is what the M/M/c model wants. It does mean the 12.893 ms service time and the 38.7 ms
   deadline are calibrated to a 128-token request, not to an average one. Serving true
   lengths would be faster and less predictable.
 - **INT8 answers depend on what else is in the tensor.** Both dynamically quantised
   variants carry 50 `DynamicQuantizeLinear` nodes, so the activation scale is computed
   from the tensor actually fed and padding or batch-mates change it. It moves 0.2-0.7%
   of predictions and at most +-0.5pp of accuracy. FP32 changes no prediction and its
-  logits move by at most 1.1e-05, which is reduction order rather than quantisation:
-  padding changes how many terms the pooling sums, so how far the answer moves depends
+  logits move by at most 1.1e-05, which is reduction order and not quantisation.
+  Padding changes how many terms the pooling sums, so how far the answer moves depends
   on which kernel ran and on the architecture. **A statically quantised export removes
-  it** -- 0 flips at every width, and the number of requests whose logits move at all
-  falls from 872 of 872 to 1 -- at a cost of 0.46pp on DistilBERT and nothing on MiniLM.
+  it**, giving 0 flips at every width and taking the number of requests whose logits
+  move at all from 872 of 872 down to 1, at a cost of 0.46pp on DistilBERT and nothing
+  on MiniLM.
   It is not shipped, because both INT8 encoder variants are dominated on latency
   regardless. Both flavours are exportable from one flag; see `docs/quantization.md`.
 - **Static quantisation was measured on two encoders and one dataset.** Neither
-  calibration method wins on both models -- percentile clipping halves DistilBERT's loss
-  and costs MiniLM 0.46pp -- so "calibrate with minmax" is not a rule this repository
+  calibration method wins on both models. Percentile clipping halves DistilBERT's loss
+  and costs MiniLM 0.46pp, so "calibrate with minmax" is not a rule this repository
   can offer. The right method is a per-model measurement, and 512 samples of SST-2 train
   is the only calibration set anything here has been calibrated on.
 - **Every timed decoder number on this page is GPT-2's.** TinyLlama-1.1B has been
@@ -1416,7 +1416,7 @@ table as indicative.
   a TinyLlama decode step has 39% less KV to gather per token on 1.83x the layers,
   which is a reason to expect the gather share to move and not a measurement of it.
 - **TinyLlama's INT8 prefill is 1.48x its FP32 where GPT-2's is 0.92x.** No arm was
-  gated, so this is a direction to check rather than a reversal to quote.
+  gated, so this is a direction to check and not a reversal to quote.
 - The decoder lane is not served by `AdaptiveServer`, so the two lanes' load sweeps
   are measured through different harnesses and their capacities are not comparable.
 - **Numbers on this page predate session sharing becoming the default**, and were
@@ -1430,7 +1430,7 @@ Closed since Stage 1:
 - **Profiling no longer happens beside the serving path.**
   `scripts/profile_variants.py` measures through the same `RuntimeClient` the
   server dispatches to, scores accuracy through it, and cross-checks every variant
-  against a separate ONNX Runtime session, aborting rather than writing numbers to
+  against a separate ONNX Runtime session, aborting instead of writing numbers to
   disk when the two diverge by more than 15%.
 - **The config, the sweep, and this page describe one measurement again.** All
   three were regenerated together through the engine. Service times reproduce

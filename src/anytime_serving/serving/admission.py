@@ -1,7 +1,7 @@
 """Admission control derived from M/M/c queueing theory.
 
 The runtime pool serves requests from ``c`` independent workers, so the queue it
-forms is M/M/c rather than M/M/1. For arrival rate ``lambda`` (rps) and
+forms is M/M/c, not M/M/1. For arrival rate ``lambda`` (rps) and
 per-worker service rate ``mu`` (rps), the offered load is ``a = lambda / mu``
 and the per-worker utilisation is ``rho = a / c``. The probability that an
 arrival has to wait is given by Erlang's C formula::

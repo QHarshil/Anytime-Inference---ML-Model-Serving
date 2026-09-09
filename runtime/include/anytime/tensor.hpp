@@ -20,7 +20,7 @@ namespace anytime {
 
 // Element types accepted on graph inputs. Deliberately narrow: exported graphs
 // declare int64 token ids and masks and float32 activations, and an unsupported
-// dtype has to fail loudly rather than be reinterpreted. Outputs are mapped back
+// dtype has to fail loudly instead of being reinterpreted. Outputs are mapped back
 // from whatever the graph produces, which is a wider set.
 enum class DType {
     Float32,

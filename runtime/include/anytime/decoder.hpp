@@ -8,7 +8,7 @@
 //
 // The cache is a host-side block allocator; see kv_cache.hpp for why a stock
 // exported decoder admits nothing else. This class is the mechanical half of the
-// design -- gather, run, scatter, and the arena's occupancy. The policy half, which
+// design: gather, run, scatter, and the arena's occupancy. The policy half, which
 // decides who is admitted and who is evicted, lives in Python next to the deadlines
 // it reasons about: src/anytime_serving/serving/kv_admission.py.
 //
@@ -66,15 +66,15 @@ constexpr std::size_t kDefaultParallelCopyFloor = 1u << 15;
 // it is the price of block accounting and the whole point is not to assume it is
 // free.
 //
-// Two costs land on a sequence's first steps rather than on its steady state, and
-// both stay inside the phase that pays them rather than being hidden: `gather_ms`
+// Two costs land on a sequence's first steps and not on its steady state, and
+// both stay inside the phase that pays them instead of being hidden. `gather_ms`
 // on the first step includes sizing the staging buffers, and `verify_ms` is non-zero
 // only on the one step that checks the present-prefix invariant. A per-step
 // distribution shows each as a single outlier, which is what it is.
 //
-// `pad_ms` is only ever non-zero for a batched step, and it is timed rather than
+// `pad_ms` is only ever non-zero for a batched step, and it is timed instead of
 // inferred. Right-padding every row to the batch's longest past means clearing the
-// difference, so the cost is set by the batch's length variance rather than by its
+// difference, so the cost is set by the batch's length variance and not by its
 // size: eight sequences of equal length pad nothing, and one long sequence beside
 // seven short ones pads almost as many token positions as it copies. Measuring it
 // inside the same run as the gather keeps it off the wrong side of a subtraction.
@@ -91,9 +91,9 @@ struct StepTimings {
 struct StepResult {
     // Logits for the next token only, copied out of the graph's output.
     //
-    // This is the one place the runtime copies rather than borrowing, and it is a
-    // saving rather than a cost. The graph returns logits for every position it was
-    // given -- 206 MB for a 1024-token prefill -- when sampling reads one row of
+    // This is the one place the runtime copies instead of borrowing, and it is a
+    // saving and not a cost. The graph returns logits for every position it was
+    // given, 206 MB for a 1024-token prefill, when sampling reads one row of
     // 50257. Handing that back as a zero-copy view would keep tens of megabytes
     // alive to read 200 KB of it. So the last row is copied and the rest is dropped
     // with the Ort::Value.
@@ -121,7 +121,7 @@ struct StepResult {
 // is per sequence and grows with the batch's total cache, which is why the curve
 // decays.
 //
-// Thread count is part of that measurement rather than beside it. At one intra-op
+// Thread count is part of that measurement, not beside it. At one intra-op
 // thread the same points read 2.32x / 1.52x / 1.25x, because a batch-1 decode is a
 // skinny GEMV with little for a thread pool to divide while a wide batch is a real
 // GEMM: batching supplies the parallelism threading then exploits, and the two
@@ -139,10 +139,10 @@ struct BatchStepResult {
 class DecoderSession {
 public:
     // `num_blocks` fixes the arena: the cache never grows past it, which is what
-    // makes admission a decision rather than a hope.
+    // makes admission a decision and not a hope.
     //
     // Thread counts default to one of each, which is the neutral mechanism default
-    // rather than a recommendation. On the encoder path that pin is load-bearing --
+    // and not a recommendation. On the encoder path that pin matters:
     // N single-threaded workers are N independent servers, which is what makes the
     // M/M/c model valid. The decoder lane has no pool, so the reason does not carry
     // over, and serving.DecoderClient overrides this with a measured count. Policy
@@ -150,14 +150,14 @@ public:
     //
     // `copy_threads` is a separate budget from `intra_op_threads` because it buys a
     // different thing: ONNX Runtime's pool divides the graph, this one divides the
-    // memcpy that stages a batch's past. They never run at the same time -- the
-    // gather finishes before Run starts -- so the two counts are not competing for
+    // memcpy that stages a batch's past. They never run at the same time, since the
+    // gather finishes before Run starts, so the two counts are not competing for
     // the machine and there is no reason to tie them. It defaults to one so that
     // every measurement recorded before it existed still reproduces.
     //
     // `parallel_copy_floor` is the staged float count below which the gather runs
     // inline however many runners there are, because synchronising a few dozen slots
-    // costs more than a small copy saves. It is an argument rather than a constant
+    // costs more than a small copy saves. It is an argument and not a constant
     // for the same reason the thread count is: a threshold nothing can set is a
     // threshold nothing can test, and a test on a small graph would otherwise never
     // reach the threaded path at all.
@@ -183,7 +183,7 @@ public:
 
     // Reserves blocks for `reserve_tokens` positions and registers the sequence.
     // Returns false when the arena cannot supply them, leaving the pool and every
-    // other sequence untouched -- refusing is the admission controller's answer,
+    // other sequence untouched. Refusing is the admission controller's answer,
     // not an exception.
     bool open(const std::string& id, int reserve_tokens);
     // Returns the blocks the sequence held. Idempotent for an unknown id, since a
@@ -206,10 +206,10 @@ public:
     // interleaved. A scheduler wants the opposite: the chunk boundary is the point
     // where a long prefill can be interrupted, so it drives the chunks and decides
     // what happens between them. Without this a resident sequence stalls for a whole
-    // prompt rather than for one chunk -- 372 ms against 93 ms on GPT-2 at FP32, at
+    // prompt instead of one chunk: 372 ms against 93 ms on GPT-2 at FP32, at
     // the 256-token default.
     //
-    // Unlike `prefill` this reserves per chunk rather than for the whole prompt, so a
+    // Unlike `prefill` this reserves per chunk, not for the whole prompt, so a
     // prompt too large for the arena fails part way through instead of before it
     // starts. A scheduler is expected to have asked admission first.
     StepResult extend(const std::string& id, const std::vector<std::int64_t>& tokens);
@@ -225,19 +225,19 @@ public:
     // stock exported graph has neither. A scheduler over this alternates instead.
     //
     // Rows are right-padded to the longest past in the batch. Every sequence must be
-    // open and non-empty, and no id may repeat -- two rows of one sequence would
+    // open and non-empty, and no id may repeat. Two rows of one sequence would
     // scatter twice into the same blocks and the second write would win.
     //
     // All or nothing on blocks. The whole batch's shortfall is checked against the
     // pool before any row takes a block, so a batch that cannot fit throws
-    // CacheExhausted with the arena untouched rather than part way through.
+    // CacheExhausted with the arena untouched, not part way through.
     BatchStepResult decode_batch(const std::vector<std::string>& ids,
                                  const std::vector<std::int64_t>& tokens);
 
 private:
     SequenceCache& lookup(const std::string& id);
     // Takes blocks so the sequence can hold `tokens` positions. Throws
-    // CacheExhausted rather than returning false: by the time a sequence is
+    // CacheExhausted instead of returning false. By the time a sequence is
     // mid-decode, the policy has already promised it room.
     void reserve(const std::string& id, SequenceCache& sequence, int tokens);
     StepResult step(const std::string& id, SequenceCache& sequence, const std::int64_t* tokens,
@@ -249,12 +249,12 @@ private:
     std::unique_ptr<Model> model_;
     KvGeometry geometry_;
     // Held indirectly because its size comes from the geometry, which is read off
-    // the loaded graph rather than passed in, so the arena cannot be built until
+    // the loaded graph and not passed in, so the arena cannot be built until
     // the session exists.
     std::unique_ptr<BlockPool> pool_;
     std::map<std::string, SequenceCache> sequences_;
 
-    // Owned by the session rather than made per step. At batch 1 the whole gather is
+    // Owned by the session instead of made per step. At batch 1 the whole gather is
     // 0.18 ms and starting threads would cost more than it saves, so a pool built per
     // call would be a slowdown at exactly the sizes where the copy is already cheap.
     ThreadPool copy_pool_;
@@ -264,7 +264,7 @@ private:
     // `present[..., :past_len, :]` equals what the blocks hold. Checked once per
     // sequence: the scatter only writes the new tail, so if the graph ever stopped
     // concatenating, every token before the current one would silently rot. A
-    // mismatch raises rather than falling back to a full-present scatter, because a
+    // mismatch raises instead of falling back to a full-present scatter, because a
     // silent fallback would change what TPOT measures without saying so.
     std::set<std::string> prefix_verified_;
 
@@ -274,7 +274,7 @@ private:
     std::vector<std::int64_t> attention_mask_;
     std::vector<std::int64_t> position_ids_;
 
-    // Graph indices resolved once, by name rather than by position.
+    // Graph indices resolved once, by name and not by position.
     std::vector<std::string> past_input_names_;  // 2 * layers, key then value per layer
     std::size_t logits_output_ = 0;
     std::vector<std::size_t> present_outputs_;  // 2 * layers, same ordering

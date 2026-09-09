@@ -6,7 +6,7 @@ difference, in resident bytes, on the real exported models.
 
 Counting, not timing. Resident set size does not depend on how busy the machine is, so
 this is one of the few measurements in this repository that a contended host cannot
-corrupt -- unlike anything under `results/ab_copy_threads/`, which needs a gated arm.
+corrupt, unlike anything under `results/ab_copy_threads/`, which needs a gated arm.
 
 Each arm runs in its own subprocess. Measuring both in one would charge the second arm
 for pages the first already faulted in and read the saving as far smaller than it is.
@@ -34,7 +34,7 @@ from anytime_serving.utils.logger import get_logger  # noqa: E402
 
 LOGGER = get_logger("scripts.measure_session_sharing")
 
-# Run inside the child. Kept as source rather than a module so the parent does not import
+# Run inside the child. Kept as source instead of a module so the parent does not import
 # onnxruntime itself and charge the baseline for it.
 CHILD = """
 import json, os, sys

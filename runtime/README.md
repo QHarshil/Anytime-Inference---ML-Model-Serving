@@ -39,7 +39,7 @@ places:
 1. **Configure time.** The SDK version must equal the wheel version.
 2. **Compile time.** `ORT_API_VERSION` is read out of the resolved headers and
    asserted in `src/tensor.cpp`, so a header from another include path fails the
-   build rather than the run.
+   build instead of the run.
 3. **Import time.** `load_extension()` in `serving/onnx_runtime.py` compares
    `anytime_runtime.onnxruntime_version()` against `onnxruntime.__version__` and
    raises on a mismatch, which covers an extension carried into a different
@@ -62,8 +62,8 @@ bindings/module.cpp            the pybind11 module
 cmake/                         ONNX Runtime resolution
 ```
 
-Headers arrive as the work that needs them lands, rather than as empty
-placeholders: the scheduler and batch assembly are not here yet.
+Headers arrive as the work that needs them lands, not as empty placeholders. The
+scheduler and batch assembly are not here yet.
 
 ## Behaviour
 
@@ -88,12 +88,12 @@ placeholders: the scheduler and batch assembly are not here yet.
   (an unknown variant, a missing input) raises `RuntimeError`. A malformed
   argument (a dtype the engine does not accept) raises `ValueError`.
   `CacheExhausted` derives from `RuntimeError` and means specifically "the arena has
-  no room", which is the one such failure a policy is expected to handle by evicting
-  rather than propagate.
+  no room". That is the one such failure a policy is expected to handle by evicting,
+  instead of propagating it.
 - **Supported input dtypes.** float32, float64, int32, int64, bool. Outputs are
   mapped back from the same set. The KV arena is float32, which is what weight-only
-  quantisation leaves the cache as; a graph declaring a narrower cache is refused
-  rather than reinterpreted.
+  quantisation leaves the cache as. A graph declaring a narrower cache is refused,
+  not reinterpreted.
 
 ## The decoder path
 
@@ -119,15 +119,15 @@ session.release("seq")  # blocks back; tokens are the caller's
   controller's answer. A sequence that outgrows its reservation mid-decode raises
   `CacheExhausted` instead, because by then something has already promised it room.
 - **The arena is fixed at construction** and zero-filled, so its pages are resident
-  before the first run rather than faulting in during the opening decode steps.
+  before the first run instead of faulting in during the opening decode steps.
 - **Gather is timed, not assumed.** `StepTimings` breaks out gather, run, scatter and
   the once-per-sequence invariant check separately. On GPT-2 the gather is 4% of a
   decode step at 128 cached tokens and 11% at 960, and a quarter of a wide batched one.
 - **The gather can be split across cores, and is not by default.** `copy_threads`
   divides it over the `layers * 2` key/value slots, each of which owns its own staging
-  buffer so the tasks share nothing. It is worth 1.8x to 2.2x -- a `memcpy` is bound by
-  bandwidth rather than by thread count -- and takes the gather from a quarter of a wide
-  step to a sixth. One is the default, because that is the configuration every recorded
+  buffer so the tasks share nothing. It is worth 1.8x to 2.2x, because a `memcpy` is
+  bound by bandwidth and not by thread count, and takes the gather from a quarter of a
+  wide step to a sixth. One is the default, because that is the configuration every recorded
   number was measured on. Below `parallel_copy_floor` staged floats the copy runs inline
   whatever the pool holds; that threshold is a measured crossover and an argument, not a
   constant.
@@ -138,7 +138,7 @@ session.release("seq")  # blocks back; tokens are the caller's
   sequences are already accounted against one fixed budget. What is not shared is
   the session: the Python pool holds one per worker slot. A scheduler that gathers
   several sequences into a single run needs one session driving one arena instead,
-  which is a change to the concurrency model rather than to the allocator. The
+  which is a change to the concurrency model, not to the allocator. The
   policy half lives in `src/anytime_serving/serving/kv_admission.py`.
 
 ## Tests
@@ -155,8 +155,8 @@ A 4x4 matmul with a bias and a Relu gives them nothing to disagree about, and th
 assertion is kept there because it catches tensor-path corruption sharply. The
 decoder fixture's reduction does give them something to disagree about, measured at
 around seven float32 ULP, so those comparisons are held to token identity plus
-float32 agreement instead. Within one instance -- the same session with its cache
-held two ways -- bitwise is the right bar and stays. See the same distinction in
+float32 agreement instead. Within one instance, meaning the same session with its
+cache held two ways, bitwise is the right bar and stays. See the same distinction in
 [`../docs/runtime.md`](../docs/runtime.md).
 
 `tests/test_kv_cache.py` and `tests/test_decoder_session.py` cover the decoder path

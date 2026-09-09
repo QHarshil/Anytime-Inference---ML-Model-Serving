@@ -80,8 +80,8 @@ Service times are inflated by a CPU-pressure factor, linear in load above a knee
 effective_service_ms = service_time_ms * (1 + max(0, load_pct - knee) * slope)
 ```
 
-If no variant fits, the fastest is returned and the caller rejects the request
-rather than admitting work that is already late.
+If no variant fits, the fastest is returned and the caller rejects the request. The
+alternative would be admitting work that is already late.
 
 ## Configuration
 
@@ -108,17 +108,16 @@ or they do not. Admitting one the arena cannot hold does not degrade gracefully 
 way an over-full queue does; it means evicting somebody later, at a moment nobody
 chose. So the requirement is computed up front and the answer is yes or no.
 
-The arena is deliberately fixed. A pool that grew on demand would make occupancy
-something to observe rather than something to decide about, and the decision is the
-point. See [`runtime.md`](runtime.md) for why it is a block allocator and not paged
+The arena is deliberately fixed. A pool that grew on demand would leave occupancy as
+something to observe. Deciding on it is the point here. See [`runtime.md`](runtime.md) for why it is a block allocator and not paged
 attention.
 
 ### Eviction is priced in deadline slack
 
 Preemption here is preempt-and-recompute: the victim's blocks are released, its
 tokens are kept, and resuming re-runs its whole history. Output is token-identical
-either way, which is what makes eviction a scheduling decision rather than a
-correctness bug, but it is not free. On GPT-2 a 960-token sequence recomputes in
+either way, which is what makes eviction a scheduling decision and not a correctness
+bug. It is not free, though. On GPT-2 a 960-token sequence recomputes in
 about 261 ms against an 8.1 ms decode step.
 
 So the currency is slack: how much deadline is left once the work still owed is
@@ -130,7 +129,7 @@ recompute_ms  = prefill_per_token_ms * cached_tokens
 surviving_ms  = slack_ms - recompute_ms
 ```
 
-Candidates are ordered by harm rather than by benefit:
+Candidates are ordered by harm, not by benefit:
 
 1. **Sequences that will miss regardless** go first, most-missed first. Their
    blocks are pure gain, because what would be lost is already lost.
@@ -149,8 +148,8 @@ deadline than a greedy pass would. Ordering by harm is the property worth keepin
 
 `CacheCost` carries no defaults, for the reason the whole project exists: Stage 1's
 headline result was invalid because a service time was carried in from somewhere it
-did not apply. A decode step's cost is linear in cached tokens rather than constant,
-so it is two parameters, and `scripts/profile_decode.py` fits them from
+did not apply. A decode step's cost is linear in cached tokens, not constant,
+so it takes two parameters, and `scripts/profile_decode.py` fits them from
 measurements on the host that will run them. The recompute rate is fitted from the
 chunked prefill path specifically, because that is the width a resume actually runs
 at; taking it from the single-pass sweep beside it overstated every recompute by

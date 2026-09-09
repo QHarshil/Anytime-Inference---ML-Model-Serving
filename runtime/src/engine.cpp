@@ -73,7 +73,7 @@ Engine::Engine(const std::vector<std::pair<std::string, std::string>>& models,
 Model& Engine::lookup(const std::string& variant) {
     const auto it = models_.find(variant);
     if (it == models_.end()) {
-        // runtime_error rather than out_of_range: pybind11 maps it to
+        // runtime_error instead of out_of_range. pybind11 maps it to
         // RuntimeError, which is the contract every backend shares for "the
         // runtime could not serve this request". Malformed arguments (a dtype the
         // engine does not accept) stay invalid_argument and surface as ValueError.
@@ -86,7 +86,7 @@ Model& Engine::lookup(const std::string& variant) {
 const Model& Engine::lookup(const std::string& variant) const {
     const auto it = models_.find(variant);
     if (it == models_.end()) {
-        // runtime_error rather than out_of_range: pybind11 maps it to
+        // runtime_error instead of out_of_range. pybind11 maps it to
         // RuntimeError, which is the contract every backend shares for "the
         // runtime could not serve this request". Malformed arguments (a dtype the
         // engine does not accept) stay invalid_argument and surface as ValueError.

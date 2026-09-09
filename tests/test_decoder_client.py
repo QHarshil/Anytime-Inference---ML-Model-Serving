@@ -169,7 +169,7 @@ def test_without_a_policy_a_full_arena_refuses_rather_than_evicting(decoder_grap
 
 
 def test_without_a_policy_outgrowing_a_reservation_raises(decoder_graph):
-    """Nothing to evict with, so the caller is told rather than quietly stalled."""
+    """Nothing to evict with, so the caller is told instead of quietly stalled."""
     extension = load_extension()
     with _client(decoder_graph, num_blocks=3, reserve_full_generation=False) as client:
         assert client.admit(_request(max_new_tokens=20, request_id="a")).admit
@@ -314,7 +314,7 @@ def test_a_full_arena_evicts_by_slack_to_admit_a_newcomer(decoder_graph):
 
 
 def test_a_sequence_outgrowing_its_reservation_evicts_instead_of_failing(decoder_graph):
-    """The eviction path taken mid-decode rather than at admission.
+    """The eviction path taken mid-decode instead of at admission.
 
     Reserving only the prompt means a long generation will run out, which is exactly
     when a scheduler has to find room without dropping the sequence it is serving.
@@ -333,7 +333,7 @@ def test_a_sequence_outgrowing_its_reservation_evicts_instead_of_failing(decoder
         client.prefill("bystander")
 
         # Take every free block, then fill the grower's last one, so that the very
-        # next token has to come out of somebody else's allocation rather than out of
+        # next token has to come out of somebody else's allocation instead of out of
         # slack the grower already holds.
         while client.free_blocks:
             client.emit("grower")
@@ -358,7 +358,7 @@ def test_a_sequence_outgrowing_its_reservation_evicts_instead_of_failing(decoder
 
 
 def test_a_newcomer_is_refused_when_nobody_can_afford_to_be_evicted(decoder_graph):
-    """A full arena of tight deadlines shuts the door rather than dooming somebody."""
+    """A full arena of tight deadlines shuts the door instead of dooming somebody."""
     policy = _policy(capacity_blocks=6)
     with _client(decoder_graph, num_blocks=6, admission=policy) as client:
         for name in ("a", "b"):
@@ -470,7 +470,7 @@ def test_driving_the_chunks_matches_letting_prefill_drive_them(decoder_graph, wi
 
 
 def test_a_batched_decode_step_emits_what_the_sequences_would_alone(decoder_graph):
-    """The whole point, at the client level rather than the session's.
+    """The whole point, at the client level instead of the session's.
 
     Prompts of different lengths so the batch is right-padded, which is where a row
     reading the wrong offset would show up.
@@ -505,7 +505,7 @@ def test_a_batched_step_reports_what_each_sequence_waited_not_a_share_of_it(deco
     """Latency is the step's duration; throughput is batch_size over it.
 
     Dividing the duration by the batch would understate what any one sequence
-    experienced -- all three waited for the same Run.
+    experienced, all three waited for the same Run.
     """
     with _client(decoder_graph, num_blocks=64) as client:
         for name in ("a", "b", "c"):
@@ -515,7 +515,7 @@ def test_a_batched_step_reports_what_each_sequence_waited_not_a_share_of_it(deco
 
     assert len(records) == 3
     assert {record.batch_size for record in records} == {3}
-    # One Run shared, so the durations are identical rather than apportioned.
+    # One Run shared, so the durations are identical instead of apportioned.
     assert len({record.total_ms for record in records}) == 1
     assert records[0].total_ms > 0.0
     assert all(record.runs == 1 for record in records)
@@ -529,7 +529,7 @@ def test_an_unbatched_step_reports_a_batch_size_of_one(decoder_graph):
 
 
 def test_a_readmitted_sequence_recomputes_in_chunks_and_stays_token_identical(decoder_graph):
-    """Preemption through the scheduler's path rather than through `resume`.
+    """Preemption through the scheduler's path instead of through `resume`.
 
     `resume` recomputes in one call. A scheduler readmits and then drives the
     recompute as chunks, so it can interleave other sequences' decode steps into a

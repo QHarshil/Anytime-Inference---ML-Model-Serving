@@ -1,10 +1,10 @@
 """Guards on the figure script, which turns measurements into pictures.
 
 A figure is read by people who will not open the JSON behind it, so the failure that
-matters is not a crash -- it is a figure that draws something other than what was
+matters is not a crash. It is a figure that draws something other than what was
 measured. Three of those are checkable without looking at pixels: that the chunk width
-the prefill panel plots is read off the data rather than assumed, that a precision with
-no colour assigned is refused rather than given whatever matplotlib cycles to next, and
+the prefill panel plots is read off the data and not assumed, that a precision with
+no colour assigned is refused instead of taking whatever matplotlib cycles to next, and
 that the files are written where they were asked for.
 
 `--output-dir` is exercised with a tmp path throughout. The script's default writes into
@@ -126,7 +126,7 @@ def test_the_prefill_panel_follows_the_measured_chunk_width(tmp_path):
 
     The profiler sweeps prompt lengths at whatever its default is and then sweeps widths
     at the longest prompt. A script that hardcoded 256 would draw an empty panel the day
-    that default moved, and an empty panel looks like a missing measurement rather than
+    that default moved, and an empty panel looks like a missing measurement instead of
     like a bug in the plotting.
     """
     assert plot._default_chunk(_profile("fp32", default_chunk=256)) == 256

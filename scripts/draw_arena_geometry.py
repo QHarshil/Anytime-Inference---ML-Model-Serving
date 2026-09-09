@@ -1,7 +1,7 @@
 """Draw the arena's geometry: blocks, the gather into the padded batch tensor, the scatter.
 
-This is a schematic rather than a plot. It reads no measurement file and it draws no
-measured quantity, which is why it lives here rather than in `plot_batching.py`, whose
+This is a schematic, not a plot. It reads no measurement file and it draws no
+measured quantity, which is why it lives here instead of in `plot_batching.py`, whose
 `main` loads `results/*.json` and has nothing to hand a figure that takes no input.
 
 Writes, into `docs/img/`:
@@ -23,7 +23,7 @@ Colour means one thing here
 ---------------------------
 
 In this figure a hue names a sequence and nothing else. The phases are named by the panel
-titles and drawn in chrome -- padding is a hatched hole, arrows are ink -- so no reader
+titles and drawn in chrome, padding is a hatched hole, arrows are ink, so no reader
 has to work out whether a colour means "sequence B" or "the pad phase". That is the
 opposite convention from `step_composition.png`, where hue is the phase, and the two do
 not meet: this figure has no phase colours and that one has no sequences.
@@ -31,16 +31,16 @@ not meet: this figure has no phase colours and that one has no sequences.
 The three sequence hues are Okabe-Ito steps, the same published palette
 `plot_batching.PHASE_COLOURS` draws from, at 5.19:1, 3.87:1 and 3.42:1 against the white
 surface. They are the same three hexes that figure gives `run`, `gather` and `pad`, which
-is accepted rather than overlooked: the two figures live in different documents, encode
+is accepted, not overlooked: the two figures live in different documents, encode
 different things, and every region here carries its sequence letter inside it, so colour
-is a second cue rather than the only one.
+is a second cue instead of the only one.
 
 The numbers are illustrative, the caption is not
 ------------------------------------------------
 
 The drawing uses four token positions per block and a twelve-block arena, because sixty-
 four and a real arena draw as a grey smear. Every figure quoted in the caption is GPT-2's
-actual geometry, computed from `GPT2` below rather than typed, and
+actual geometry, computed from `GPT2` below instead of typed, and
 `tests/test_draw_arena_geometry.py` pins that against the extension's own constant and
 against the geometry `tests/test_decoder_session.py` reads off the exported graph.
 
@@ -75,7 +75,7 @@ SEQUENCE_COLOURS = ("#0072B2", "#D55E00", "#009E73")
 UNWRITTEN_ALPHA = 0.22
 FREE = "#f4f3ee"
 # Padding is drawn, not filled: it is a hole the clear pass has to walk. The hatch sits
-# between the grid and the muted ink so it reads as absence rather than as a fourth
+# between the grid and the muted ink so it reads as absence instead of as a fourth
 # category competing with the three sequences.
 HATCH = "#b9b7ad"
 
@@ -84,7 +84,7 @@ HATCH = "#b9b7ad"
 class Geometry:
     """One decoder's cache shape, mirroring `KvGeometry` in `runtime/include/anytime`.
 
-    Mirrored rather than imported: the extension exposes `KvGeometry` with no
+    Mirrored, not imported: the extension exposes `KvGeometry` with no
     constructor, because a real one is read off a loaded graph, and a drawing script
     should not need a 500 MB ONNX file and a session to caption a schematic. The test
     checks this against the extension's `DEFAULT_BLOCK_TOKENS` and against the values
@@ -101,7 +101,7 @@ class Geometry:
         """Graph past inputs, and so staging buffers: one per layer per key/value half.
 
         This is what the gather is split across, which is why it is a property of the
-        geometry rather than of the batch. It does not depend on how many rows there are.
+        geometry instead of of the batch. It does not depend on how many rows there are.
         """
         return self.layers * 2
 
@@ -131,7 +131,7 @@ class Geometry:
 
         A partly filled block is still held. That is the space blocks trade for never
         having to move a growing sequence, and it is the reason a tail block is drawn
-        pale rather than short.
+        pale instead of short.
         """
         if tokens < 0:
             raise ValueError(f"a sequence cannot hold {tokens} tokens")
@@ -168,7 +168,7 @@ class Row:
 class Batch:
     """The three sequences the figure draws, and everything derived from them.
 
-    Every number the drawing places is taken from here rather than written into the
+    Every number the drawing places is taken from here instead of written into the
     drawing code, so the test can assert the arithmetic without rendering anything.
     """
 
@@ -219,8 +219,8 @@ class Batch:
     def written_in(self, row: Row, ordinal: int) -> int:
         """Token positions written in the `ordinal`-th block this row holds.
 
-        Full for every block but the last, and the remainder in the last -- which is
-        `block_tokens` rather than zero when the length lands exactly on a boundary.
+        Full for every block but the last, and the remainder in the last, which is
+        `block_tokens` instead of zero when the length lands exactly on a boundary.
         """
         start = ordinal * self.geometry.block_tokens
         return max(0, min(self.geometry.block_tokens, row.length - start))
@@ -229,8 +229,8 @@ class Batch:
         """Where this row's new token is scattered: (ordinal, offset, arena block).
 
         Its home is `past_len`, not `max_past`. The present tensor is the other way
-        round -- the new KV sits at index `max_past` there for every row, because that
-        is how wide the batch made its past -- and keeping the two apart is the whole
+        round, the new KV sits at index `max_past` there for every row, because that
+        is how wide the batch made its past, and keeping the two apart is the whole
         content of the third panel.
         """
         ordinal, offset = divmod(row.length, self.geometry.block_tokens)
@@ -257,7 +257,7 @@ BATCH = Batch(
 # panel; slot width is not, and is not asked to.
 #
 # Blocks are separated by surface. Token positions inside a staged row are not, because
-# there the tensor really is contiguous -- that difference is the first panel's subject.
+# there the tensor really is contiguous, that difference is the first panel's subject.
 SLOT = 1.0
 BLOCK_GAP = 0.5
 ROW_HEIGHT = 0.62
@@ -273,8 +273,8 @@ def _cell(axis: Any, x: float, y: float, width: float, height: float, **kwargs: 
 def _panel(axis: Any, title: str) -> None:
     """A schematic panel: a title in the house style and no axes at all.
 
-    `plot_decode_profiles._style` is not used here, and that is deliberate rather than an
-    oversight. It fits a plot -- ticks, a grid, two spines -- and every one of those would
+    `plot_decode_profiles._style` is not used here, and that is deliberate instead of an
+    oversight. It fits a plot, ticks, a grid, two spines, and every one of those would
     be furniture around a drawing that has no coordinates a reader should read.
     """
     axis.set_title(title, color=INK, fontsize=10, loc="left")
@@ -287,8 +287,8 @@ NOTE_COLUMNS = 116
 def _note(axis: Any, y: float, text: str, **kwargs: Any) -> None:
     """Prose under a panel: left margin in axes fractions, baseline in data units.
 
-    The blend is the point. Each panel sets its own data limits -- the arena is four
-    times as wide in slots as one staged row -- so a note placed at a data x lands at a
+    The blend is the point. Each panel sets its own data limits: the arena is four
+    times as wide in slots as one staged row, so a note placed at a data x lands at a
     different left margin in each panel, and three paragraphs that should form one column
     down the figure come out ragged. Axes fractions fix the margin; the baseline still
     has to follow the drawing, which is in data units.
@@ -333,7 +333,7 @@ def _draw_block(
 ) -> None:
     """One block as its token slots: `written` of them filled, the rest held but empty.
 
-    A free block is drawn the same size as an owned one rather than omitted, because the
+    A free block is drawn the same size as an owned one instead of omitted, because the
     arena is a fixed allocation and the free list is space that exists.
     """
     slots = BATCH.geometry.block_tokens
@@ -441,9 +441,9 @@ def draw_gather(axis: Any, batch: Batch) -> None:
             )
         padding = batch.padding(row)
         if padding:
-            # One rectangle rather than one per position. The padding is a single hole
+            # One rectangle instead of one per position. The padding is a single hole
             # that gets cleared in a single pass, and cell-by-cell hatching reads as
-            # texture rather than as absence.
+            # texture instead of as absence.
             _cell(
                 axis,
                 row.length * SLOT,
@@ -564,7 +564,7 @@ def draw_gather(axis: Any, batch: Batch) -> None:
         bottom,
         f"One slot's staging buffer, shape [batch, kv_heads, max_past, head_dim]. There "
         f"are layers x 2 = {batch.geometry.slots} of them on GPT-2, one per graph past "
-        f"input, and the gather is split across slots rather than across rows: a batch may "
+        f"input, and the gather is split across slots instead of across rows: a batch may "
         f"be 1, and there are always {batch.geometry.slots}.\n"
         f"The mask is 1 over the positions a row holds, 0 over its padding and 1 for the "
         f"token being emitted, so the padding sits between the two. {worst.name} pads "
@@ -576,8 +576,8 @@ def draw_gather(axis: Any, batch: Batch) -> None:
 
 SCATTER_PITCH = ROW_HEIGHT + 0.98
 SCATTER_SEPARATION = 4.5
-# How far a scatter arrow bows above its own row. It is a height rather than a
-# curvature on purpose: matplotlib's arc3 `rad` is a ratio, so one value shared by three
+# How far a scatter arrow bows above its own row. It is a height, not a curvature,
+# on purpose. matplotlib's arc3 `rad` is a ratio, so one value shared by three
 # arrows of different lengths bows the longest one clean off the figure and sends it
 # through the rows above on the way. Fixing the height and solving for `rad` per arrow
 # keeps every one of them inside the gutter above the row it belongs to, which is what
@@ -601,7 +601,7 @@ def draw_scatter(axis: Any, batch: Batch) -> None:
 
         # The present row, contiguous: the past it was fed, then the token it produced.
         # Unlike the staged tensor in the panel above, the emitted position is part of
-        # this tensor rather than a separate input, so nothing is set apart here.
+        # this tensor instead of a separate input, so nothing is set apart here.
         for position in range(batch.total):
             if position == batch.max_past:
                 continue
@@ -729,7 +729,7 @@ def draw_scatter(axis: Any, batch: Batch) -> None:
 def draw_arena_geometry(path: Path, batch: Batch = BATCH, caption: Geometry = GPT2) -> None:
     """Draw all three panels into one figure and write it.
 
-    The panels are stacked rather than placed side by side because they are a sequence:
+    The panels are stacked instead of placed side by side because they are a sequence:
     a token's KV is somewhere, then it is somewhere else so the graph can read it, then
     what came back goes home. Read left to right that would be three unrelated pictures.
     """
@@ -763,7 +763,7 @@ def draw_arena_geometry(path: Path, batch: Batch = BATCH, caption: Geometry = GP
             f"{caption.bytes_per_token / 1024:.0f} KiB per token, "
             f"{caption.bytes_per_block / 1024**2:.1f} MiB per block, and "
             f"{caption.blocks_for(1024)} blocks for a 1024-token sequence. Geometry is read "
-            f"off the loaded graph rather than a model config, because a config can "
+            f"off the loaded graph instead of a model config, because a config can "
             f"disagree with the graph it is meant to describe.",
             width=150,
         ),

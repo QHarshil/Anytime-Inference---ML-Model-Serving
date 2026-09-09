@@ -10,7 +10,7 @@ def erlang_c_closed_form(servers: int, offered_load: float) -> float:
     """Erlang C evaluated directly from factorials.
 
     Independent of the recursion used in the implementation, so a disagreement
-    indicates a genuine error rather than a shared mistake. Overflows for large
+    indicates a genuine error instead of a shared mistake. Overflows for large
     ``servers``, which is exactly why the implementation does not use it.
     """
     utilisation = offered_load / servers

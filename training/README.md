@@ -1,13 +1,13 @@
 # Training Scripts
 
 Fine-tuning entry points for the models used by the planner. Skip unless you need
-custom checkpoints — the rest of the pipeline uses public pre-trained models from
+custom checkpoints. The rest of the pipeline uses public pre-trained models from
 Hugging Face and torchvision.
 
 ## Scripts
 
-- `finetune_text_models.py` — fine-tune DistilBERT and MiniLM on SST-2.
-- `finetune_vision_models.py` — fine-tune MobileNetV2 and ResNet18 on CIFAR-10.
+- `finetune_text_models.py`: fine-tune DistilBERT and MiniLM on SST-2.
+- `finetune_vision_models.py`: fine-tune MobileNetV2 and ResNet18 on CIFAR-10.
 
 ## Usage
 

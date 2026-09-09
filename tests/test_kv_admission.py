@@ -3,12 +3,12 @@
 Pure policy, no runtime: the arena is fixed and the questions are which sequences fit
 and, when they do not, who can most afford to be interrupted. Both answers are cheap
 to get wrong in a way that looks reasonable, so the cases here are mostly about the
-orderings the policy claims to make rather than about the arithmetic.
+orderings the policy claims to make instead of about the arithmetic.
 
 The one it must never get wrong is `test_a_sequence_that_could_not_survive_recompute
 _is_not_evicted`. Preemption is preempt-and-recompute, so evicting a sequence with
 slack now but none after re-running its history converts a deadline it would have met
-into one it cannot -- two misses where there was one.
+into one it cannot, two misses where there was one.
 """
 
 import pytest
@@ -218,8 +218,8 @@ def test_the_same_room_is_freed_from_fewer_victims():
     """At equal slack, prefer the sequence holding more blocks.
 
     Freeing four blocks from one sequence costs one recompute; from four sequences it
-    costs four. Not an optimum -- packing the shortfall into the fewest victims would
-    sometimes pick tighter deadlines -- but at equal harm it is free to prefer.
+    costs four. Not an optimum, packing the shortfall into the fewest victims would
+    sometimes pick tighter deadlines, but at equal harm it is free to prefer.
     """
     policy = _policy(capacity_blocks=8)
     plan = policy.plan(
@@ -293,7 +293,7 @@ def test_a_sequence_is_never_offered_its_own_blocks():
 def test_what_a_growing_sequence_already_holds_counts_towards_its_requirement():
     """`tokens` is a total, so a sequence asking for one more block needs one more.
 
-    Without this the shortfall is the sequence's entire requirement rather than its
+    Without this the shortfall is the sequence's entire requirement instead of its
     increment: a sequence holding six blocks and wanting a seventh would look like it
     needed all seven from scratch, and the plan would either evict far more than
     necessary or refuse outright.

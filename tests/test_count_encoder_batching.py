@@ -4,7 +4,7 @@ Two jobs here, and the second is the one that catches drift.
 
 **The arithmetic.** `padding_fraction` and `group_in_arrival_order` are the whole
 cost side of encoder batching, and both are pure functions of a length list, so they
-are checked against hand-computed values rather than against a run.
+are checked against hand-computed values instead of against a run.
 
 **The numbers this repository quotes.** `results/encoder_batching.json` is committed,
 so the padding shares and the INT8 flip counts on `benchmarks.md` are checkable
@@ -14,7 +14,7 @@ self-consistent and still agrees with everything else in the tree:
 - Its padding fractions recompute from its own length distribution.
 - Its FP32 reference accuracies are the accuracies in `configs/serving.yaml`. That is
   the tie that says the script's tokenisation matches the profiler that wrote the
-  config, and it is what makes the INT8 result beside it comparable rather than
+  config, and it is what makes the INT8 result beside it comparable instead of
   merely adjacent.
 - Its FP32 arms flip nothing, at every width. That is the control: it is logically
   independent of the quantisation question, so if it ever starts flipping, the
@@ -99,7 +99,7 @@ def test_a_fixed_width_is_never_beaten_by_padding_to_the_longest_in_a_batch():
 
     Which is the comparison that matters and the one that is easy to get backwards:
     batching adds padding against *true lengths*, but the committed benchmarks do not
-    run true lengths -- they run a fixed 128. Against what actually ships, a batched
+    run true lengths, they run a fixed 128. Against what actually ships, a batched
     tensor of real lengths is the cheaper of the two.
     """
     lengths = [4, 9, 17, 24, 31, 55]
@@ -197,7 +197,7 @@ def test_the_int8_variants_carry_the_mechanism_the_finding_names(committed):
 def test_int8_answers_move_at_batch_one_as_well_as_batched(committed):
     """The finding, and the reason it is not filed under batching.
 
-    Padding alone at batch 1 -- which is what the committed benchmarks already run --
+    Padding alone at batch 1, which is what the committed benchmarks already run,
     moves INT8 predictions. If a future change made batching the only arm that
     flipped, the attribution on `benchmarks.md` would be wrong and this would fail.
     """
@@ -231,8 +231,8 @@ def test_int8_accuracy_moves_little_in_either_direction(committed):
 # movement?
 #
 # The tests below are written so that the *controls* fail first. A static graph with
-# no `DynamicQuantizeLinear` is not evidence on its own -- the FP32 graph has none
-# either -- so what is asserted first is that the static graph is genuinely 8-bit and
+# no `DynamicQuantizeLinear` is not evidence on its own, the FP32 graph has none
+# either, so what is asserted first is that the static graph is genuinely 8-bit and
 # that it quantised the same operators as the dynamic one. Only then does an
 # assertion about flips mean anything.
 
@@ -263,7 +263,7 @@ def test_the_static_variants_are_genuinely_quantised(committed):
 
 
 def test_the_two_int8_flavours_quantised_the_same_operators(committed):
-    """What makes static-versus-dynamic a controlled comparison rather than two changes.
+    """What makes static-versus-dynamic a controlled comparison instead of two changes.
 
     Static QDQ left to its own defaults quantises 24 operator types, dynamic quantises
     three. Exported that way the two would differ in how much of the graph is 8-bit as
@@ -319,7 +319,7 @@ def test_what_static_quantisation_actually_removes_is_the_incidence(committed):
     """The half of the prediction that came out wrong, pinned so the write-up cannot drift.
 
     The prediction was that `max_abs_logit_delta` would fall to the FP32 control's
-    1.1e-05. **It does not** -- it falls from around 1.0 to around 0.3, which is four
+    1.1e-05. **It does not.** It falls from around 1.0 to around 0.3, which is four
     orders of magnitude short. What collapses instead is how many requests are affected
     at all: a dynamically quantised graph moves *every* request's logits, because every
     request gets its own activation scale, and a statically quantised one moves a
@@ -352,7 +352,7 @@ def test_what_static_quantisation_actually_removes_is_the_incidence(committed):
 
 
 def test_the_fp32_control_moves_everything_a_little_and_static_moves_little_a_lot(committed):
-    """The two signatures, told apart by their shape rather than by their size.
+    """The two signatures, told apart by their shape instead of by their size.
 
     Float reassociation touches most requests and moves each of them by about a
     millionth of a logit. A rounding-boundary crossing touches almost none and moves
@@ -373,7 +373,7 @@ def test_static_quantisation_costs_accuracy_and_the_cost_is_recorded(committed):
     """The trade, so that "it is deterministic" cannot be quoted without its price.
 
     Neither calibration method wins on both models: percentile clipping helps
-    DistilBERT and hurts MiniLM. What is asserted is the bound the write-up quotes --
+    DistilBERT and hurts MiniLM. What is asserted is the bound the write-up quotes,
     the best static variant of each model is within 0.5pp of that model's dynamic one.
     """
     by_name = {v["variant"]: v["reference_accuracy"] for v in committed["variants"]}

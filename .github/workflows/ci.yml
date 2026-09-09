@@ -110,7 +110,7 @@ jobs:
       # The remaining suites need pandas/scipy and are covered by the `test` job.
       # The decoder suites belong here too: the KV cache and its admission policy are
       # part of the control plane, so they have to run where the research stack does
-      # not. They build a synthetic decoder graph rather than exporting one, and the
+      # not. They build a synthetic decoder graph instead of exporting one, and the
       # GPT-2 cases skip when that export is absent, which it always is here.
       - name: Run serving tests and import-boundary guards
         env:

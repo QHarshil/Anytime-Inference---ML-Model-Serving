@@ -18,9 +18,9 @@
 // over one Engine are still N independent single-threaded servers. What they newly share
 // is this Engine's per-session CPU arena.
 //
-// Measured, because that arena was the real question rather than the thread pool:
+// Measured, because that arena was the real question and not the thread pool:
 // sharing saves 66% of the pool's resident memory at four workers and costs no latency
-// at two, four or eight -- it is 7% *faster* at eight, most likely because eight copies
+// at two, four or eight. It is 7% *faster* at eight, most likely because eight copies
 // of one set of read-only weights is eight working sets for the cache instead of one.
 // `serving/onnx_runtime.py` shares by default now; see docs/benchmarks.md.
 
@@ -43,11 +43,11 @@ namespace anytime {
 class Model {
 public:
     // `allow_spinning` is ONNX Runtime's own default: its intra-op workers busy-wait
-    // for the next parallel section rather than sleeping, which starts that section
+    // for the next parallel section instead of sleeping, which starts that section
     // sooner and costs cores in between. That trade is only obviously right when Run
-    // is the only thing happening. On the decoder path it is not -- a gather runs
-    // between two Runs, and it is bandwidth-bound -- so this was exposed to be
-    // measured rather than assumed.
+    // is the only thing happening. On the decoder path it is not. A gather runs
+    // between two Runs and it is bandwidth-bound, so this was exposed to be
+    // measured, not assumed.
     //
     // It has been measured, and turning it off costs 1.65x on a batch-32 step. The
     // gather does gain what the reasoning predicted, and the amount is 1.9%; Run loses
@@ -55,7 +55,7 @@ public:
     // slow Run itself, so the pool is parked at each parallel section and a
     // twelve-layer decode pays the wake-up many times over. Defaults to true, which is
     // what every recorded number was taken with. False is kept as the control that
-    // establishes the default rather than as a lever anyone should reach for.
+    // establishes the default, not as a lever anyone should reach for.
     Model(Ort::Env& env, const std::string& path, int intra_op_threads,
           int inter_op_threads, bool allow_spinning = true);
 
@@ -88,7 +88,7 @@ public:
 
     // Runs `variant` over `feeds`.
     //
-    // Feeds a graph does not declare are dropped rather than rejected: variants
+    // Feeds a graph does not declare are dropped, not rejected. Variants
     // of one task can declare different inputs (a DistilBERT graph takes
     // input_ids and attention_mask, a BERT graph also takes token_type_ids), so
     // callers pass the union. A declared input that is missing is an error, since

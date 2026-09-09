@@ -1,6 +1,6 @@
 """Two-stage cascade inference helpers.
 
-``torch`` is imported inside the functions that run inference rather than at
+``torch`` is imported inside the functions that run inference, not at
 module scope, so the pure-Python helpers here stay importable on installs
 without it.
 """

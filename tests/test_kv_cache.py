@@ -4,7 +4,7 @@ The arena is the part of the decoder path where a mistake is quiet. A gather tha
 reads the wrong block, the wrong layer or the wrong half still returns a
 well-shaped tensor, and the graph still emits plausible logits from it. So the
 assertions here are mostly about equality against a path that cannot have the bug,
-rather than about shapes.
+instead of about shapes.
 
 The sharpest of them is `test_a_sequence_built_from_scattered_blocks_matches_one_in
 _order`: a sequence whose blocks are non-adjacent and out of order has to produce
@@ -93,7 +93,7 @@ def test_open_refuses_when_the_arena_cannot_hold_the_sequence(decoder_graph):
     """Refusing is an answer, not a failure.
 
     The admission controller asks whether there is room, and a sequence it cannot
-    hold has to come back as False rather than as an exception, so the caller can
+    hold has to come back as False instead of as an exception, so the caller can
     shed or evict instead of unwinding.
     """
     session = _session(decoder_graph, num_blocks=4)
@@ -171,7 +171,7 @@ def test_outgrowing_the_arena_mid_decode_raises_cache_exhausted(decoder_graph):
 
     CacheExhausted derives from RuntimeError, keeping the error contract the other
     backends share, but is a distinct type because it is the one runtime error the
-    admission policy is meant to handle rather than propagate.
+    admission policy is meant to handle instead of propagate.
     """
     extension = load_extension()
     session = _session(decoder_graph, num_blocks=2)
@@ -207,8 +207,8 @@ def test_a_sequence_built_from_scattered_blocks_matches_one_in_order(decoder_gra
     full of plausible numbers.
 
     The free list is a stack, so releasing blocks 0 and 2 in that order and then
-    asking for two hands back [2, 0] -- non-adjacent and reversed, which is the
-    adversarial case rather than a lucky one.
+    asking for two hands back [2, 0], non-adjacent and reversed, which is the
+    adversarial case instead of a lucky one.
     """
     ordered = _session(decoder_graph, num_blocks=8)
     assert ordered.open("x", 8) is True
@@ -305,7 +305,7 @@ def test_a_graph_that_does_not_concatenate_its_cache_is_rejected(tmp_path):
 
     `present[..., :past_len, :]` equalling the past that produced it is a property of
     how these graphs are exported, not of the ONNX specification. Measured bitwise
-    true on GPT-2, and verified once per sequence rather than trusted -- because if it
+    true on GPT-2, and verified once per sequence instead of trusted, because if it
     stopped holding, every token before the current one would silently rot while the
     model kept emitting fluent text.
 

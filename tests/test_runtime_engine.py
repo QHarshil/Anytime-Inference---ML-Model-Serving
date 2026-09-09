@@ -40,7 +40,7 @@ requires_extension = pytest.mark.skipif(
 )
 
 # Fixed weights, so every backend is asked to compute exactly the same thing and
-# the comparison is over arithmetic rather than over random inputs.
+# the comparison is over arithmetic instead of over random inputs.
 WEIGHT = np.arange(16, dtype=np.float32).reshape(4, 4) / 8.0 - 1.0
 BIAS = np.array([0.25, -0.5, 0.125, 1.0], dtype=np.float32)
 
@@ -122,7 +122,7 @@ def _expected(data: np.ndarray) -> np.ndarray:
 
 
 def test_required_backends_are_actually_present():
-    """Fail rather than skip where a backend is supposed to exist.
+    """Fail instead of skip where a backend is supposed to exist.
 
     Most tests here skip a backend that is not built, which is right locally but
     would let a CI job quietly compare one backend against itself and report
@@ -176,7 +176,7 @@ def test_extension_reports_its_compiled_api_version():
 def test_every_backend_computes_the_same_result(model_paths):
     """Bitwise agreement across every backend built in this environment.
 
-    Bitwise holds here, but it is a property of this graph rather than a guarantee
+    Bitwise holds here, but it is a property of this graph, not a guarantee
     across the two libraries. The extension links its own ONNX Runtime SDK and the
     wheel ships a separate build, and on x86-64 they can dispatch to different MLAS
     kernels. A 4x4 matmul with a bias and a Relu gives them nothing to disagree about;
@@ -255,7 +255,7 @@ def test_backend_drops_undeclared_inputs(graphs, backend):
     """Callers send the union of every variant's inputs; extras are dropped.
 
     Variants of one task declare different inputs, so a graph must take the subset
-    it declares rather than failing on the rest.
+    it declares instead of failing on the rest.
     """
     if backend not in _available_backends():
         pytest.skip(f"the {backend!r} backend is not available here")
@@ -288,7 +288,7 @@ def test_backend_rejects_a_missing_declared_input(graphs, backend):
 
 @requires_extension
 def test_extension_accepts_a_non_contiguous_input(model_paths):
-    """A strided array is made contiguous rather than misread.
+    """A strided array is made contiguous instead of misread.
 
     ONNX Runtime reads the buffer directly, so handing it a transposed view
     without converting would silently transpose the arithmetic.
@@ -309,7 +309,7 @@ def test_extension_accepts_a_non_contiguous_input(model_paths):
 
 @requires_extension
 def test_extension_rejects_an_unsupported_dtype(model_paths):
-    """An unaccepted dtype fails loudly rather than being reinterpreted."""
+    """An unaccepted dtype fails loudly instead of being reinterpreted."""
     with _client(model_paths, "extension") as client:
         with pytest.raises(ValueError, match="float16|does not accept"):
             client.infer(InferenceRequest(variant="fp32", data=np.ones((1, 4), dtype=np.float16)))

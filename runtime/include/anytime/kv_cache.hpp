@@ -1,7 +1,7 @@
 // Block-allocated KV cache: a fixed arena, fixed-size blocks, and a free list.
 //
 // This is a host-side block allocator, not paged attention, and the distinction
-// is structural rather than terminological. An optimum-exported decoder declares
+// is structural, not terminological. An optimum-exported decoder declares
 // `past_key_values.{i}.{key,value}` as graph inputs and ONNX Runtime allocates the
 // matching `present.{i}.*` outputs itself, sized `[batch, kv_heads, past +
 // sequence, head_dim]`. There is no block table to hand such a graph and no hook
@@ -17,18 +17,18 @@
 // victim on evidence. On this host that accounting costs 4-6% of a decode step at
 // 128 cached tokens and 11-13% at 960, at FP32 and INT8; the INT4 share is smaller
 // only because the step it is a share of is slower. `scripts/profile_decode.py`
-// measures it against the no-gather reference rather than assuming it.
+// measures it against the no-gather reference instead of assuming it.
 //
-// Two invariants of the exported graph are load-bearing here, both measured rather
-// than assumed:
+// Two invariants of the exported graph carry real weight here, and both are
+// measured, not assumed:
 //
 //   - One decode step from a gathered cache is bitwise identical to the same step
 //     over contiguous KV. Only the source of the bytes differs, so anything less
 //     than bitwise equality means the gather is corrupting something.
 //   - `present[..., :past_len, :]` is bitwise equal to the `past` that was fed,
-//     because the graph concatenates rather than rewriting. That is what lets
+//     because the graph concatenates instead of rewriting. That is what lets
 //     scatter copy only the new tail instead of the whole tensor, and it is
-//     verified per sequence rather than trusted; see decoder.hpp.
+//     verified per sequence and not trusted; see decoder.hpp.
 
 #ifndef ANYTIME_KV_CACHE_HPP
 #define ANYTIME_KV_CACHE_HPP
@@ -43,7 +43,7 @@ namespace anytime {
 
 // Raised when a sequence needs a block the arena cannot supply. Distinct from a
 // generic failure because it is the one runtime error the admission policy is
-// expected to handle rather than propagate: the answer is to evict or refuse, not
+// expected to handle instead of propagating. The answer is to evict or refuse, not
 // to abort. Derives from RuntimeError on the Python side, so the error contract in
 // serving/onnx_runtime.py still holds.
 class CacheExhausted : public std::runtime_error {
@@ -55,7 +55,7 @@ public:
 // arena, so Key must stay 0.
 enum class KvKind : int { Key = 0, Value = 1 };
 
-// Shape of one decoder's cache, derived from the graph rather than from a model
+// Shape of one decoder's cache, derived from the graph and not from a model
 // config. `decoder.cpp` counts the `past_key_values.{i}` inputs for `layers` and
 // reads `kv_heads` and `head_dim` off the static dimensions of the first one; a
 // config could disagree with the graph it is meant to describe.
@@ -95,7 +95,7 @@ struct KvGeometry {
     std::size_t blocks_for(int tokens) const;
 
     // Throws if the geometry could not describe a real cache. Called once at
-    // construction so a malformed graph fails there rather than mid-gather.
+    // construction so a malformed graph fails there instead of mid-gather.
     void validate() const;
 };
 
@@ -161,12 +161,12 @@ struct SequenceCache {
 // both would hide which one a slow step was paying for.
 //
 // Both source and destination are contiguous within a (head, block) pair, so this
-// is one memcpy per pair rather than per token: `kv_heads * ceil(length /
+// is one memcpy per pair, not per token: `kv_heads * ceil(length /
 // block_tokens)` copies of up to `block_tokens * head_dim` floats. At GPT-2's
 // geometry with 64-token blocks that is 16 KiB a copy, which is large enough that
 // the block structure costs nothing measurable: gathering 70.8 MB this way takes
 // 1.044 ms against 1.049 ms for a single flat memcpy of the same bytes on this
-// host. Not near the host's peak bandwidth -- one thread does not reach that --
+// host. Not near the host's peak bandwidth, since one thread does not reach that,
 // but at the rate one thread copies.
 void gather(const BlockPool& pool, const SequenceCache& sequence, int layer, KvKind kind,
             int length, float* dest, int dest_row_tokens);
@@ -175,11 +175,11 @@ void gather(const BlockPool& pool, const SequenceCache& sequence, int layer, KvK
 // head, for one (layer, kind).
 //
 // The staging buffers are reused across steps, so that region holds some earlier
-// step's KV rather than anything neutral. On GPT-2 leaving it is measurably harmless
-// -- a batched row comes out bitwise equal to the same sequence run alone whether
+// step's KV and not anything neutral. On GPT-2 leaving it is measurably harmless:
+// a batched row comes out bitwise equal to the same sequence run alone whether
 // the padding is zeroed or filled with garbage, because the exported mask drops
-// masked positions exactly -- but that is a property of one export's attention
-// rather than of the runtime. Clearing makes "padding cannot leak" something the
+// masked positions exactly. But that is a property of one export's attention and
+// not of the runtime. Clearing makes "padding cannot leak" something the
 // synthetic fixture can fail on, which is the difference between a test and a claim.
 void zero_pad(const KvGeometry& geometry, float* dest, int length, int dest_row_tokens);
 

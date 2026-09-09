@@ -1,7 +1,7 @@
 # Quantisation and the variant frontier
 
 Which variants are worth serving is a property of the hardware. This project
-measures it rather than assuming a precision ladder, because on the reference
+measures it instead of assuming a precision ladder, because on the reference
 host the assumption is wrong.
 
 The two text models are
@@ -64,7 +64,7 @@ windows.
 
 | Precision | Size | vs FP32 | Perplexity | Delta | Prefill p50, one thread |
 | --- | --- | --- | --- | --- | --- |
-| `fp32` | 653 MB | 1.000 | 31.307 | -- | 450 ms |
+| `fp32` | 653 MB | 1.000 | 31.307 | n/a | 450 ms |
 | `int8` | 399 MB | 0.611 | 31.371 | +0.063 | 415 ms |
 | `int4` | 367 MB | 0.563 | 32.866 | +1.559 | 1837 ms |
 
@@ -89,7 +89,7 @@ matrix multiplies that quantisation changes.
 ### The precision ordering depends on the phase
 
 A decoder has a second shape to compare on, and it gives a different answer.
-`scripts/profile_decode.py` measures a decode step -- one token against a filled cache
+`scripts/profile_decode.py` measures a decode step, meaning one token against a filled cache
 -- which is a much lower-arithmetic-intensity shape than a 128-token encoder pass, and
 there moving a quarter of the weight bytes helps:
 
@@ -108,7 +108,7 @@ what it always was: a statement about an encoder at sequence length 128, not abo
 precision.
 
 It is also not one experiment with one variable. The encoder and decoder measurements
-differ in model, in shape, and in the recipe itself -- per-tensor across the whole
+differ in model, in shape, and in the recipe itself: per-tensor across the whole
 encoder graph, against per-channel over `MatMul` and `Gemm` with the output projection
 excluded for the decoder, for the reason two sections down. So the reversal shows that
 the encoder conclusion does not generalise; it does not identify which of the three
@@ -117,9 +117,9 @@ the 256-token chunked prefill. [`benchmarks.md`](benchmarks.md) carries the one 
 the measurement does isolate: precision moves the cache-independent part of a decode
 step and leaves the per-cached-token part alone.
 
-INT4's speed penalty turned out to be mostly about thread count rather than about the
+INT4's speed penalty turned out to be mostly about thread count, not about the
 format. Unpacking 4-bit weights is a fixed cost per matrix multiply, so it lands on the
-constant part of a step -- and it is ordinary arithmetic, which a thread pool divides
+constant part of a step, and it is ordinary arithmetic, which a thread pool divides
 well. With the decoder session on eight threads its fitted constant falls from 10.76 ms
 to 4.28 ms and it decodes *faster* than FP32 at every cache occupancy, having been 1.7x
 to 2.4x slower on one. It still loses on prefill and still costs 1.559 perplexity.
@@ -134,10 +134,10 @@ result is a statement about a configuration; it is also a statement about a
 
 ### Two decisions that decide whether the numbers mean anything
 
-Both were found by disbelieving the first result rather than recording it.
+Both were found by disbelieving the first result instead of recording it.
 
 Both are ratios from an earlier, smaller scoring configuration whose unquantised
-baseline read 26.8 rather than the 31.307 in the table above. They are comparable with
+baseline read 26.8 against the 31.307 in the table above. They are comparable with
 each other and not with that table; what they establish is the size of the effect, not
 a perplexity for any variant that ships.
 
@@ -148,8 +148,8 @@ against that 26.8 baseline. Both quantisers here exclude it.
 
 **GPT-2's linear layers export as `Gemm`, not `MatMul`.** PyTorch implements them
 as `Conv1D`, and `MatMulNBitsQuantizer` only rewrites `MatMul`. Left alone, INT4
-reached exactly one node in the whole graph -- the output projection, the one node
-that must not be touched -- which is how both failures above arrived together.
+reached exactly one node in the whole graph. That node was the output projection, the
+one node that must not be touched, which is how both failures above arrived together.
 `export_decoder.py` rewrites `Gemm(A, B, C)` as `Add(MatMul(A, B), C)` first, which
 is exact at alpha = beta = 1 with no transpose and is asserted bitwise lossless in
 `tests/test_decoder_export.py`. Models built from `nn.Linear`, the Llama family
@@ -158,7 +158,7 @@ among them, export as `MatMul` and need no rewrite.
 The first INT8 attempt was per-tensor and quantised the output projection: 44.4
 perplexity against the same 26.8 baseline. Per-channel scales with the projection left
 in float cost 0.06 against the 32-window baseline. A quantisation result is a statement
-about a configuration, not about a precision — which is also why the INT8 recipe here
+about a configuration and not about a precision, which is also why the INT8 recipe here
 and the encoder's are not the same experiment run twice.
 
 ## Quantising for the right architecture
@@ -190,15 +190,15 @@ question `benchmarks.md` carried as untested was whether that is the export's do
 the runtime's. It is the export's, and calibrating the scales away removes it.
 
 `python scripts/export_onnx.py --task text --quantization static` calibrates over 512
-SST-2 **train** sentences -- never validation, which is what all 872 accuracies here
-are scored on -- tokenised at 128 tokens, the length the benchmarks feed.
+SST-2 **train** sentences, tokenised at 128 tokens, the length the benchmarks feed.
+Never validation, which is what all 872 accuracies here are scored on.
 
 **The comparison is controlled, and that took one deliberate choice.** Static QDQ left
 to its defaults quantises 24 operator types; dynamic quantises three. Exported that way
 the two would differ in how much of the graph is 8-bit *as well as* in where the scale
 comes from, and neither result would be attributable. `QUANTISED_OPERATORS` pins both to
-`MatMul`, `Gemm` and the embedding `Gather` -- which is what the dynamic exporter picks
-on its own, checked against the shipped graph rather than assumed. The two then hold the
+`MatMul`, `Gemm` and the embedding `Gather`. That is what the dynamic exporter picks on
+its own, checked against the shipped graph. The two then hold the
 same number of 8-bit weight elements to within the 100 that are the scales themselves:
 66,892,840 against 66,892,940 for DistilBERT.
 
@@ -215,7 +215,7 @@ same number of 8-bit weight elements to within the 100 that are the scales thems
 
 **Half the prediction was right and half was wrong, and the wrong half is the more
 useful.** Flips go to zero at every width, as expected. `max_abs_logit_delta` was
-predicted to fall to the FP32 control's 1.1e-05 and it does not -- it falls from 1.18 to
+predicted to fall to the FP32 control's 1.1e-05 and it does not. It falls from 1.18 to
 0.29, four orders of magnitude short.
 
 What collapses is not the size of the movement but **how many requests move at all**:
@@ -233,7 +233,8 @@ signatures, and the maximum alone cannot tell them apart:
   precision.
 
 Counting `rows_moved` beside the maximum is what separated these. A maximum over 872
-requests cannot distinguish one sentence on a knife-edge from every sentence wobbling.
+requests cannot distinguish one sentence near a rounding boundary from every sentence
+wobbling.
 
 ### What it costs, and why it ships nowhere
 
@@ -248,14 +249,14 @@ price of determinism is **0.46pp on DistilBERT and nothing on MiniLM**, which is
 genuinely small price.
 
 **It is declined anyway, and not on accuracy.** Both INT8 encoder variants were already
-*dominated* before determinism was ever the question -- `distilbert_int8` serves in
+*dominated* before determinism was ever the question. `distilbert_int8` serves in
 17.17 ms against `distilbert_fp32`'s 12.89 ms, and `minilm_int8` in 7.16 ms against
 5.19 ms. They are slower **and** no more accurate, which is why `configs/serving.yaml`
 carries only the two FP32 variants. Static quantisation improves an axis that was not
 the reason INT8 lost. A graph that nothing selects does not become selectable by
 answering a question about it.
 
-So this is filed as an answered question rather than a shipped variant. The exports are
+So this is filed as an answered question, not a shipped variant. The exports are
 reproducible from one flag and the counts are committed in
 `results/encoder_batching.json`; nothing in the serving path changes.
 
@@ -283,7 +284,7 @@ python scripts/profile_variants.py            # measure and rank
 python scripts/count_encoder_batching.py      # the determinism counts above
 ```
 
-An FP32 graph already on disk is reused rather than rebuilt, because every committed
+An FP32 graph already on disk is reused instead of rebuilt, because every committed
 encoder number was measured against the one that is there. Delete the directory to
 force a rebuild.
 

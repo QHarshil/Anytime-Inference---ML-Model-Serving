@@ -7,27 +7,27 @@ reach, and CI cannot run `scripts/export_decoder.py` at all: it resolves optimum
 nothing should start to.
 
 So the graph is built here instead, with the same interface an
-optimum-exported decoder declares -- `input_ids`, `past_key_values.{i}.{key,value}`,
-`attention_mask` and `position_ids` in, `logits` and `present.{i}.{key,value}` out --
+optimum-exported decoder declares, `input_ids`, `past_key_values.{i}.{key,value}`,
+`attention_mask` and `position_ids` in, `logits` and `present.{i}.{key,value}` out,
 at a size that runs in microseconds.
 
-Four properties make it a real test rather than a shape-checker:
+Four properties make it a real test instead of a shape-checker:
 
 - **Every cached position reaches the logits.** Each layer reduces its whole
   `present` tensor into the hidden state, so a gather that drops, duplicates or
   misplaces any token position changes the output. That reduction is deliberately
   *not* masked, which is what makes padding left in a reused staging buffer visible
-  as a wrong answer rather than absorbed.
+  as a wrong answer instead of absorbed.
 - **Layers and the two halves are not interchangeable.** Each layer scales its keys
   and values by a distinct constant, so reading layer 4's slab where layer 3's was
-  meant, or a value where a key belonged, is visible rather than silently plausible.
+  meant, or a value where a key belonged, is visible instead of silently plausible.
 - **`position_ids` and `attention_mask` are wired in.** A decode step that offset
   its positions wrongly, or sized its mask to the wrong total, changes the logits
   instead of being ignored.
 - **The mask reaches the cache as well as the logits.** A second reduction weights
   `present` by the mask along the token axis. The plain mask term above only sees a
   row's mask *weight*, so it cannot tell a right-padded mask from a left-padded one
-  of the same weight -- which is exactly the mistake a batched row invites, since
+  of the same weight, which is exactly the mistake a batched row invites, since
   its real tokens sit at [0, len) while a careless implementation masks [max-len,
   max). Weighting the cache by the mask makes the two differ.
 
@@ -37,7 +37,7 @@ the masked one alone misses padding leaking out of the buffer, because masked
 garbage multiplies to zero. Together they catch all four failures: leaked padding, a
 mask of the wrong weight, a mask of the right weight in the wrong place, and a row
 whose KV landed at the wrong offset. Neither makes a cache entry depend on what
-follows it, so chunk-invariant prefill stays testable -- the mask is applied to the
+follows it, so chunk-invariant prefill stays testable. The mask is applied to the
 reduction, never to the `present` the cache is scattered from.
 
 `build_decoder_graph` also produces the malformed variants the rejection tests need:
@@ -56,7 +56,7 @@ LAYERS = 3
 KV_HEADS = 2
 HEAD_DIM = 4
 # Wide enough that tests can pick token ids freely; the embedding Gather rejects an
-# id at or above this, which is a distraction rather than a finding.
+# id at or above this, which is a distraction, not a finding.
 VOCAB = 64
 
 
@@ -130,7 +130,7 @@ def build_decoder_graph(
     nodes = [
         helper.make_node("Gather", ["embedding", "input_ids"], ["embedded"], axis=0),
         # position_ids folded in, so a decode step that mis-advances its positions
-        # changes the logits rather than being ignored.
+        # changes the logits instead of being ignored.
         helper.make_node("Cast", ["position_ids"], ["positions_f"], to=TensorProto.FLOAT),
         helper.make_node("Unsqueeze", ["positions_f", "axis_2"], ["positions_3d"]),
         # What the cache is derived from. Deliberately a function of this token and
@@ -221,7 +221,7 @@ def build_decoder_graph(
             accumulated = merged
 
             # The same reduction, weighted by the mask along the token axis. Applied
-            # to a copy for the reduce only -- `present` itself is untouched, so what
+            # to a copy for the reduce only, `present` itself is untouched, so what
             # gets cached for a position still does not depend on the mask, and
             # chunked prefill stays invariant.
             masked = f"masked.{layer}.{kind}"
@@ -261,7 +261,7 @@ def decoder_graph(tmp_path_factory) -> Path:
 def gpt2_graph() -> Path:
     """The exported GPT-2 decoder, when it happens to be on disk.
 
-    Skipped rather than exported: the export needs optimum-onnx, torch and a model
+    Skipped instead of exported: the export needs optimum-onnx, torch and a model
     download, none of which belong in a test. Local runs that have it get the real
     thing; CI gets the synthetic graph and the same assertions.
     """

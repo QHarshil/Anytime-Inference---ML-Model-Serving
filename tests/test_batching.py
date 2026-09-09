@@ -3,11 +3,11 @@
 The failure this module invites is not a crash. A batcher that attributes row 2 to the
 request that sent row 3, or pads a short row into a graph that reads its padding,
 returns logits of the right shape and the right dtype for every request, and every
-caller gets an answer. So most of what follows is about identity and isolation rather
-than about shapes:
+caller gets an answer. So most of what follows is about identity and isolation, not
+about shapes:
 
 - **A request gets its own row back.** Every request here is given a feed no other
-  request could produce, and the answer is checked against that feed rather than
+  request could produce, and the answer is checked against that feed instead of
   against a shape. A batcher that returned the batch's rows in the wrong order would
   pass a shape check and fail these.
 - **A row is unaffected by its neighbours.** Which is the property batching has to
@@ -15,25 +15,25 @@ than about shapes:
 - **Padding the mask into the wrong columns is caught.** The synthetic graph weights
   each position by its index before the mask is applied, so a mask of the right total
   weight in the wrong place is a different answer. `test_the_fixture_can_see_a_mask_in
-  _the_wrong_columns` is what says that assertion has teeth: it injects the bug and
+  _the_wrong_columns` is what says that assertion catches the bug: it injects it and
   requires the graph to notice.
 
 A batched row is **not** bitwise equal to the same request run alone, and the first
 version of this file asserted that it was. The argument was that the pooling is a masked
-sum, so appending masked zeros adds exactly nothing -- true of the addends and false of
+sum, so appending masked zeros adds exactly nothing, true of the addends and false of
 the sum. Padding changes how many terms the reduction has and a vectorised reduction
 groups its terms by lane, so the same addends are added in a different order, and float
 addition is not associative. It came out exact on arm64, which is the only reason the
 assertion ever passed; CI's x86-64 differed by 7.6e-06. `docs/runtime.md` already says
-this about batched decode -- "changing the batch dimension changes the GEMM shape and may
-change which MLAS kernel runs" -- so the lesson was written down before this file was and
+this about batched decode, "changing the batch dimension changes the GEMM shape and may
+change which MLAS kernel runs", so the lesson was written down before this file was and
 was not applied to it.
 
 The equality is asserted within `_reassociation_bound` instead, computed from the
-fixture's own weights rather than chosen by eye. It is the classical bound on summing a
+fixture's own weights instead of chosen by eye. It is the classical bound on summing a
 row's terms in *any* order, so no kernel on any architecture can exceed it: 6.7e-04 at
 worst here, against logits reaching 112 and against the 7.6e-06 CI actually produced. It
-keeps its teeth because the fixture's rows are nothing like each other -- the closest two
+keeps its teeth because the fixture's rows are nothing like each other, the closest two
 differ by 11.3, which is 1.7e+04 times the bound, so a row handed to the wrong request
 cannot hide inside it. `ANYTIME_BATCH_BITWISE=1` demands exact equality as well, which is
 worth doing on the machine that gives it and nowhere else. The real encoder variants are
@@ -43,14 +43,14 @@ records what padding does to an int8 answer, and its FP32 control moves a logit 
 
 The batcher's own policy tests use a stub in place of a runtime. They are the ones that
 have to run everywhere and they carry no ONNX dependency at all. **Coalescing is made to
-happen rather than hoped for.** Each of them starts its submitters on a
+happen instead of hoped for.** Each of them starts its submitters on a
 `threading.Barrier` and gives the batcher a window wide enough that the group closes on
-the last arrival rather than on the clock, so an asserted width is a property of the
+the last arrival instead of on the clock, so an asserted width is a property of the
 arrivals. The version before this one held the first batch for 0.15 s and assumed eight
 threads would start inside it. On CI they did not: eight requests ran at width 1, and six
 of the nine tests below assert nothing a width-1 run would violate, so they were passing
 over a batcher that had not batched. Patching `RequestBatcher` to never put two requests
-in a group is the check on that -- **three of the nine caught it before this change and
+in a group is the check on that, **three of the nine caught it before this change and
 nine of nine do now**, which is what the barrier and the window bought.
 """
 
@@ -83,14 +83,14 @@ VOCAB, HIDDEN, CLASSES = 32, 8, 3
 def _fixture_weights() -> tuple[np.ndarray, np.ndarray]:
     """The fixture graph's embedding and projection.
 
-    Drawn here rather than inside `build_encoder_graph` so that the graph and the
+    Drawn here instead of inside `build_encoder_graph` so that the graph and the
     numeric bound `_reassociation_bound` computes from it cannot be built from different
     numbers. A bound derived from weights the session is not actually running would be a
     tolerance with nothing behind it, which is the thing it exists to avoid.
     """
     rng = np.random.default_rng(20260824)
     # Offset off zero, so a padded position that leaked past the mask would contribute
-    # something rather than nothing.
+    # something instead of nothing.
     embedding = (rng.standard_normal((VOCAB, HIDDEN)) + 1.0).astype(np.float32)
     projection = rng.standard_normal((HIDDEN, CLASSES)).astype(np.float32)
     return embedding, projection
@@ -99,7 +99,7 @@ def _fixture_weights() -> tuple[np.ndarray, np.ndarray]:
 def build_encoder_graph(path: Path, *, include_mask: bool = True) -> None:
     """Write a tiny encoder-shaped graph: ids (and a mask) in, pooled logits out.
 
-    Two properties make it a real test of a batcher rather than a shape-checker:
+    Two properties make it a real test of a batcher instead of a shape-checker:
 
     - **Each position is weighted by its index before pooling**, so a row whose real
       tokens sit at the wrong offset, or whose mask covers the wrong columns, gives a
@@ -109,7 +109,7 @@ def build_encoder_graph(path: Path, *, include_mask: bool = True) -> None:
       is what makes the equality assertion exact.
 
     `include_mask=False` produces the graph that has no way to ignore padding, which
-    is the one the batcher has to refuse to pad rather than serve wrongly.
+    is the one the batcher has to refuse to pad instead of serve wrongly.
     """
     import onnx
     from onnx import TensorProto, helper, numpy_helper
@@ -138,7 +138,7 @@ def build_encoder_graph(path: Path, *, include_mask: bool = True) -> None:
 
     nodes = [
         helper.make_node("Gather", ["embedding", "input_ids"], ["embedded"], axis=0),
-        # Positions taken from the fed shape rather than an input, so the weighting
+        # Positions taken from the fed shape instead of an input, so the weighting
         # follows whatever width the batch happened to have.
         helper.make_node("Shape", ["input_ids"], ["ids_shape"]),
         helper.make_node("Slice", ["ids_shape", "start_1", "end_2"], ["sequence_1d"]),
@@ -224,7 +224,7 @@ class _StubRuntime:
     """Records every batch it is asked to run and answers row-wise.
 
     The answer for a row is derived from that row's own feed, so a batcher that
-    handed a row to the wrong request produces a detectable answer rather than a
+    handed a row to the wrong request produces a detectable answer instead of a
     plausible one.
     """
 
@@ -254,24 +254,24 @@ def _request(token: int, length: int = 2, *, mask: bool = True) -> dict[str, np.
     return feeds
 
 
-# A barrier that never fills should fail the test rather than hang the suite, so the wait
+# A barrier that never fills should fail the test instead of hang the suite, so the wait
 # is timed. It is generous because nothing here measures how long anything took.
 _BARRIER_TIMEOUT_S = 60.0
 
 # Wide enough that the clock never closes a group. Paired with `max_batch_size` set to
 # the number of arrivals, `_take_group` returns the moment the last one lands, so the
-# width these tests assert is a property of the arrivals rather than of how fast the host
+# width these tests assert is a property of the arrivals instead of of how fast the host
 # ran them.
 #
-# Two seconds rather than something larger, because it bounds the cost of a *failing*
+# Two seconds instead of something larger, because it bounds the cost of a *failing*
 # run: a batcher that stopped coalescing waits the window out once per group. At two
 # seconds this file fails such a run in under a minute; at thirty it had not finished in
-# two. It is still far longer than the arrivals need -- the barrier has already paid for
-# starting the threads, so what is left is an append under a lock.
+# two. It is still far longer than the arrivals need: the barrier has already paid
+# for starting the threads, so what is left is an append under a lock.
 _UNTIL_FULL_MS = 2_000.0
 
-# Where the group is split -- two variants, or two input signatures, cannot share a Run
-# -- the remainder is smaller than `max_batch_size` and does wait the window out, once.
+# Where the group is split, because two variants or two input signatures cannot share
+# a Run, the remainder is smaller than `max_batch_size` and does wait the window out.
 # So those tests need a window short enough to pay for, and assert only what a window
 # that expired early would still leave true.
 _UNTIL_SPLIT_MS = 250.0
@@ -283,7 +283,7 @@ def _submit_together(call: Callable[[int], Any], count: int) -> list[Future]:
     The batcher can only coalesce requests that have already arrived, so a test of what
     it coalesces is really a test of what the host let arrive. `ThreadPoolExecutor`
     creates a thread per `submit`, and on a loaded runner the eighth can start long after
-    the first has been answered -- which is exactly what happened on CI, where eight
+    the first has been answered, which is exactly what happened on CI, where eight
     requests that pass here at width 8 ran at width 1.
 
     The barrier removes that: every submitter is inside `call` before any of them is let
@@ -317,7 +317,7 @@ def test_concurrent_requests_share_a_run():
         futures = _submit_together(lambda i: batcher.infer("v", _request(i)), 8)
         results = [future.result() for future in futures]
     # One Run for all eight, not "two of them happened to overlap". The window closes on
-    # the eighth arrival, so this is what the batcher does rather than what the host's
+    # the eighth arrival, so this is what the batcher does instead of what the host's
     # scheduler allowed on the day.
     assert stub.widths == [8], f"eight simultaneous requests ran as {stub.widths}"
     # Every request still got its own answer back, and every one of them was told the
@@ -335,7 +335,7 @@ def test_a_batch_never_exceeds_max_batch_size():
         for future in futures:
             future.result()
     # Twelve arrivals against a cap of three, and the window closes each group the moment
-    # it is full: four runs of three exactly, rather than "at most three" over whatever
+    # it is full: four runs of three exactly, instead of "at most three" over whatever
     # split the host produced. `max <= 3` alone would pass over a batcher that never
     # coalesced at all, which is how it passed on CI.
     assert stub.widths == [3, 3, 3, 3], stub.widths
@@ -382,7 +382,7 @@ def test_requests_declaring_different_inputs_do_not_share_a_run():
     assert sum(stub.widths) == 4
     assert max(stub.widths) >= 2, f"nothing coalesced: widths {stub.widths}"
     # The masked requests are the even-numbered ones, so a row in the wrong group shows
-    # up as the wrong parity rather than only as the wrong shape.
+    # up as the wrong parity instead of only as the wrong shape.
     for _, feeds in stub.batches:
         parity = 0 if "attention_mask" in feeds else 1
         assert (feeds["input_ids"] % 2 == parity).all(), "a row joined the wrong signature"
@@ -390,7 +390,7 @@ def test_requests_declaring_different_inputs_do_not_share_a_run():
 
 def test_ragged_rows_without_a_mask_input_are_refused():
     stub = _StubRuntime()
-    # A window rather than a held first batch: with two requests and no window the
+    # A window instead of a held first batch: with two requests and no window the
     # first is dispatched alone before the second arrives, and a batch of one is
     # never ragged. The window is what makes the group form.
     lengths = (2, 5)
@@ -408,7 +408,7 @@ def test_ragged_rows_without_a_mask_input_are_refused():
                 errors.append(str(exc))
     # Refusing beats padding: without a mask the graph reads the zeros, and wrong
     # logits of the right shape are worse than an exception.
-    assert errors, "a maskless ragged batch was served rather than refused"
+    assert errors, "a maskless ragged batch was served instead of refused"
     assert MASK_INPUT_NAMES[0] in errors[0]
 
 
@@ -427,7 +427,7 @@ def test_ragged_rows_with_a_mask_input_are_padded_to_the_longest():
     for _, feeds in stub.batches:
         width = feeds["input_ids"].shape[1]
         # The mask marks the real extent of each row, and it is right-aligned to
-        # zero rather than to the width.
+        # zero instead of to the width.
         for row in range(feeds["input_ids"].shape[0]):
             real = int(feeds["attention_mask"][row].sum())
             assert feeds["attention_mask"][row, :real].all()
@@ -483,7 +483,7 @@ def test_the_batch_latency_is_reported_rather_than_a_share_of_it():
         results = [future.result() for future in futures]
     # The width assertion is what gives the rest of this teeth. The stub returns 1.0
     # whatever it is fed, so at width 1 the latency check below is true of a batcher
-    # that never batched -- which is what it was on CI.
+    # that never batched, which is what it was on CI.
     assert stub.widths == [4], stub.widths
     # Every member of one batch reports the same runtime latency: the batch's, not
     # a per-request share. Dividing it by the width would report a service time no
@@ -613,7 +613,7 @@ def _reassociation_bound(tokens: Sequence[int], width: int) -> float:
 
     Padding changes how many terms the pooling sums, and a vectorised reduction adds its
     terms lane by lane, so the same addends are summed in a different order at a
-    different width. Float addition is not associative, so the answer moves -- which is
+    different width. Float addition is not associative, so the answer moves, which is
     what CI found and this machine cannot see.
 
     This is the classical bound on that movement. Summing `n` floats in *any* order lands
@@ -621,7 +621,7 @@ def _reassociation_bound(tokens: Sequence[int], width: int) -> float:
     projection that follows is itself an eight-term sum of products with the same bound.
     Twice that, because two evaluations can sit on opposite sides of the exact answer.
 
-    A bound over every order rather than over the orders some host happened to use, which
+    A bound over every order instead of over the orders some host happened to use, which
     is the property the assertion needs: what it permits must not depend on the machine.
     And it is computed from `_fixture_weights`, the same numbers the session is running,
     so it cannot drift the way a constant in a docstring would.
@@ -677,7 +677,7 @@ def test_batched_rows_agree_with_the_same_requests_run_alone(encoder_graph):
     Within `_reassociation_bound`, not bitwise. This assertion was exact until CI failed
     it: row 1 moved by 7.6e-06 on x86-64 and by nothing at all here, because padding a
     row to nine changes the order its terms are summed in and a NEON reduction and an AVX
-    one make different choices. See the module docstring -- the exact version of this was
+    one make different choices. See the module docstring, the exact version of this was
     a test that only passed on the machine that wrote it.
 
     Set `ANYTIME_BATCH_BITWISE=1` to demand bitwise equality as well, which holds on this
@@ -724,7 +724,7 @@ def test_batched_rows_agree_with_the_same_requests_run_alone(encoder_graph):
 
 
 def test_the_reassociation_bound_is_far_too_small_to_hide_a_swapped_row(encoder_graph):
-    """What makes the tolerance above a tolerance rather than a shrug.
+    """What makes the tolerance above a tolerance instead of a shrug.
 
     A bound is only worth having if it is far below the defect it must not absorb, and
     the defect these tests exist for is a row attributed to the wrong request. The
@@ -732,7 +732,7 @@ def test_the_reassociation_bound_is_far_too_small_to_hide_a_swapped_row(encoder_
     differ by more than 11, against a widest bound under a thousandth. Four orders of
     magnitude of loosening would be needed before a swapped row could pass.
 
-    The numbers are asserted rather than quoted so that changing the fixture's weights,
+    The numbers are asserted instead of quoted so that changing the fixture's weights,
     its lengths or its hidden size cannot leave the claim behind.
     """
     import onnxruntime as ort
@@ -772,7 +772,7 @@ def test_a_short_request_is_unaffected_by_a_long_neighbour(encoder_graph):
     assert results[0].batch_size == 2, "the two requests did not share a run"
     # A two-token row padded to twenty-four: twelve times the sequence axis, and the same
     # reassociation as above. It came out bitwise on both architectures, which is not
-    # something to assert -- see `test_batched_rows_agree_with_the_same_requests_run_alone`.
+    # something to assert, see `test_batched_rows_agree_with_the_same_requests_run_alone`.
     np.testing.assert_allclose(
         results[0].logits,
         alone,
@@ -845,7 +845,7 @@ def test_a_maskless_graph_serves_one_length_and_refuses_a_ragged_batch(maskless_
                 future.result()
             except RuntimeError as exc:
                 errors.append(str(exc))
-    assert errors, "a maskless graph was fed padding rather than refusing it"
+    assert errors, "a maskless graph was fed padding instead of refusing it"
 
 
 def test_closing_a_batched_pool_stops_the_batcher(encoder_graph):
@@ -869,13 +869,13 @@ def test_a_batched_pool_still_reports_its_size_and_sharing(encoder_graph):
 # What bounds the achieved width, which is the question the AdaptiveServer merge asks
 # --------------------------------------------------------------------------------------
 #
-# Batching the encoder was expected to move its concurrency model toward the decoder's
-# -- from "N workers x 1 request" to "one scheduler, K requests per Run" -- and so to
+# Batching the encoder was expected to move its concurrency model toward the decoder's,
+# from "N workers x 1 request" to "one scheduler, K requests per Run", and so to
 # dissolve part of what makes merging the two lanes hard. These two say it does not.
 #
 # A batch can only hold requests that have already arrived at the runtime, and
 # `AdaptiveServer` keeps at most `max_in_flight` of them there. So the widest batch the
-# encoder lane can ever form is `max_in_flight`, which defaults to the pool size -- the
+# encoder lane can ever form is `max_in_flight`, which defaults to the pool size, the
 # same number `AdaptiveSelector` models as M/M/c's `c`. Batching wider means admitting
 # more requests than there are servers, which is the identical decision the decoder
 # merge needs. The wall is in the same place; batching only makes it one number.
@@ -904,7 +904,7 @@ def _widest_batch_through_a_server(encoder_graph, *, workers: int, max_in_flight
         backend="python",
         max_batch_size=16,
         # A window, so the batcher waits for whatever the server is willing to have
-        # in flight rather than racing a graph that runs in microseconds.
+        # in flight instead of racing a graph that runs in microseconds.
         max_batch_delay_ms=120.0,
     ) as pool:
         server, monitor = _server_with(pool, workers, max_in_flight)
@@ -942,7 +942,7 @@ def test_admission_caps_the_batch_even_with_max_in_flight_lifted():
     Lifting `max_in_flight` does not free the width, because the selector's backlog
     term rejects an arrival once the requests already admitted would take longer than
     the deadline to clear. So the widest batch the encoder lane can form is a function
-    of the deadline and the service time -- no timing, no host, just the shipped
+    of the deadline and the service time, no timing, no host, just the shipped
     configuration.
 
     These are the numbers `benchmarks.md` quotes. The decoder needs width 8 to reach
@@ -983,7 +983,7 @@ def test_the_admissible_depth_falls_as_the_deadline_tightens():
     """Direction check on the bound, independent of the shipped numbers.
 
     A tighter deadline can only allow a shallower backlog. This is what says the
-    quantity above is the deadline's doing rather than an artefact of one config.
+    quantity above is the deadline's doing instead of an artefact of one config.
     """
     from anytime_serving.serving.selector import AdaptiveSelector, VariantProfile
 
@@ -1017,17 +1017,16 @@ def test_a_non_positive_deadline_has_no_admissible_depth():
 def test_an_unclosed_batcher_does_not_abort_the_interpreter_at_exit(tmp_path):
     """A leaked batcher must not take the process down on the way out.
 
-    A subprocess because interpreter shutdown is not something an in-process assertion
-    can reach, and stderr as well as status because a teardown abort prints there
-    without moving the exit code.
+    Runs in a subprocess because an in-process assertion cannot reach interpreter
+    shutdown. Checks stderr as well as exit status, because a teardown abort prints to
+    stderr without changing the exit code.
 
-    **What this does not do is reproduce the abort that prompted it.** A clean clone
-    printed `std::recursive_mutex lock failed` at teardown in about one full-suite run
-    in ten; removing the `atexit` registration this guards does *not* make this test
-    fail, and 15 runs of this module alone produced none. So the abort is not a leaked
-    batcher, and this is a guard on the narrower thing that is actually checkable here:
-    a process that leaks a batcher still exits cleanly and quietly. The abort is
-    recorded as open in `.claude/PROGRESS.md` with its reproduction rate.
+    This test does not reproduce the teardown abort that prompted it. A clean clone
+    prints `std::recursive_mutex lock failed` at teardown in about 1 run in 10.
+    Removing the `atexit` registration guarded here does not make this test fail, and
+    15 runs of this module alone produced no aborts. So a leaked batcher is not the
+    cause. What this checks is narrower and does hold. A process that leaks a batcher
+    still exits cleanly and quietly. docs/development.md covers the abort itself.
     """
     import subprocess
 

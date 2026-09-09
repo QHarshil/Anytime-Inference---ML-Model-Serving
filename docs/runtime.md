@@ -22,8 +22,8 @@ matching the installed `onnxruntime` wheel, downloading the matching
 
 ## Match the ONNX Runtime version to the Python wheel
 
-This is the single most important build detail, and it is now enforced rather than
-documented.
+This is the single most important build detail, and it is now enforced in code, not
+just documented.
 
 Building the Stage 1 worker against 1.20.1 while the Python side used the 1.26.0
 wheel measured DistilBERT at **98.9 ms inside the worker against 13.0 ms in the
@@ -43,7 +43,7 @@ interpreter will import, and checked in three places:
    fails.
 2. **Compile time.** `ORT_API_VERSION` is read out of the resolved headers and
    asserted in `runtime/src/tensor.cpp`, so a header from a different include path breaks
-   the build rather than the run.
+   the build instead of the run.
 3. **Import time.** `load_extension()` compares
    `anytime_runtime.onnxruntime_version()` against `onnxruntime.__version__`,
    which covers an extension carried into an environment with a different wheel.
@@ -60,14 +60,14 @@ is. Two clones can each be perfectly self-consistent at different versions, and 
 did: clones taken weeks apart resolved 1.26.0 and then 1.29.0 with no change to this
 repository. That is not cosmetic. The kernel that runs follows the version, the
 reduction order follows the kernel, and the low-order bits of every float follow the
-reduction order -- which is the same mechanism as the batch-width trap below.
+reduction order. That is the same mechanism as the batch-width trap below.
 
 `onnxruntime>=1.16` stays a floor anyway, for three reasons:
 
 - **A pin would contradict the resolution it sits beside.**
   `runtime/cmake/ResolveOnnxRuntime.cmake` reads the wheel the *target* interpreter
   will import and only falls back to the `pyproject.toml` specifier. The whole point
-  is that the SDK follows the environment rather than a constant. An `==` makes that
+  is that the SDK follows the environment , not a constant. An `==` makes that
   machinery dead code.
 - **This installs as a library.** An exact pin in `[project].dependencies` makes
   `anytime-serving` uninstallable alongside anything else that wants a different
@@ -86,7 +86,7 @@ it. `results/decode_sweep.json` and `results/batch_profiles.json` already carrie
 
 This is a decision about **reproducibility of measurements**, not about correctness.
 Correctness is already covered: the assertions in the test suite are bounds that hold
-over every reduction order rather than equalities that hold on one host, which is
+over every reduction order, not equalities that hold on one host, which is
 what makes them survive a version change. See `tests/test_batching.py`.
 
 **If the teardown SIGABRT returns, capture `pip freeze` from the aborting run before
@@ -108,7 +108,7 @@ All three agreed bitwise on the logits, and their inference times agreed within
 0.4%. That agreement is what a matched version looks like, and it is the check that
 was missing in Stage 1.
 
-Bitwise agreement across the two libraries is a property of the graph rather than a
+Bitwise agreement across the two libraries is a property of the graph, not a
 guarantee, and it is worth not over-reading. The extension links its own ONNX Runtime
 SDK and the wheel ships a separate build of the same version, so on x86-64 they can
 dispatch to different MLAS kernels. DistilBERT and the small fixture graphs give them
@@ -124,7 +124,7 @@ had served as the reference the extension was validated against.
 
 ## The KV cache is a block allocator, not paged attention
 
-This distinction is structural rather than terminological, and the graph interface
+This distinction is structural, not terminological, and the graph interface
 is what settles it. [PagedAttention](https://arxiv.org/abs/2309.06180) works by
 handing the attention kernel a block table so it can read KV from
 non-contiguous pages. An [optimum](https://huggingface.co/docs/optimum/index)-exported
@@ -146,19 +146,19 @@ drift, and nothing in these docs calls it paged attention.
 Two alternatives were considered and declined. `past_present_share_buffer` contrib-op
 graphs may not be reachable through optimum for TinyLlama, and
 [onnxruntime-genai](https://github.com/microsoft/onnxruntime-genai) brings its own
-scheduler rather than accepting ours.
+scheduler instead of accepting ours.
 
 **The allocator is not a speedup, and does not claim to be.** Feeding the `present`
 tensors straight back as the next `past` costs no gather at all and is the fastest
 thing available. What blocks buy is accounting: a fixed arena whose occupancy is a
 number that admission can refuse against and eviction can choose against. The price
-of that is measured rather than assumed, and it is the gather.
+of that is measured, and it is the gather.
 
 A block holds `block_tokens` token positions across every layer, for both key and
 value, because that is the unit admission reasons about. For GPT-2 at 64 tokens a
 block that is 4.5 MiB, and a 1024-token sequence is 16 blocks. Geometry is read off
-the graph -- layers by counting the past inputs, `kv_heads` and `head_dim` from their
-static dimensions -- rather than from a model config that could disagree with the
+the graph, taking layers by counting the past inputs and `kv_heads` and `head_dim`
+from their static dimensions. A model config could disagree with the
 graph it describes.
 
 Fragmentation is not a concern and that is the point of fixed blocks: any free block
@@ -167,14 +167,14 @@ nothing fits. `tests/test_kv_cache.py` asserts the consequence, which is that a
 sequence whose blocks are non-adjacent and reversed computes bitwise the same output
 as one whose blocks are contiguous.
 
-Two properties of the exported graph are load-bearing and neither is assumed:
+Two properties of the exported graph are required, and neither is assumed:
 
 - **A decode step from a gathered cache is bitwise identical to the same step over
   contiguous KV.** Only the source of the bytes differs, so anything less means the
   gather is corrupting something. Asserted on both the synthetic graph and GPT-2.
 - **`present[..., :past_len, :]` equals the `past` that produced it**, because the
-  graph concatenates rather than rewriting. That is what lets scatter write only the
-  new tail -- 0.02 ms against a 1.0 ms gather at 960 cached tokens. It is a property
+  graph concatenates instead of rewriting. That is what lets scatter write only the
+  new tail, 0.02 ms against a 1.0 ms gather at 960 cached tokens. It is a property
   of how these graphs are exported and not of the ONNX specification, so it is
   verified once per sequence and raises on mismatch. Falling back to a full-present
   scatter would keep running while silently changing what a decode step costs.
@@ -189,10 +189,10 @@ The graph takes one `past_sequence_length` for the whole batch, so rows of unequ
 length have to be made equal. The past is **right-padded**: real KV at `[0, len_b)`,
 padding at `[len_b, max_past)`. `position_ids` stay each row's true absolute positions
 and `attention_mask` is 1 over `[0, len_b)`, 0 over the padding, and 1 for the new
-token. Right rather than left padding because the arena stores a sequence's blocks in
+Padding goes on the right, because the arena stores a sequence's blocks in
 order and a left-padded row would need every block shifted.
 
-Three consequences, each measured rather than assumed:
+Three consequences, each measured:
 
 - **`scatter` needs separate source and destination offsets.** With the past padded to
   `max_past`, row `b`'s new KV lands at `present` index `max_past` and not at `len_b`.
@@ -200,19 +200,19 @@ Three consequences, each measured rather than assumed:
   is the shape of bug that produces plausible timings and wrong tokens.
 - **The padding is zeroed, and that is timed separately.** `zero_pad` is not folded
   into `gather` precisely so `StepTimings.pad_ms` can be read on its own. It is cheap
-  -- about 1 ms clearing a 4:1 length spread across eight rows at 960 cached tokens --
+  (about 1 ms clearing a 4:1 length spread across eight rows at 960 cached tokens)
   and it is not where the cost of unequal lengths lands. See
   [`benchmarks.md`](benchmarks.md).
 - **GPT-2 tolerates garbage padding bitwise**, because the exported mask drops masked
   positions exactly, so zeroing is belt and braces on *that* graph. It is still done.
   The staging buffers are reused between steps, and the alternative is trusting one
-  export's masking rather than making "padding cannot leak" a test.
+  export's masking, instead of making "padding cannot leak" a test.
 
 The assertion for a batched step is **token identity**, plus float32 agreement at 1e-5
-rather than bitwise. Changing the batch dimension changes the GEMM shape and may change
+and not bitwise. Changing the batch dimension changes the GEMM shape and may change
 which MLAS kernel runs, which is the same trap as comparing two builds bitwise. Batched
 and sequential decode did measure bitwise-equal on GPT-2 here, and the tests still do
-not assert it, because that is a property of this host rather than of the code.
+not assert it, because that is a property of this host and not of the code.
 
 ## Behaviour
 
@@ -232,7 +232,7 @@ not assert it, because that is a property of this host rather than of the code.
   matches how the service times in `configs/serving.yaml` were measured.
 - **Input filtering.** Variants can declare different inputs, so callers pass the
   union and each graph takes the subset it declares. A declared input that is
-  missing is an error rather than a run on a partial feed.
+  missing is an error, not a run on a partial feed.
 - **Error contract.** An unknown variant or a missing declared input raises
   `RuntimeError`; a dtype the engine does not accept raises `ValueError`. Both
   backends behave identically, which is what makes them comparable.
@@ -256,7 +256,7 @@ ANYTIME_REQUIRE_BACKENDS=extension,python pytest -q tests/test_runtime_engine.py
 ```
 
 `tests/test_runtime_engine.py` asserts the backends agree bitwise on a graph with
-real arithmetic in it, that outputs are views rather than copies, that a strided
-input is made contiguous rather than misread, and that an unsupported dtype is
+real arithmetic in it, that outputs are views and not copies, that a strided
+input is made contiguous instead of misread, and that an unsupported dtype is
 refused. `ANYTIME_REQUIRE_BACKENDS` turns a missing backend from a skip into a
 failure, so the comparison cannot decay into one backend checked against itself.

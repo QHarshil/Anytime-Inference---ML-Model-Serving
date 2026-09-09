@@ -2,9 +2,9 @@
 
 Stands in for the variant-selection policy of INFaaS (Romero et al., USENIX ATC '21,
 https://www.usenix.org/conference/atc21/presentation/romero): pick the cheapest
-variant that meets the latency target. Adapted rather than reimplemented -- INFaaS
+variant that meets the latency target. Adapted, not reimplemented: INFaaS
 selects over model variants and hardware, autoscaling in a cluster, while this reads
-a table of offline profiles -- so it is a comparison point and not a reproduction.
+a table of offline profiles, so it is a comparison point and not a reproduction.
 """
 
 from __future__ import annotations

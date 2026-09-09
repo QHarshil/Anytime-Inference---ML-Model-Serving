@@ -5,7 +5,7 @@ INT8 comes in two flavours and the difference is the point of `--quantization`:
     dynamic  the activation scale is computed at runtime from the tensor actually
              fed, by a `DynamicQuantizeLinear` node per quantised matrix op. A
              request's answer therefore depends on its own padding and on whoever
-             shares its batch -- measured at 0.23-0.69% of predictions.
+             shares its batch, measured at 0.23-0.69% of predictions.
     static   the activation scale is a constant, calibrated once against real data
              before the graph is saved. No `DynamicQuantizeLinear` survives, so
              nothing about the answer can depend on the rest of the tensor.
@@ -47,8 +47,8 @@ QUANTIZATION_MODES = ("dynamic", "static", "both")
 # The operators both INT8 flavours quantise, so that static and dynamic differ in
 # exactly one thing: where the activation scale comes from.
 #
-# This is what the dynamic exporter picks on its own -- checked against the shipped
-# graphs rather than assumed. DistilBERT FP32 has 48 MatMul and 2 Gemm, and the
+# This is what the dynamic exporter picks on its own, read off the shipped graphs
+# and not guessed at. DistilBERT FP32 has 48 MatMul and 2 Gemm, and the
 # dynamic INT8 graph has 50 MatMulInteger and 50 DynamicQuantizeLinear; its word
 # embedding table is UINT8, which is the `Gather`. Static QDQ left to itself would
 # quantise 24 operator types, which would make it a different experiment.
@@ -64,7 +64,7 @@ DEFAULT_CALIBRATION_SAMPLES = 512
 # How the activation range is taken from the calibration run.
 #
 #   minmax      the widest value seen. Simple, and blunt where activations have
-#               outliers -- which transformers do, so this is the one to suspect
+#               outliers, which transformers do, so this is the one to suspect
 #               first if a static export loses accuracy.
 #   percentile  a histogram, clipped at PERCENTILE. Trades a little clipping for a
 #               much tighter grid over the values that actually occur.
@@ -73,7 +73,7 @@ CALIBRATION_METHODS = ("minmax", "percentile", "entropy")
 PERCENTILE = 99.999
 
 # Calibration tokenises the way the benchmarks feed the model, so the activation
-# ranges are taken over the tensor distribution that is actually served rather than
+# ranges are taken over the tensor distribution that is actually served instead of
 # over a tighter one. `run_load_sweep.py`, `profile_variants.py` and
 # `count_encoder_batching.py` all use this length, and a test asserts all four agree.
 CALIBRATION_SEQUENCE_LENGTH = 128
@@ -109,7 +109,7 @@ def _quantization_target() -> str:
 def _calibration_dataset(quantizer, tokenizer, samples: int):
     """Sample SST-2 train and tokenise it the way the benchmarks feed the model.
 
-    Train, never validation -- see CALIBRATION_SPLIT. `get_calibration_dataset`
+    Train, never validation, see CALIBRATION_SPLIT. `get_calibration_dataset`
     shuffles with a fixed seed and then drops every column the graph does not
     declare, so what comes back is `input_ids`, `attention_mask` and, where the
     graph takes it, `token_type_ids`.
@@ -163,7 +163,7 @@ def _export_text(
     for name, model_id in models.items():
         fp32_dir = output_dir / f"text_{name}_fp32"
 
-        # An FP32 graph already on disk is reused rather than rebuilt. Every
+        # An FP32 graph already on disk is reused instead of rebuilt. Every
         # committed encoder number was measured against the graph that is there, and
         # a re-export that differed by so much as a node would silently make those
         # numbers describe something else. Delete the directory to force a rebuild.
@@ -247,7 +247,7 @@ def _export_text(
 
 
 def _export_vision(output_dir: Path) -> None:
-    # torch is imported here rather than at module scope so the constants above can
+    # torch is imported here instead of at module scope so the constants above can
     # be read without it. `torch` is in the `research` extra and CI's test job
     # installs `bench`, so a module-level import would make every test that reads
     # CALIBRATION_SPLIT pass here and fail there.

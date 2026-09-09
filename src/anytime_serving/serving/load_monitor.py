@@ -45,7 +45,7 @@ class LoadMonitor:
         if self._thread is not None and self._thread.is_alive():
             return
         # Prime psutil with a baseline read so the first sample reflects work
-        # done since startup rather than returning 0.0.
+        # done since startup, instead of returning 0.0.
         psutil.cpu_percent(interval=None)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="LoadMonitor", daemon=True)

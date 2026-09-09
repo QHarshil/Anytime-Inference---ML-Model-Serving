@@ -7,7 +7,7 @@ The decoder path batches because it has to: a one-token decode step is a
 ``[1, hidden] x [hidden, hidden]`` GEMV, which reads a layer's whole weight matrix
 to do one row of arithmetic, so widening the batch is nearly free and measured at
 3.00x. The encoder path is not in that regime. A 128-token request is already a
-``[128, hidden]`` GEMM, and the pool already extracts parallelism a different way --
+``[128, hidden]`` GEMM, and the pool already extracts parallelism a different way,
 N workers running N independent single-threaded Runs on N cores.
 
 So batching here competes with the pool for the same requests. Holding K requests
@@ -15,7 +15,7 @@ back to fill a batch is K requests not being served in parallel, and at
 ``intra_op_num_threads = 1`` a batched Run uses one core for all K. That trade is
 what `scripts/count_encoder_batching.py` counts and `docs/benchmarks.md` records;
 this module is the mechanism, deliberately built so the trade can be measured
-rather than argued.
+and not argued.
 
 What it does
 ------------
@@ -51,8 +51,8 @@ zeros.
 variants here it is: `attention_mask` is padded with 0, and a masked position
 contributes nothing to the ``[CLS]`` position the classifier head reads. A graph
 without a mask input, fed rows of differing length, would silently read the
-padding -- so the batcher refuses to pad a group whose feeds do not include a mask
-input, rather than producing plausible wrong logits. Equal-length rows need no
+padding, so the batcher refuses to pad a group whose feeds do not include a mask
+input. The alternative is plausible wrong logits. Equal-length rows need no
 padding and are batched either way.
 
 `pad_along_axis1` is where that happens and it is deliberately one function, so
@@ -80,11 +80,11 @@ LOGGER = get_logger("serving.batching")
 
 # Input names that mark a feed as maskable, so right-padding a short row is safe.
 # `attention_mask` is what every encoder variant here declares; the tuple exists so
-# the condition is a named fact rather than a string buried in a branch.
+# the condition is a named fact, not a string buried in a branch.
 MASK_INPUT_NAMES = ("attention_mask",)
 
-# Feeds padded with something other than zero. Nothing does yet -- token ids are
-# masked out and a zero id is in every vocabulary here -- but the batcher having a
+# Feeds padded with something other than zero. Nothing does yet, since token ids are
+# masked out and a zero id is in every vocabulary here, but the batcher having a
 # per-name pad value is what keeps a future graph that needs one from being a
 # rewrite.
 PAD_VALUES: dict[str, int] = {}
@@ -94,24 +94,22 @@ class BatchingClosed(RuntimeError):
     """Raised when a request arrives after `close`, or is pending during one."""
 
 
-# Every batcher that has not been closed, so a leaked one is shut down at `atexit`
-# rather than having its thread killed mid-`Condition.wait()` by interpreter teardown.
+# Batchers that have not been closed. A leaked one gets shut down at `atexit`, so its
+# thread is not killed mid-`Condition.wait()` by interpreter teardown.
 #
-# The dispatcher is a daemon thread, which guarantees it can never hang an exit but says
-# nothing about what state it is in when the exit happens. Closing it explicitly is the
-# difference between a thread that returned and a thread that was abandoned holding a
-# lock. That is worth having on its own terms; a caller that forgets `close()` should
-# still get a clean shutdown.
+# The dispatcher is a daemon thread. That guarantees it can never hang an exit, but says
+# nothing about what state the thread is in when the exit happens. Closing it explicitly
+# means the thread returned; otherwise it is abandoned holding a lock. A caller that
+# forgets `close()` should still get a clean shutdown.
 #
-# It is *not* known to fix the `std::recursive_mutex lock failed` abort a clean clone
-# prints at teardown in roughly one run in ten -- see `.claude/PROGRESS.md`. That is a
-# C++ mutex, so ONNX Runtime rather than `threading`, and it was not reproducible from a
-# leaked batcher alone.
+# This does not fix the `std::recursive_mutex lock failed` abort that a clean clone
+# prints at teardown in roughly 1 run in 10. See docs/development.md. That abort is in a
+# C++ mutex, so it comes from ONNX Runtime and not from `threading`, and a leaked
+# batcher on its own does not reproduce it.
 #
-# A WeakSet rather than a list because the registry must not be what keeps a batcher
-# alive. It achieves little on its own -- the dispatcher holds a bound method, so a
-# running batcher is reachable regardless -- but a closed one becomes collectable at
-# once.
+# A WeakSet, so the registry cannot be what keeps a batcher alive. This achieves little
+# while a batcher runs, since the dispatcher holds a bound method and keeps it reachable
+# anyway. A closed batcher becomes collectable at once.
 _LIVE_BATCHERS: weakref.WeakSet = weakref.WeakSet()
 
 
@@ -189,7 +187,7 @@ class _Pending:
 
 @dataclass
 class BatchCounts:
-    """What the batcher did, in counts rather than seconds.
+    """What the batcher did, in counts and not seconds.
 
     Every field here is a property of the arrival pattern and the batching policy,
     not of how fast the host was, so these are the numbers that mean the same thing
@@ -272,17 +270,17 @@ class RequestBatcher:
 
         self._lock = threading.Lock()
         self._arrived = threading.Condition(self._lock)
-        # A pool rather than a thread per batch, and it is what makes `close` sound.
-        # The first version started a thread per group and joined them from inside the
-        # dispatch loop with a five-second timeout, while `close` waited five seconds for
-        # the dispatcher -- so with several batches in flight the dispatcher could
-        # outlast that wait, `close` would return, and `RuntimePool.close` would then
-        # release the sessions underneath a Run that was still going.
-        # `shutdown(wait=True)` has no timeout to overrun, so that window is gone.
+        # A pool of workers, which is what makes `close` sound. The first version
+        # started a thread per group and joined them from inside the dispatch loop with
+        # a five-second timeout, while `close` waited five seconds for the dispatcher.
+        # With several batches in flight the dispatcher could outlast that wait, `close`
+        # would return, and `RuntimePool.close` would then release the sessions
+        # underneath a Run that was still going. `shutdown(wait=True)` has no timeout to
+        # overrun, so that window is gone.
         #
-        # **It is not the fix for the SIGABRT recorded in `.claude/PROGRESS.md`**, which
-        # was what prompted the change and which still reproduces after it. Kept because
-        # the window above was real and a nested timeout is not a shutdown.
+        # This is not the fix for the teardown SIGABRT that prompted the change. That
+        # abort still reproduces after it; see docs/development.md. Kept anyway, because
+        # the window above was real.
         self._batches = ThreadPoolExecutor(
             max_workers=max_concurrent_batches, thread_name_prefix="request-batch"
         )
@@ -338,7 +336,7 @@ class RequestBatcher:
     def close(self) -> None:
         """Stop the dispatcher and fail anything still queued.
 
-        Failing rather than draining: a queued request whose caller is still
+        Failing instead of draining. A queued request whose caller is still
         blocked in `infer` would otherwise wait for a thread that has stopped
         looking, and a serving harness shutting down wants an exception, not a
         hang.
@@ -369,7 +367,7 @@ class RequestBatcher:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    # -- dispatcher ------------------------------------------------------------
+    # dispatcher ---------------------------------------------------------------
 
     def _dispatch_loop(self) -> None:
         while True:
@@ -378,7 +376,7 @@ class RequestBatcher:
                 break
             # The pool bounds how many batches are in the runtime at once, so the
             # batcher cannot hand out more concurrent work than the thing behind it
-            # has workers to run it on. Submitting rather than blocking lets the
+            # has workers to run it on. Submitting instead of blocking lets the
             # dispatcher go straight back to forming the next group.
             self._batches.submit(self._run_group, group)
 
@@ -472,7 +470,7 @@ class RequestBatcher:
         at = 0
         for pending in group:
             take = pending.rows
-            # Copied rather than viewed. Every row of one batched run points into
+            # Copied, not viewed. Every row of one batched run points into
             # one buffer ONNX Runtime allocated, so handing out views would keep
             # the whole batch's output alive behind any single response and make
             # one request's lifetime depend on its neighbours'.

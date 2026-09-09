@@ -43,7 +43,7 @@ void ThreadPool::parallel_for(std::size_t count,
         count_ = count;
         next_ = 0;
         // Every index is outstanding until someone finishes it. Counting claims
-        // rather than indices would let the caller return while a worker was still
+        // instead of indices would let the caller return while a worker was still
         // inside `body`, which is the whole thing this has to prevent.
         outstanding_ = count;
         error_ = nullptr;
@@ -52,7 +52,7 @@ void ThreadPool::parallel_for(std::size_t count,
     }
     work_ready_.notify_all();
 
-    // The caller is a runner too, so a pool of N splits the work N ways rather than
+    // The caller is a runner too, so a pool of N splits the work N ways and not
     // N-1 and does not sit idle waiting for its own workers.
     for (;;) {
         std::size_t index = 0;
@@ -87,7 +87,7 @@ void ThreadPool::parallel_for(std::size_t count,
     if (error_) {
         std::exception_ptr error = error_;
         error_ = nullptr;
-        // Rethrown on the thread that asked for the work rather than swallowed, so a
+        // Rethrown on the thread that asked for the work instead of swallowed, so a
         // future caller that can fail inside a task gets an exception instead of a
         // terminated interpreter.
         std::rethrow_exception(error);
@@ -108,7 +108,7 @@ void ThreadPool::worker_loop() {
                 return;
             }
             if (next_ >= count_) {
-                // This batch is exhausted; wait for the next announcement rather than
+                // This batch is exhausted; wait for the next announcement instead of
                 // spinning on a generation that has nothing left in it.
                 seen = generation_;
                 continue;

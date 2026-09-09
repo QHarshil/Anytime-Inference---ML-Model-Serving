@@ -3,7 +3,7 @@
 Replaces simulated latency sampling with actual batched inference runs.
 Caches raw measurements and exposes configuration-level variance.
 
-``torch`` is imported inside the methods that run inference rather than at
+``torch`` is imported inside the methods that run inference, not at
 module scope, so the result containers and cache handling here stay importable
 on installs without it.
 """

@@ -134,7 +134,7 @@ class TestAdaptiveServer(unittest.TestCase):
         """A selector modelling the wrong worker count must not be accepted.
 
         Modelling a c-worker pool as a single server understates capacity by a
-        factor of c, so the server refuses the pairing outright rather than
+        factor of c, so the server refuses the pairing outright instead of
         silently shedding load the pool could serve.
         """
         from anytime_serving.serving.load_monitor import LoadMonitor
@@ -168,7 +168,7 @@ class TestSharedSessions(unittest.TestCase):
     """One backend behind every worker, instead of one per worker.
 
     The saving is the whole point and it is arithmetic on how many times the graphs are
-    loaded, so it is asserted as a count and measured as resident bytes rather than
+    loaded, so it is asserted as a count and measured as resident bytes instead of
     argued. What has to hold for the saving to be allowed is that sharing changes no
     answer, which is the concurrency test below: the weights are read-only, a Run is
     single-threaded at `intra_op_num_threads = 1` either way, and ONNX Runtime documents
@@ -219,7 +219,7 @@ class TestSharedSessions(unittest.TestCase):
     def test_shared_workers_return_what_unshared_workers_return(self):
         """Concurrently, and against the same requests through an unshared pool.
 
-        A shared session that raced would show up here as a wrong answer rather than a
+        A shared session that raced would show up here as a wrong answer instead of a
         slow one, which is the failure worth catching: the pool hands out one client at
         a time, so the lock inside a client never contends, and the only thing standing
         between four threads and one session is that `Run` is re-entrant.

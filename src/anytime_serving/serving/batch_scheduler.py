@@ -11,14 +11,14 @@ two with a flattened varlen layout and custom kernels; a stock exported graph ha
 neither.
 
 This scheduler therefore **alternates**. Each iteration is either one prefill chunk
-or one batched decode step, never both. That is a consequence of the graph rather
-than a preference, and it is what makes chunk width the central tuning knob here:
+or one batched decode step, never both. That is a consequence of the graph and not
+a preference, and it is what makes chunk width the central tuning knob here:
 while a chunk runs, every resident sequence waits.
 
 The trade chunk width sets
 --------------------------
 
-At the 256-token default, one chunk of GPT-2 at FP32 is about 93 ms -- a quarter of
+At the 256-token default, one chunk of GPT-2 at FP32 is about 93 ms, a quarter of
 the 372.2 ms a 1024-token prefill takes. So a decode step queued behind a chunk waits
 up to that long, against the 9.5 ms it would take on its own. Narrower chunks cut
 that stall and lengthen time to first token, because chunked prefill's advantage
@@ -35,13 +35,13 @@ per second at 128 cached tokens, 2.15x at 512, 1.67x at 960; at batch 32, 3.47x 
 a decode step amortises across a batch, while the per-cached-token term is per sequence
 and grows with the batch's total cache.
 
-Thread count belongs in that sentence rather than beside it. With the session pinned to
+Thread count belongs in that sentence, not beside it. With the session pinned to
 one thread the same points read 2.32x / 1.52x / 1.25x at batch 8: a batch-1 decode is a
 skinny GEMV with little for a thread pool to divide, while a wide batch is a real GEMM,
 so batching supplies the parallelism that threading exploits and the two compound.
 
 So the throughput win is real and it stops: returns flatten by batch 16 at FP32 and
-INT8. Which means this scheduler's other job -- deciding who waits -- is still the
+INT8. So this scheduler's other job, deciding who waits, is still the
 larger half of what it is for. Under an open-loop arrival sweep, batching holds time to
 first token near its unloaded value where one-at-a-time decoding collapses, and past
 saturation the configuration that additionally *limits* how many sequences are resident
@@ -54,8 +54,8 @@ What length bucketing buys, and what it spends
 
 A batched step runs every row at the longest row's cached length, so a batch holding one
 long sequence charges every short one for positions it does not have. Measured at a 4:1
-spread that is 9.0 ms of a 27.7 ms step, and only 1.0 ms of it is clearing the padding --
-the rest is the graph doing arithmetic on absent tokens. `length_bucketing` chooses *who
+spread that is 9.0 ms of a 27.7 ms step, and only 1.0 ms of it is clearing the padding.
+The rest is the graph doing arithmetic on absent tokens. `length_bucketing` chooses *who
 shares a step* to shrink that.
 
 It can only help when more sequences are decoding than fit in one step. With an arena
@@ -68,7 +68,7 @@ batch width of 8: **output tokens per second up in 12 of 12 paired comparisons**
 4.5% at rho = 0.8 rising to 8.4% at rho = 1.3. Capacity moves the same way, 4.23 to 4.47
 completions/s, less reproducibly.
 
-What it spends is uniformity. Round-robin serves every prompt length at the same rate --
+What it spends is uniformity. Round-robin serves every prompt length at the same rate:
 the four lengths of that workload sit within 1.8 ms of each other at every load. Bucketing
 fans them out to a 24.8 ms range at rho = 1.3, because the middle of the length
 distribution has near-neighbours on both sides and is picked as filler constantly while
@@ -298,7 +298,7 @@ class ContinuousBatchScheduler:
     # --- internals ------------------------------------------------------------
 
     def _should_prefill(self) -> bool:
-        """Whether this iteration goes to a prefill chunk rather than a decode step.
+        """Whether this iteration goes to a prefill chunk instead of a decode step.
 
         With nothing decoding, prefill runs unconditionally. With both available they
         alternate: `prefill_chunks_per_decode` chunks, then a decode step. Strict
@@ -316,9 +316,9 @@ class ContinuousBatchScheduler:
     def _admit_waiting(self) -> tuple[str, ...]:
         """Admit what fits, in arrival order, and carry out any eviction plan.
 
-        Arrival order rather than shortest-first: reordering by size would starve long
+        Arrival order, not shortest-first. Reordering by size would starve long
         prompts under load, and the deadline reasoning that would justify a different
-        order already lives in the admission policy rather than here.
+        order already lives in the admission policy, not here.
         """
         preempted: list[str] = []
         while self._waiting:
@@ -335,7 +335,7 @@ class ContinuousBatchScheduler:
                     self._stats.rejections += 1
                     LOGGER.info("rejected %s: %s", request.request_id, plan.reason)
                     continue
-                # It might fit once something finishes. Stop here rather than trying
+                # It might fit once something finishes. Stop here instead of trying
                 # later arrivals, so admission stays first-come.
                 break
 
@@ -403,9 +403,9 @@ class ContinuousBatchScheduler:
         everyone fits: with nothing left over there is no choice to make, which is why
         an arena sized to the batch width sees no effect from this setting at all.
 
-        Bucketed, the batch is **anchored** on the head of the queue -- the sequence
-        that has waited longest -- and the remaining slots go to the nearest cached
-        lengths. Anchoring is what makes starvation impossible rather than unlikely:
+        Bucketed, the batch is **anchored** on the head of the queue, the sequence
+        that has waited longest, and the remaining slots go to the nearest cached
+        lengths. Anchoring is what makes starvation impossible, not merely unlikely:
 
             The anchor is always index 0 and is always removed from the queue. So a
             sequence at index k is either picked as filler this step, or watches at
@@ -438,7 +438,7 @@ class ContinuousBatchScheduler:
     def _cached_lengths(self) -> dict[str, int]:
         """Cached tokens per decoding sequence, which is what sets the padded width.
 
-        Read from the client's own view rather than tracked alongside it, so the two
+        Read from the client's own view instead of tracked alongside it, so the two
         cannot disagree about how long a sequence is after a preemption and recompute.
         """
         decoding = set(self._decoding)
@@ -467,7 +467,7 @@ class ContinuousBatchScheduler:
             self._retire(request_id)
 
         # Round-robin, so a batch wider than max_batch_size does not starve its tail.
-        # Written against a subset rather than a prefix because a bucketed batch is one;
+        # Written against a subset and not a prefix, because a bucketed batch is one;
         # with bucketing off the two are the same list, since ids are unique and the
         # batch is then exactly the front of the queue.
         served = set(batch)
@@ -501,7 +501,7 @@ class ContinuousBatchScheduler:
     def _retire(self, request_id: str) -> None:
         generation = self._records[request_id]
         generation.tokens = self._client.emitted(request_id)
-        # Derived from the steps rather than tracked alongside them, so the two cannot
+        # Derived from the steps instead of tracked alongside them, so the two cannot
         # disagree about what a recompute cost.
         generation.recompute_ms = sum(
             step.total_ms for step in generation.steps if step.phase == "recompute"
@@ -514,7 +514,7 @@ class ContinuousBatchScheduler:
     # --- convenience ----------------------------------------------------------
 
     def run(self, requests: Sequence[GenerationRequest]) -> dict[str, GenerationRecord]:
-        """Submit everything and drain. For a fixed workload rather than a live one."""
+        """Submit everything and drain. For a fixed workload, not a live one."""
         for request in requests:
             self.submit(request)
         return self.drain()

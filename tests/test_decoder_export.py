@@ -1,7 +1,7 @@
 """Guards on the graph surgery in `scripts/export_decoder.py`.
 
 Two of the helpers there change or select parts of an ONNX graph, and a silent
-mistake in either would not fail loudly -- it would quietly produce a model that
+mistake in either would not fail loudly. It would quietly produce a model that
 still runs and still emits plausible logits, just worse ones. That is exactly the
 failure mode this project has already been burned by, so both are tested.
 
@@ -162,7 +162,7 @@ def test_partial_descriptor_shim_matches_the_interpreter():
 
     Also asserts the premise: that a ``functools.partial`` held as a class
     attribute binds the instance on 3.14 and not before. If CPython reverts that,
-    this test says so rather than the shim silently becoming dead code.
+    this test says so instead of the shim silently becoming dead code.
     """
     import functools
 
@@ -184,8 +184,8 @@ def test_partial_descriptor_shim_matches_the_interpreter():
         return
 
     # On 3.14 the shim walks optimum's config classes, so it cannot run without
-    # optimum -- which lives in the `research` extra, not `bench`. Skipping rather
-    # than failing: this was a hard failure on a `pip install -e ".[bench]"` clone
+    # optimum, which lives in the `research` extra, not `bench`. Skipping, not
+    # failing: this was a hard failure on a `pip install -e ".[bench]"` clone
     # under 3.14, and it was invisible everywhere else, because CI's matrix stops at
     # 3.13 and a development environment has optimum installed.
     pytest.importorskip(
@@ -263,9 +263,9 @@ def test_the_python_reader_agrees_with_the_c_plus_plus_one(tmp_path, layers, kv_
 def test_the_config_reader_still_agrees_on_a_model_it_was_written_for():
     """`_kv_geometry` is kept as the cross-check, so it has to keep working.
 
-    GPT-2 names none of its geometry the way a Llama config does -- `n_layer`,
+    GPT-2 names none of its geometry the way a Llama config does, `n_layer`,
     `n_head`, `n_embd` against `num_hidden_layers`, `num_attention_heads`,
-    `hidden_size` -- which is what the fallback chain in `_kv_geometry` is for.
+    `hidden_size`, which is what the fallback chain in `_kv_geometry` is for.
     """
     transformers = pytest.importorskip("transformers")
 
@@ -287,7 +287,7 @@ def test_the_config_reader_still_agrees_on_a_model_it_was_written_for():
 # `results/decoder_profiles.json` and `results/decoder_profiles_tinyllama.json` are the
 # two models the decoder page quotes. They are committed, so the claims about them are
 # checkable without a 4.4 GB export. What is checked is the arithmetic that ties them
-# together, not the values themselves -- a re-measurement should be free to move a
+# together, not the values themselves, a re-measurement should be free to move a
 # perplexity without failing a test, but not free to move it in a direction that would
 # make the write-up wrong.
 
@@ -331,7 +331,7 @@ def test_kv_bytes_per_token_is_the_geometry_times_two_for_key_and_value(profiles
 
 
 def test_tinyllama_carries_less_kv_per_token_than_gpt2_on_more_layers(profiles):
-    """The reason a second model was exported, as an assertion rather than a sentence.
+    """The reason a second model was exported, as an assertion instead of a sentence.
 
     Grouped-query attention is the whole point: 4 KV heads against 12 on 22 layers
     against 12. If a re-export ever produced 22 KV heads, the graph would be
@@ -374,7 +374,7 @@ def test_quantisation_costs_perplexity_and_never_improves_it(profiles):
 def test_weight_only_quantisation_compresses_the_larger_model_further(profiles):
     """The external-validity finding, pinned.
 
-    What stays in float -- the embedding table and the excluded output projection -- is
+    What stays in float, the embedding table and the excluded output projection, is
     about a quarter of GPT-2 and about a twelfth of TinyLlama, so the size ratios
     quoted for GPT-2 are a small-model artefact. If a future export inverted this, the
     paragraph saying so on benchmarks.md would be wrong.
@@ -393,7 +393,7 @@ def test_the_engine_and_a_separate_session_agree_bitwise(profiles):
     """The one bitwise claim the decoder makes, and the form of it that is safe.
 
     One graph through two sessions of the same library. Not across batch widths, where
-    the GEMM shape changes and float addition is not associative -- see
+    the GEMM shape changes and float addition is not associative, see
     docs/runtime.md, and tests/test_batching.py for the assertion that had to be
     replaced with a bound after claiming otherwise.
     """

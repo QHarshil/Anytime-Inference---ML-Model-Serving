@@ -79,7 +79,7 @@ extension, following the same split:
                 +-----------------------------------+
 ```
 
-The division of labour is the same one as above, applied to memory rather than to
+The division of labour is the same one as above, applied to memory instead of
 time. `DecoderSession` owns the arena and knows nothing about deadlines;
 `BlockAdmission` reasons about deadlines and imports no runtime. `DecoderClient`
 holds the one thing neither does: the tokens a sequence has produced, which is what
@@ -93,7 +93,7 @@ Two consequences worth stating:
 - **Preemption is preempt-and-recompute, and it costs.** Resuming re-runs the whole
   history, so eviction is only safe for a sequence with enough deadline slack to
   absorb that. Output is token-identical either way, which is what makes it a
-  scheduling decision rather than a correctness bug.
+  scheduling decision and not a correctness bug.
 
 The decoder path is still not wired into `AdaptiveServer`: a decode request holds a
 worker for hundreds of steps, and reconciling that with the encoder harness is separate
@@ -103,8 +103,8 @@ work.
 
 The two stacks above are drawn as text because a layered stack is what text draws well,
 and they stay readable in an editor that renders no diagrams. The two things below are
-graphs with cycles in them, which text draws badly, so they are Mermaid -- which GitHub
-renders natively and which stays diffable. A reader without a renderer sees the labels in
+graphs with cycles in them, which text draws badly, so they are Mermaid. GitHub renders
+that natively and it stays diffable. A reader without a renderer sees the labels in
 source order, which is degraded but not useless.
 
 ```mermaid
@@ -129,7 +129,7 @@ lands on top of its neighbour's in every layout Mermaid gives this graph.
 
 The arc worth following is `decoding -> preempted -> prefilling`. A preempted sequence
 does not resume: it goes back to the pending queue and re-runs its entire history, which
-is why eviction is priced against deadline slack rather than taken whenever the arena is
+is why eviction is priced against deadline slack instead of taken whenever the arena is
 tight. The tokens are what survive the round trip, and they are why the output is
 identical either way.
 
@@ -154,18 +154,18 @@ beside several short ones pads almost as many token positions as it copies. `gat
 and `pad_ms` are separate numbers for that reason: the copy scales with the real tokens
 in the batch, the clear with its length spread, and a step that got slower can say which
 of the two it was paying for. `pad_ms` is an exact zero when no row is short, decided
-once rather than discovered by walking every row.
+once, not discovered by walking every row.
 
 **`position_ids` carries the true absolute position**, so a padded row's new token is
-placed where its sequence says rather than where the batch's width would put it. The
+placed where its sequence says, not where the batch's width would put it. The
 attention mask is what tells the graph the padding is not history: 1 over the positions
 a row holds, 0 over the padding, and 1 for the token being emitted.
 
-**The scatter is cheap because of an invariant that is checked rather than assumed.**
+**The scatter is cheap because of an invariant that is checked, not assumed.**
 `present[..., :past_len, :]` comes back bitwise equal to the `past` that was fed, because
-the graph concatenates rather than rewriting, and that is what lets the scatter copy one
+the graph concatenates instead of rewriting, and that is what lets the scatter copy one
 token position per row instead of the whole tensor. It is verified once per sequence, and
-a mismatch raises instead of falling back to a full-present scatter -- a silent fallback
+a mismatch raises instead of falling back to a full-present scatter. A silent fallback
 would change what TPOT measures without saying so.
 
 ### The scheduler alternates, because the graph will not let it fuse
@@ -177,13 +177,13 @@ decode row out to 256. vLLM and SARATHI fuse the two with a flattened varlen lay
 custom kernels; a stock exported graph has neither.
 
 `ContinuousBatchScheduler` therefore **alternates**. Each iteration is one prefill
-chunk or one batched decode step, never both. That is a consequence of the graph rather
-than a preference, and it makes chunk width the central tuning knob: while a chunk
+chunk or one batched decode step, never both. That is a consequence of the graph and not
+a preference, and it makes chunk width the central tuning knob: while a chunk
 runs, every resident sequence waits.
 
 One iteration, as the code decides it. Admission runs first and every time, in arrival
 order, carrying out any eviction plan; readmission follows, oldest first, putting a
-preempted sequence back on the pending queue rather than back into the batch. Neither is
+preempted sequence back on the pending queue, not back into the batch. Neither is
 an iteration of its own, because neither invokes the graph. "The chunk budget" is
 `prefill_chunks_per_decode` chunks since the last decode step.
 
@@ -202,7 +202,7 @@ flowchart LR
     J -- no --> G
 ```
 
-With nothing decoding, prefill runs unconditionally -- there is no one to starve. With
+With nothing decoding, prefill runs unconditionally, since there is no one to starve. With
 both available the two alternate, and at the default of one chunk per decode a resident
 sequence waits at most one chunk plus one step, which is the guarantee chunk width is
 chosen against.
@@ -210,14 +210,14 @@ chosen against.
 The trade is measurable and measured. At the 256-token default, over six generations
 sharing one arena, a sequence that was already decoding went a median 27 ms and at most
 192 ms between tokens, against a 76 ms prefill chunk and a 23 ms decode step. Raising
-`prefill_chunks_per_decode` from 1 to 4 -- which reaches first tokens sooner because
-prefill runs further ahead -- moved those to 40 ms and 244 ms. Both figures are `fp32`;
+`prefill_chunks_per_decode` from 1 to 4 moved those to 40 ms and 244 ms. That setting
+reaches first tokens sooner, because prefill runs further ahead. Both figures are `fp32`;
 at `int4`, where a chunk is 428 ms, the worst gap is 790 ms at 1 chunk and 1145 ms at 4.
 
 Two things that gap is *not*. It is not purely the chunk: with more sequences resident
 than the batch is wide, a sequence can also miss a turn to round-robin, and the recorded
-number is the honest "longest a decoding sequence went without a token" rather than an
-attribution. And it is not a lower bound on jitter for a well-sized deployment -- it is
+number is the honest "longest a decoding sequence went without a token" and not an
+attribution. And it is not a lower bound on jitter for a well-sized deployment. It is
 what one particular schedule did, and the arena in that trace held every sequence, so
 nothing was waiting on memory.
 
@@ -229,10 +229,11 @@ which is why the four prompt lengths of the spread workload finish within 1.8 ms
 of each other at every load measured.
 
 `length_bucketing` trades that uniformity for throughput. It **anchors** the batch on the
-head of the queue -- the sequence that has waited longest -- and fills the remaining
-slots by nearest cached length, so a step runs over rows of similar length and wastes
-less on right-padding. Anchoring rather than sorting by length is what makes starvation
-impossible: the anchor is always at the front and always moves to the back, so an
+head of the queue, the sequence that has waited longest, and fills the remaining slots
+by nearest cached length, so a step runs over rows of similar length and wastes less on
+right-padding. Anchoring is what makes starvation impossible, where sorting the whole
+batch by length would not: the anchor is always at the front and always moves to the
+back, so an
 unserved sequence's position strictly decreases and it becomes the anchor within N steps.
 The bound falls out of the rule, so there is no age guard to tune. Deleting the anchor
 and taking a pure length sort is a test that must fail, and does.
@@ -257,7 +258,7 @@ Keeping them separate, even inside one process, means:
 ### What moving in-process cost
 
 The subprocess boundary bought fault isolation, and that is now gone: a crash
-inside ONNX Runtime takes the whole server down rather than one worker. Stage 1's
+inside ONNX Runtime takes the whole server down instead of one worker. Stage 1's
 worker caught per-request exceptions and kept serving; the engine still reports
 recoverable errors as exceptions, but a genuine segfault is no longer contained.
 That is a real regression, accepted deliberately.
@@ -272,7 +273,7 @@ See [`runtime.md`](runtime.md) for the measured comparison.
 ## Worker count is a first-class parameter
 
 The number of workers determines queue capacity, so it appears explicitly in the
-admission maths rather than being inferred. `AdaptiveSelector` takes `servers`
+admission maths instead of being inferred. `AdaptiveSelector` takes `servers`
 and constructs its own controller; `AdaptiveServer` raises if that value does not
 equal `RuntimePool.size`:
 
@@ -309,7 +310,7 @@ neither lives in the runtime:
   DistilBERT at 12.893 ms and 24 for MiniLM at 5.189 ms** against the 38.7 ms deadline,
   so the widest admissible batches are 9 and 25.
 
-So widening the encoder's batch is an admission-model decision, not a runtime one --
+So widening the encoder's batch is an admission-model decision, not a runtime one,
 which is the same decision the decoder merge needs, arrived at from the other side.
 Batching does not remove that choice; it localises it to one number. `docs/benchmarks.md`
 has what the width is worth once you have it, and it is not much.
@@ -321,7 +322,7 @@ Variants of the same task can declare different graph inputs: DistilBERT takes
 `token_type_ids`. The variant is chosen after the request is built, so callers
 send the union and the runtime keeps the subset its graph declares. The C++
 engine and the Python reference backend implement identical filtering, and a
-request missing a declared input is an error rather than a silent wrong answer.
+request missing a declared input is an error, not a silent wrong answer.
 
 ## What "Stage 1" and "Stage 2" refer to
 
@@ -342,8 +343,8 @@ precisions, a block-allocated arena for that cache, admission and eviction again
 arena's occupancy, and a continuous batching scheduler over all of it.
 
 Unrelated sense, same word: `models/cascade.py` and the `experiments/` pipeline call
-the two models of a cascade "stage 1" and "stage 2" — the cheap model, then the
-accurate one if its confidence is too low. Nothing to do with the above.
+the two models of a cascade "stage 1" and "stage 2", meaning the cheap model followed
+by the accurate one if its confidence is too low. Nothing to do with the above.
 
 ## Where this sits
 
@@ -353,13 +354,13 @@ declines it, or stands in for it.
 
 - **[Orca](https://www.usenix.org/conference/osdi22/presentation/yu)** (Yu et al.,
   OSDI '22) introduced iteration-level scheduling: admit and retire sequences
-  between decode steps rather than between whole batches. `ContinuousBatchScheduler`
+  between decode steps instead of between whole batches. `ContinuousBatchScheduler`
   is that, over the arena and admission policy built for it. What it does not take
   from Orca is the selective batching of a fused prefill/decode iteration, for the
   graph reason above.
 - **[PagedAttention](https://arxiv.org/abs/2309.06180)** (Kwon et al., SOSP '23)
   pages KV across non-contiguous blocks by handing attention a block table. This
-  repository does not do that and, over a stock exported graph, cannot — the
+  repository does not do that and, over a stock exported graph, cannot. The
   argument is in [`runtime.md`](runtime.md). The block arena here takes the
   accounting and not the kernel, and the docs are careful never to call it paged
   attention.
@@ -371,10 +372,10 @@ declines it, or stands in for it.
 - **[INFaaS](https://www.usenix.org/conference/atc21/presentation/romero)** (Romero
   et al., ATC '21) picks a model variant per request against a latency target.
   `planner/infaas_style_baseline.py` is an offline stand-in for that policy, used as
-  a comparison rather than as a reimplementation.
+  a comparison, not as a reimplementation.
 
 ## Further reading
 
-- [`planner.md`](planner.md) — admission control and variant selection
-- [`runtime.md`](runtime.md) — the C++ engine, version matching, and the measured transport cost
-- [`benchmarks.md`](benchmarks.md) — measurement methodology and results
+- [`planner.md`](planner.md): admission control and variant selection
+- [`runtime.md`](runtime.md): the C++ engine, version matching, and the measured transport cost
+- [`benchmarks.md`](benchmarks.md): measurement methodology and results

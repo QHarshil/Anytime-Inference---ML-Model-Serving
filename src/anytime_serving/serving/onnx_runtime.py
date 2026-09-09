@@ -4,7 +4,7 @@ Two backends implement one interface, both taking and returning numpy arrays:
 
 ``extension``
     The ``anytime_runtime`` pybind11 module, which runs ONNX Runtime in this
-    process. Tensors are borrowed rather than copied and the GIL is released
+    process. Tensors are borrowed, not copied, and the GIL is released
     around inference, so a pool of workers runs concurrently. This is the serving
     path.
 ``python``
@@ -84,8 +84,8 @@ class InferenceRequest:
     """One inference request.
 
     Single-input models (an image classifier, say) set ``data`` and let the client
-    name it. Models with several inputs -- a transformer taking ``input_ids`` and
-    ``attention_mask`` -- set ``inputs`` instead, which is passed through
+    name it. Models with several inputs, such as a transformer taking ``input_ids``
+    and ``attention_mask``, set ``inputs`` instead, which is passed through
     verbatim. Setting ``inputs`` takes precedence over ``data``.
     """
 
@@ -132,8 +132,8 @@ class _RuntimeBackend:
     Implementations return the first graph output and the time spent inside
     inference, excluding anything the client adds around it.
 
-    Anything meaning "the runtime could not serve this request" -- an unknown
-    variant, a missing declared input -- raises ``RuntimeError``. A malformed
+    Anything meaning "the runtime could not serve this request" raises
+    ``RuntimeError``: an unknown variant, or a missing declared input. A malformed
     argument, such as a dtype the engine does not accept, raises ``ValueError``.
     """
 
@@ -255,9 +255,9 @@ class RuntimeClient:
         """A worker over a backend somebody else owns and will close.
 
         The lock still guards this client, which is what makes the sharing safe to reason
-        about: it is per client rather than per backend, so it serialises nothing between
+        about. It is per client and not per backend, so it serialises nothing between
         workers and the concurrency the pool provides is unchanged. What the backend has
-        to be is re-entrant, and both are -- `Engine::run` reads a model map fixed at
+        to be is re-entrant, and both are. `Engine::run` reads a model map fixed at
         construction and calls `Session::Run`, which ONNX Runtime documents as safe to
         call concurrently, and the binding releases the GIL around it.
         """
@@ -316,7 +316,7 @@ class RuntimePool:
     It defaults to on, and both halves of that are measured.
 
     On, one backend serves every worker. The weights are read-only, so sharing them
-    changes no answer, and `intra_op_num_threads` is 1 either way -- a Run stays
+    changes no answer, and `intra_op_num_threads` is 1 either way, so a Run stays
     single-threaded and the workers do not contend for an intra-op pool. N workers over
     one backend are still N independent single-threaded servers, which is the reading
     the M/M/c admission model rests on.
@@ -326,7 +326,7 @@ class RuntimePool:
 
     The concern that kept this off was ONNX Runtime's per-session CPU arena, which
     sharing puts every worker on. Paired arms say it does not bite, and that sharing is
-    faster as concurrency rises rather than slower -- shared over unshared throughput is
+    faster as concurrency rises instead of slower. Shared over unshared throughput is
     1.015x at two workers, 1.017x at four and 1.074x at eight. `--no-share-sessions` on
     `run_load_sweep.py` is kept as the control that says so, the way `--no-spinning` is
     on the decoder path. See `scripts/ab_session_sharing.py`.
@@ -371,7 +371,7 @@ class RuntimePool:
 
         # `infer` keeps its per-request signature either way, which is what makes a
         # batched sweep and an unbatched one the same harness. At width 1 no batcher
-        # is built at all, so the unbatched path is untouched rather than merely
+        # is built at all, so the unbatched path is untouched and not merely
         # configured off.
         self._batcher: RequestBatcher | None = None
         if max_batch_size > 1:
@@ -396,7 +396,7 @@ class RuntimePool:
     def loaded_backends(self) -> int:
         """How many times the graphs are loaded, which is the whole point of sharing.
 
-        Exposed so the saving is a number a test can assert rather than a claim in a
+        Exposed so the saving is a number a test can assert, not a claim in a
         docstring.
         """
         return 1 if self._share_sessions else len(self._clients)
@@ -468,7 +468,7 @@ class RuntimePool:
             client.close()
         self._clients = []
         # Borrowing clients close nothing, so the one backend they shared is the pool's
-        # to release. Doing it after the loop rather than inside it is what makes the
+        # to release. Doing it after the loop instead of inside it is what makes the
         # release happen exactly once however many workers there were.
         if self._shared is not None:
             self._shared.close()

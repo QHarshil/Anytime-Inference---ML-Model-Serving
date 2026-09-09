@@ -2,7 +2,7 @@
 
 Two kinds of test here, and they fail for different reasons.
 
-The arithmetic tests cover the functions that turn timings into claims -- the speedup
+The arithmetic tests cover the functions that turn timings into claims, the speedup
 against one-at-a-time, the fitted split the speedup is compared against, and the length
 regimes the padding cost is subtracted between. None of these would crash if they were
 wrong; they would produce a plausible number, which is the shape of mistake this
@@ -12,7 +12,7 @@ The rest drive the real scheduler over the synthetic decoder graph. They are slo
 relative to the arithmetic and they are worth it: the measurement functions assemble a
 batch by running prefill ahead of decode and then assume every following iteration is a
 decode step over the whole batch. That assumption is about the scheduler's behaviour
-rather than about arithmetic, so it is tested against the scheduler.
+instead of about arithmetic, so it is tested against the scheduler.
 """
 
 import sys
@@ -49,7 +49,7 @@ requires_extension = pytest.mark.skipif(
 )
 
 # The synthetic fixture's geometry is tiny, so every length here is too. Block width 4
-# rather than the runtime default of 64 for the same reason: a sequence has to span
+# instead of the runtime default of 64 for the same reason: a sequence has to span
 # several blocks for the arena to be doing anything.
 BLOCK_TOKENS = 4
 FIXTURE_VOCAB = 64
@@ -91,7 +91,7 @@ def test_the_speedup_is_against_the_same_sequences_stepped_one_at_a_time():
     A batched step serving 4 sequences in 12 ms is worth 4 x 4.64 ms of serial
     stepping, so the speedup is 1.55x. Dividing the step by the batch instead would
     report 3.0 ms a token and call it a 1.55x latency win, which no sequence
-    experienced -- each of the four waited the full 12 ms.
+    experienced, each of the four waited the full 12 ms.
     """
     scaling = [_point(1, 128, 4.64), _point(4, 128, 12.0), _point(1, 512, 6.82)]
     split = fit_step_split(scaling)
@@ -204,7 +204,7 @@ def test_the_spread_runs_at_the_same_width_as_uniform_max():
     graph the same shape and differ only in how much of it is padding.
 
     A stronger bracket is tempting and false. The spread's rows are not all above its
-    own mean -- half of them are below it by construction -- and its measured *step* is
+    own mean, half of them are below it by construction, and its measured *step* is
     not bounded above by uniform-max's either, because the padding it has to clear is
     work uniform-max does not do. The two facts asserted here are the ones the
     subtraction actually rests on.
@@ -235,7 +235,7 @@ def test_the_arena_is_sized_for_the_traces_as_well_as_the_sweep():
     """The traces hold every sequence at once and their prompts are their own.
 
     Sizing from the scaling sweep alone left the traces admission-limited, which made
-    the alternation figure a picture of a full arena rather than of alternation.
+    the alternation figure a picture of a full arena instead of of alternation.
     """
     blocks = blocks_for_sweep(
         batch_sizes=(1, 2),
@@ -273,7 +273,7 @@ def test_a_point_past_the_position_table_is_not_attempted():
     """Assembling a wide batch spends tokens before the measurement starts.
 
     GPT-2 stops at 1024 positions and exceeding it is an out-of-bounds Gather from
-    inside ONNX Runtime, so the point is skipped with a reason rather than run.
+    inside ONNX Runtime, so the point is skipped with a reason instead of run.
     """
     assert feasible(960, 32, 16, 1024)
     assert not feasible(960, 64, 16, 1024)
@@ -305,7 +305,7 @@ def test_the_recorded_host_reports_the_thread_count_the_run_used(threads):
 
     This one was literally `"intra_op_num_threads": 1` while the count was fixed at 1,
     and it stayed correct only for as long as nothing could change it. Reading it from
-    the run is what keeps the artefact a record rather than an assumption.
+    the run is what keeps the artefact a record instead of an assumption.
     """
     assert host_metadata(threads)["intra_op_num_threads"] == threads
 
@@ -315,11 +315,11 @@ def test_the_recorded_host_reports_the_thread_count_the_run_used(threads):
 def test_the_recorded_host_reports_the_copy_thread_count_too(copy_threads):
     """It moves `gather_p50_ms`, which is a reported number, so it has to be recorded.
 
-    Same species as the field above and added at the same time as the setting, rather
-    than after an artefact had already been written describing the wrong one.
+    Same species as the field above and added at the same time as the setting, and not
+    after an artefact had already been written describing the wrong one.
     """
     assert host_metadata(8, copy_threads)["copy_threads"] == copy_threads
-    # Defaulted rather than required, so an older caller records the serial copy it
+    # Defaulted instead of required, so an older caller records the serial copy it
     # actually ran instead of nothing at all.
     assert host_metadata(8)["copy_threads"] == 1
 
@@ -337,7 +337,7 @@ def test_the_recorded_host_reports_whether_the_pool_was_spinning(allow_spinning)
 
 @requires_extension
 def test_a_measured_point_is_a_batched_decode_step_of_the_width_it_claims(decoder_graph):
-    """The assembly assumption, checked against the scheduler rather than asserted.
+    """The assembly assumption, checked against the scheduler instead of asserted.
 
     `_measure_steps` refuses anything that is not a decode step over the whole batch,
     so this passing means prefill really did run ahead and the batch really was
@@ -360,7 +360,7 @@ def test_a_measured_point_is_a_batched_decode_step_of_the_width_it_claims(decode
     assert point.tokens_per_s > 0.0
     # The wall clock around a call cannot be shorter than the call says it took. This
     # read negative at the widest batch when the overhead was the difference of two
-    # differently-pooled medians rather than a per-step difference.
+    # differently-pooled medians instead of a per-step difference.
     assert point.scheduler_overhead_p50_ms >= 0.0
     # Assembling three sequences costs the first one three tokens, then two more are
     # measured, so it has emitted at least five.
@@ -404,7 +404,7 @@ def test_batching_does_not_change_what_a_sequence_emits(decoder_graph):
 def test_a_step_of_the_wrong_width_fails_the_measurement(decoder_graph):
     """A measurement that silently timed the wrong thing is worse than one that stops.
 
-    The guard is what makes the assembly assumption load-bearing rather than hopeful,
+    The guard is what makes the assembly assumption checked instead of hopeful,
     so it is worth proving it fires.
     """
     with _client(decoder_graph) as client:

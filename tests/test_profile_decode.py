@@ -30,11 +30,11 @@ from anytime_serving.serving.onnx_runtime import extension_available  # noqa: E4
 @pytest.mark.skipif(not extension_available(), reason="anytime_runtime is not built")
 @pytest.mark.parametrize("threads", [1, 8])
 def test_the_recorded_host_reports_the_thread_count_the_fit_was_taken_under(threads):
-    """The fit here becomes BlockAdmission's cost model, so this field is load-bearing.
+    """The fit here becomes BlockAdmission's cost model, so this field is used.
 
     It was written as a literal 1, which stayed true only while the thread count could
     not change. Once it could, a cost model fitted at eight threads and labelled as one
-    would have the eviction policy reasoning about a machine that does not exist --
+    would have the eviction policy reasoning about a machine that does not exist,
     against this project's own rule that a cost model is fitted from the configuration
     it describes.
     """
@@ -114,7 +114,7 @@ def test_the_decode_fit_recovers_a_line_it_was_given():
 
 
 def test_the_decode_residual_shows_when_a_line_is_the_wrong_model():
-    """A line is only right while this stays small, so it is reported rather than assumed.
+    """A line is only right while this stays small, so it is reported, not assumed.
 
     These points curve, and the fit has to say so instead of quietly averaging them.
     """

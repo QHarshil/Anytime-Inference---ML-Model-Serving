@@ -3,7 +3,7 @@
 The block allocator's claim is narrow and worth stating precisely: it computes the
 same thing as holding a sequence's KV contiguously, while making the arena's
 occupancy a number that admission and eviction can act on. It does not claim to be
-faster -- feeding the `present` tensors straight back costs no gather at all.
+faster, feeding the `present` tensors straight back costs no gather at all.
 
 So the reference here is that faster path. `tests/decoder_reference.py` holds both
 loops.
@@ -74,10 +74,10 @@ def _session(
     )
 
 
-# Bound for comparisons across two independent ONNX Runtime builds. Derived rather
-# than tuned until it passed: float32 carries about 1.2e-07 per operation, the
+# Bound for comparisons across two independent ONNX Runtime builds. Derived, not
+# tuned until it passed: float32 carries about 1.2e-07 per operation, the
 # measured disagreement on x86-64 is 8.6e-07 (roughly seven ULP through a reduction),
-# and this is 12x that. It is also five orders of magnitude below a real fault -- a
+# and this is 12x that. It is also five orders of magnitude below a real fault, a
 # gather reading the wrong block moved these logits by 1.8e+03 when it was tried.
 CROSS_BUILD_RTOL = 1e-5
 CROSS_BUILD_ATOL = 1e-3
@@ -114,7 +114,7 @@ def test_the_block_allocated_cache_matches_a_contiguous_one_bitwise(decoder_grap
     here. A width above the prompt length collapses to a single pass.
 
     Both sides run through the same in-process engine, so this isolates the block
-    allocator itself rather than comparing two ONNX Runtime instances.
+    allocator itself instead of comparing two ONNX Runtime instances.
     """
     engine = load_extension().Engine([("m", str(decoder_graph))])
     expected_tokens, expected_logits = reference_generate(
@@ -137,7 +137,7 @@ def test_the_session_matches_an_independent_onnxruntime(decoder_graph):
     The same discipline as `tests/test_runtime_engine.py`: a replacement is validated
     against the thing it replaces, through a separate copy of the library. This also
     covers `position_ids` and `attention_mask`, which the reference loop sets
-    explicitly and the session derives -- a decode step that offset its positions
+    explicitly and the session derives, a decode step that offset its positions
     wrongly would diverge here, and by far more than float32 noise.
 
     Not bitwise, and the reason is the point. The extension links its own ONNX Runtime
@@ -145,7 +145,7 @@ def test_the_session_matches_an_independent_onnxruntime(decoder_graph):
     two dispatch to different MLAS kernels: the reduction in this graph accumulates in
     a different order and the last one or two float32 digits differ. This test asserted
     bitwise equality at first and passed locally on arm64, where both builds take the
-    same NEON path -- then failed on every x86-64 CI job. Bitwise was never derivable
+    same NEON path, then failed on every x86-64 CI job. Bitwise was never derivable
     across two builds; it only looked that way on one architecture.
 
     What is derivable is that both compute the same function, so the tokens match
@@ -181,7 +181,7 @@ def test_chunked_prefill_fills_the_cache_the_same_way(decoder_graph, chunk_token
     assert from_single.length == from_chunks.length == len(PROMPT)
     np.testing.assert_array_equal(from_chunks.logits, from_single.logits)
 
-    # And the cache itself, read through the next step rather than inspected.
+    # And the cache itself, read through the next step instead of inspected.
     np.testing.assert_array_equal(chunked.decode("a", 7).logits, single.decode("a", 7).logits)
 
 
@@ -195,8 +195,8 @@ def test_a_preempted_sequence_emits_token_identical_output(decoder_graph, recomp
     This is what makes eviction usable at all. Under memory pressure the policy
     releases a victim's blocks and keeps its tokens; when it is readmitted, its whole
     history is re-run. If that produced different output, eviction would be a
-    correctness bug rather than a scheduling decision, and the difference would be
-    invisible -- the model would carry on emitting fluent text.
+    correctness bug instead of a scheduling decision, and the difference would be
+    invisible. The model would carry on emitting fluent text.
 
     Token identity is the claim, not bitwise logits: recomputing runs one wide pass
     where the uninterrupted path ran many narrow ones. The margin is asserted too, so
@@ -216,7 +216,7 @@ def test_a_preempted_sequence_emits_token_identical_output(decoder_graph, recomp
     margin = min(top_two_margin(row) for row in clean_logits)
     assert margin > 100.0 * max(drift, 1e-9), (
         f"the winning logit led by only {margin:.3e} while recompute moved the logits "
-        f"by {drift:.3e}, so token identity here would be luck rather than a result. "
+        f"by {drift:.3e}, so token identity here would be luck , not a result. "
         f"Choose a prompt with a clearer argmax."
     )
     assert preempted_tokens == clean_tokens
@@ -346,7 +346,7 @@ def test_extend_chunk_by_chunk_matches_prefill_driving_its_own_chunks(decoder_gr
     scheduler could not interleave without changing the answer.
 
     Compared through the step after, not just on the prefill's own logits, so the
-    cache is what is being checked rather than one output row.
+    cache is what is being checked instead of one output row.
     """
     inside = _session(decoder_graph)
     inside.open("a", 64)
@@ -403,7 +403,7 @@ def test_extend_on_an_unknown_sequence_raises(decoder_graph):
 # exactly the mistake `Hold cross-build comparisons to float32` was fixing: bitwise
 # held on arm64 and reddened every x86-64 job. What the assertion has to catch is a
 # row reading the wrong offset or padding leaking into the cache, and the fixture
-# moves those by 6e-02 to 4e-01 relative -- four orders above the bound below.
+# moves those by 6e-02 to 4e-01 relative, four orders above the bound below.
 
 
 def _prefilled(
@@ -421,7 +421,7 @@ def _prefilled(
 
     `slack` is how many token positions beyond the prompt each sequence reserves.
     Zero means every sequence sits exactly at its reservation, so the next decode
-    step has to take a block -- which is how the all-or-nothing test arranges a
+    step has to take a block, which is how the all-or-nothing test arranges a
     batch that cannot fit without any single row being at fault.
     """
     session = _session(
@@ -456,7 +456,7 @@ def test_a_batched_decode_step_matches_the_same_sequences_run_alone(decoder_grap
     one-long-one-minimal case pads sixteen of seventeen positions, which is where an
     offset that confused the row's own length with the batch's width shows up.
 
-    Four steps rather than one: the first step's logits would agree even if the new
+    Four steps instead of one: the first step's logits would agree even if the new
     KV were scattered to the wrong index, because that write is only read back on the
     step after. Continuing is what makes the cache itself the thing under test.
     """
@@ -505,7 +505,7 @@ def test_a_threaded_session_decodes_the_same_batch_as_a_serial_one(decoder_graph
     float32 agreement for the values. Asserting bitwise here would be the mistake
     `Hold cross-build comparisons to float32` already made once.
 
-    Four steps rather than one, so the cache a threaded run wrote is what the next
+    Four steps instead of one, so the cache a threaded run wrote is what the next
     step reads back.
     """
     names = [f"s{i}" for i in range(len(lengths))]
@@ -617,12 +617,12 @@ def test_padding_costs_nothing_when_every_row_is_the_same_length(decoder_graph, 
 # the gather changes which thread runs which memcpy and nothing else: the same bytes
 # land at the same offsets, so the graph is handed an identical input tensor and the
 # GEMM shape never moves. Anything less than bitwise would be the wrong bar, because
-# the failure this has to catch -- a torn write, an overlapping partition, a slot
-# copied twice or not at all -- can be a handful of floats and would hide inside a
+# the failure this has to catch, a torn write, an overlapping partition, a slot
+# copied twice or not at all, can be a handful of floats and would hide inside a
 # tolerance. It is also the race detector: a batched step had no bitwise assertion
 # against anything before this.
 #
-# `parallel_copy_floor=0` is load-bearing. The fixture stages a few hundred floats,
+# `parallel_copy_floor=0` matters here. The fixture stages a few hundred floats,
 # far under the real floor, so without it every one of these would quietly measure
 # the inline path and pass for the wrong reason.
 
@@ -642,7 +642,7 @@ def test_a_threaded_gather_stages_the_same_bytes_as_a_serial_one(
 ):
     """The whole claim: more runners, identical bytes.
 
-    Four steps rather than one, for the reason the sequential comparison gives -- a
+    Four steps instead of one, for the reason the sequential comparison gives, a
     row scattered to the wrong index still agrees on the step that wrote it and only
     disagrees on the step that reads it back. Mixed lengths so the rows have different
     amounts to copy and a partition that split by slot index alone would land
@@ -707,7 +707,7 @@ def test_stopping_the_intra_op_threads_spinning_changes_no_answer(decoder_graph,
 def test_one_copy_thread_is_the_default_and_the_floor_is_the_measured_one(decoder_graph):
     """Both defaults are the configuration every recorded number was measured on.
 
-    The floor is pinned because it is a measured crossover rather than a round
+    The floor is pinned because it is a measured crossover, not a round
     number, and it already moved once: the first value was a guess 32x too high,
     which would have left the copy serial at batch 8 where threading is 1.85x.
     """
@@ -779,7 +779,7 @@ def test_a_batch_that_does_not_fit_reserves_nothing(decoder_graph, copy_threads)
     # Sixteen tokens at four per block is exactly four blocks, reserved with no
     # slack, so every row needs a fifth block to take another token: a shortfall of
     # three against the two that are free. Two is enough for either of the first two
-    # rows alone, so this fails as a batch rather than because any one row is
+    # rows alone, so this fails as a batch instead of because any one row is
     # individually impossible.
     session, _ = _prefilled(
         decoder_graph,
@@ -840,7 +840,7 @@ def test_gpt2_block_cache_matches_contiguous_kv_bitwise(gpt2_graph):
 def test_gpt2_preempted_sequence_emits_token_identical_output(gpt2_graph):
     """Preempt-and-recompute on a real decoder.
 
-    Recorded rather than smoothed over: on GPT-2 the recomputed logits differ from
+    Recorded, not smoothed over: on GPT-2 the recomputed logits differ from
     the uninterrupted ones by around 6e-05, because one wide pass sums in a different
     order than many narrow ones. Token identity survives that; bitwise equality does
     not, and asserting it would fail for a legitimate reason.
@@ -870,6 +870,6 @@ def test_gpt2_preempted_sequence_emits_token_identical_output(gpt2_graph):
     margin = min(top_two_margin(row) for row in clean_logits)
     assert margin > 100.0 * max(drift, 1e-9), (
         f"winning logit led by {margin:.3e} while recompute moved the logits by "
-        f"{drift:.3e}; token identity would be luck rather than a result"
+        f"{drift:.3e}; token identity would be luck , not a result"
     )
     assert preempted_tokens == clean_tokens

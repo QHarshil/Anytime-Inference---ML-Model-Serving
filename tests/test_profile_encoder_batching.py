@@ -3,7 +3,7 @@
 This is the gated half of the encoder-batching question, so most of what matters is
 whether the gate is real. The first version of this script gated each variant against
 its own `configs/serving.yaml` service time, which meant it gated *nothing* for the two
-INT8 variants -- the config records service times for the FP32 pair only, so the lookup
+INT8 variants, the config records service times for the FP32 pair only, so the lookup
 returned None, the check was skipped, and the payload still said `gated: true`. The
 tests below are shaped by that: they check the control exists, that it is a variant the
 config actually carries a number for, and that the recorded control landed inside the
@@ -19,7 +19,7 @@ measures:
 - `run_ms` grows very nearly linearly in the width, which is the mechanism: almost
   nothing amortises, so a batched Run occupies one worker for K times as long.
 - **The widest width whose Run fits inside the deadline is 2.** That is the arithmetic
-  that decides the feature, so it is asserted against the committed config rather than
+  that decides the feature, so it is asserted against the committed config instead of
   quoted.
 """
 
@@ -94,7 +94,7 @@ def test_the_control_landed_inside_the_band_it_enforces(timed):
         measured = variant["control_measured_ms"]
         recorded = variant["control_recorded_ms"]
         # 20% is the script's default tolerance. A pass outside it is discarded, so a
-        # committed run cannot contain one -- this is the check that the discard works.
+        # committed run cannot contain one. This is the check that the discard works.
         assert abs(measured / recorded - 1.0) <= 0.20, variant["variant"]
 
 
@@ -119,8 +119,8 @@ def test_batching_the_encoder_is_worth_far_less_than_batching_a_decode_step(time
 def test_almost_nothing_amortises_across_an_encoder_batch(timed):
     """`run_ms` grows nearly linearly in the width, which is why the speedup is small.
 
-    The complement of the test above: it says *why* the ceiling is where it is rather
-    than just that it is low.
+    The complement of the test above: it says *why* the ceiling is where it is and not
+    just that it is low.
     """
     for variant in timed["variants"]:
         rows = {w["width"]: w["run_ms"] for w in variant["widths"]}
@@ -139,7 +139,7 @@ def test_only_a_width_of_two_leaves_the_run_inside_the_deadline(timed, config):
     A batch's Run is indivisible: every request in it waits for the whole thing. So a
     width whose Run alone exceeds the deadline cannot meet it however empty the queue
     is. For DistilBERT FP32 against the 38.7 ms deadline that admits width 2 and
-    nothing above it -- while the speedup does not peak until 8.
+    nothing above it, while the speedup does not peak until 8.
     """
     deadline = config["deadline_ms"]
     for variant in timed["variants"]:

@@ -6,10 +6,10 @@ history, so a preempted sequence can be recomputed, and a policy to consult when
 arena has no room.
 
 There is no Python fallback here, unlike `onnx_runtime.py`. The arena is the
-extension -- reimplementing it over numpy would allocate the whole cache afresh
+extension. Reimplementing it over numpy would allocate the whole cache afresh
 every step (measured 2.88 ms with a 478% spread against 1.08 ms for the arena) and
 would put the accounting somewhere other than where the runtime is. A missing
-extension is therefore an error rather than a slower path.
+extension is therefore an error, not a slower path.
 
 TTFT and TPOT are reported separately because they are not the same measurement. On
 this host GPT-2 FP32 prefills a 1024-token prompt in 285.5 ms and then emits each
@@ -19,7 +19,7 @@ describe neither.
 Threads
 -------
 
-The session runs with `DEFAULT_INTRA_OP_THREADS` inside one operator rather than the
+The session runs with `DEFAULT_INTRA_OP_THREADS` inside one operator, not the
 encoder's one. See the constant for why the encoder's pin does not carry over here
 and for what it measured; the short version is that the decoder lane is a single
 scheduler over a single arena, so there is no worker pool for a per-worker thread
@@ -29,9 +29,9 @@ Preemption
 ----------
 
 `preempt` releases a sequence's blocks and keeps its tokens; `resume` re-runs the
-history and carries on. The output is token-identical to an uninterrupted run --
-asserted in `tests/test_decoder_session.py` on both the synthetic graph and GPT-2 --
-which is what makes eviction a scheduling decision rather than a correctness bug. It
+history and carries on. The output is token-identical to an uninterrupted run,
+asserted in `tests/test_decoder_session.py` on both the synthetic graph and GPT-2,
+which is what makes eviction a scheduling decision and not a correctness bug. It
 is not free: recomputing a 960-token sequence costs about 261 ms against an 8.1 ms
 decode step, which is why `kv_admission.BlockAdmission` weighs slack against
 recompute before naming a victim.
@@ -80,7 +80,7 @@ __all__ = [
 # step is 1.50x faster at eight threads than at one, and batching's own payoff over
 # stepping one at a time rises from 1.35x to 1.79x, because a batch-1 decode is a
 # skinny GEMV with little to parallelise while a wide batch is a real GEMM. Ten
-# threads is erratic and fourteen -- that host's core count -- is an outright loss at
+# threads is erratic, and fourteen, that host's core count, is an outright loss at
 # 0.63x, so "use every core" would have been a regression.
 #
 # Eight is therefore a measurement on one host, not a portable constant. Override it
@@ -109,8 +109,8 @@ def available_cpus() -> int:
 # the curve, it is the one bound that holds without measuring, and exceeding it is
 # always wrong.
 #
-# This is not hypothetical. With a flat 8 on a 2-core CI runner -- 4x oversubscribed
-# -- `test_a_serial_policy_queues_what_a_batched_one_overlaps` failed on two of four
+# This is not hypothetical. With a flat 8 on a 2-core CI runner, 4x oversubscribed,
+# `test_a_serial_policy_queues_what_a_batched_one_overlaps` failed on two of four
 # Python versions, because the batched policy runs the wider graph and so pays the
 # most thread-sync overhead on a fixture whose graph time is microseconds. On the
 # 14-core host where 8 was measured this cap changes nothing.
@@ -118,12 +118,12 @@ DEFAULT_INTRA_OP_THREADS = min(_MEASURED_INTRA_OP_THREADS, available_cpus())
 
 # Runners the KV gather may split across. One is the serial copy every number in
 # docs/benchmarks.md was measured with, and it stays the default until a measurement
-# says otherwise -- changing it silently would re-point every consumer of it, which is
+# says otherwise. Changing it silently would re-point every consumer of it, which is
 # the trap `profile_decode.py` fell into when the intra-op default moved.
 #
 # It is a separate budget from the intra-op count because it buys a different thing:
 # ONNX Runtime's pool divides the graph, this one divides the memcpy that stages the
-# batch's past. The two never run at once -- the gather finishes before Run starts --
+# batch's past. The two never run at once, since the gather finishes before Run starts,
 # so they are not competing and there is no reason to tie them together.
 DEFAULT_COPY_THREADS = 1
 
@@ -156,7 +156,7 @@ class GenerationRequest:
 class StepRecord:
     """One prefill, decode or recompute, as the runtime measured it.
 
-    The phases are broken out rather than summed because the gather is the price of
+    The phases are broken out instead of summed, because the gather is the price of
     block accounting and reporting only a total would hide it. `verify_ms` is
     non-zero on the one step per sequence that checks the present-prefix invariant,
     and `pad_ms` only on a batched step, where rows shorter than the batch's longest
@@ -166,7 +166,7 @@ class StepRecord:
     describes. It is 1 for everything except a batched decode step, and it is here
     because it is what separates two different numbers that a single field could not
     carry. For a sequence in a batch of eight taking 50 ms, the durations above are
-    its real latency -- it genuinely waited 50 ms for its token, and dividing by
+    its real latency. It genuinely waited 50 ms for its token, and dividing by
     eight would understate what it experienced. Throughput is the other direction:
     eight tokens came out in that 50 ms. Latency is the duration, throughput is
     `batch_size` over the duration, and neither is derivable from the other without
@@ -291,7 +291,7 @@ class _Sequence:
     preemptions: int = 0
     recompute_ms: float = 0.0
     # Whether the tokens still to be cached are being re-run after a preemption
-    # rather than run for the first time. Only affects how a step is labelled: the
+    # instead of run for the first time. Only affects how a step is labelled: the
     # work is identical, which is why one code path does both.
     recomputing: bool = False
 
@@ -306,7 +306,7 @@ class DecoderClient:
     `admission` is optional. Without it the client runs sequences until the arena
     refuses one, which is what a profiling run needs before it has measured the costs
     a policy would be built from. With it, a request that does not fit triggers an
-    eviction plan and the victims are preempted rather than the request being
+    eviction plan and the victims are preempted instead of the request being
     refused outright.
     """
 
@@ -446,7 +446,7 @@ class DecoderClient:
         """Whether another token would run past what the model was trained for.
 
         Public because a scheduler decides when a sequence stops, and this is not
-        derivable from the graph: GPT-2's position table is an initializer rather than
+        derivable from the graph. GPT-2's position table is an initializer and not
         a declared shape, so exceeding it surfaces as an out-of-bounds Gather from
         inside ONNX Runtime.
         """
@@ -579,7 +579,7 @@ class DecoderClient:
 
         A fresh prompt and a preempted sequence's history go through here identically.
         Both are "run the tokens this sequence holds that are not cached yet", and the
-        only difference is what the step is called, so there is one path rather than
+        only difference is what the step is called, so there is one path instead of
         two that could drift apart.
         """
         sequence = self._lookup(request_id)
@@ -630,7 +630,7 @@ class DecoderClient:
     def emit_batch(self, request_ids: Sequence[str]) -> list[StepRecord]:
         """Emit one token for each sequence, in a single graph invocation.
 
-        Every record carries the whole step's timings rather than a share of them,
+        Every record carries the whole step's timings, not a share of them,
         because that is what each sequence actually waited. See `StepRecord` on why
         `batch_size` travels with them.
         """

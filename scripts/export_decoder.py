@@ -6,7 +6,7 @@ GPT-2 124M is the first target: small enough to iterate on and large enough that
 the cache is not a rounding error.
 
 Exports `text-generation-with-past`, so the graph carries its KV cache in its
-signature rather than hiding it. For GPT-2 that is 27 inputs and 25 outputs:
+signature instead of hiding it. For GPT-2 that is 27 inputs and 25 outputs:
 
     input_ids                 [batch, sequence]
     past_key_values.{i}.key   [batch, 12, past, 64]     i = 0..11
@@ -23,7 +23,7 @@ Worth reading that carefully before building on it. ONNX Runtime allocates the
 graph a block table and have attention read scattered pages. Paging over a stock
 exported decoder can only be a host-side block allocator that gathers a
 sequence's blocks into these tensors before each run. That is what the KV cache
-work does, and it is why it is called a block allocator rather than paged
+work does, and it is why it is called a block allocator instead of paged
 attention.
 
 Precisions:
@@ -115,7 +115,7 @@ def apply_partial_descriptor_shim() -> int:
     ``NormalizedConfig(self, config, allow_new=False, ...)`` and fails with
     "got multiple values for argument 'allow_new'".
 
-    Encoder configs are unaffected because they name a plain class rather than a
+    Encoder configs are unaffected because they name a plain class instead of a
     partial, which is why the existing `export_onnx.py` still works and this is
     only visible on the decoder path. 42 of optimum's 176 ONNX config classes use
     a partial, GPT-2 among them.
@@ -203,7 +203,7 @@ def rewrite_gemm_as_matmul(model) -> int:
     Needed because ``MatMulNBitsQuantizer`` only rewrites ``MatMul`` nodes, and
     GPT-2's linear layers are ``Conv1D`` in PyTorch, which exports as ``Gemm``.
     Without this pass the quantiser finds exactly one eligible node in the whole
-    graph -- the output projection -- and INT4 both fails to shrink the model and
+    graph, the output projection, and INT4 both fails to shrink the model and
     destroys it. Models built from ``nn.Linear``, the Llama family among them,
     export as ``MatMul`` and do not need this.
 
@@ -279,7 +279,7 @@ def quantize_int4(source: Path, out_dir: Path, block_size: int) -> Path:
     """Block-wise weight-only INT4 via MatMulNBitsQuantizer.
 
     Weights only: activations stay float, so this trades size and memory bandwidth
-    for a rounding error on the weights rather than restructuring the arithmetic.
+    for a rounding error on the weights instead of restructuring the arithmetic.
 
     Asymmetric, because GPT-2's weight distributions are not centred and symmetric
     4-bit spends half its range on values that do not occur.
@@ -343,8 +343,8 @@ def kv_geometry_from_graph(graph: Path) -> tuple[int, int, int]:
     The graph is the authority and the config is the cross-check, for the reason
     `DecoderSession::derive_geometry` gives on the C++ side: a config that disagrees
     with the graph it describes produces a KV cache of the wrong shape, and the
-    failure is wrong logits rather than an error. This is the Python mirror of that
-    function, and it is deliberately the same rule -- count `past_key_values.{i}.key`
+    failure is wrong logits instead of an error. This is the Python mirror of that
+    function, and it is deliberately the same rule, count `past_key_values.{i}.key`
     inputs for the layers, and take `kv_heads` and `head_dim` off the static
     dimensions of the first one.
 
@@ -397,7 +397,7 @@ def _empty_past(layers: int, kv_heads: int, head_dim: int) -> dict[str, np.ndarr
 def _token_nll(logits: np.ndarray, targets: np.ndarray) -> tuple[float, int]:
     """Summed negative log-likelihood of `targets` under `logits`.
 
-    Computed with the log-sum-exp shift rather than by exponentiating directly:
+    Computed with the log-sum-exp shift instead of by exponentiating directly:
     GPT-2 logits reach into the tens, and exp of that in float32 loses the tail
     the perplexity is measuring.
     """
@@ -531,14 +531,14 @@ def main() -> int:
     parser.add_argument(
         "--skip-export",
         action="store_true",
-        help="Measure graphs already on disk rather than re-exporting",
+        help="Measure graphs already on disk instead of re-exporting",
     )
     args = parser.parse_args()
 
     if not extension_available():
         raise SystemExit(
             "anytime_runtime is not available, so perplexity would be scored through "
-            "the Python fallback rather than the path that serves traffic. Build the "
+            "the Python fallback instead of the path that serves traffic. Build the "
             "extension with:\n    pip install -e ."
         )
 
@@ -600,7 +600,7 @@ def main() -> int:
             f"the graph and the model config disagree about the KV geometry: the "
             f"graph declares {(layers, kv_heads, head_dim)} and the config says "
             f"{from_config} (layers, kv_heads, head_dim). The graph is what runs, so "
-            f"the config is what is wrong -- but the arena is sized from one of them "
+            f"the config is what is wrong, but the arena is sized from one of them "
             f"and every KV number below is derived from it, so this is not something "
             f"to proceed through."
         )
@@ -699,7 +699,7 @@ def main() -> int:
             "machine": platform.machine(),
             "python": platform.python_version(),
             "backend": "extension",
-            # Recorded rather than pinned. `onnxruntime` is a floor in pyproject.toml,
+            # Recorded instead of pinned. `onnxruntime` is a floor in pyproject.toml,
             # so two clones can resolve different versions; the kernel that runs
             # follows the version and the reduction order follows the kernel. See
             # docs/runtime.md, "Why the floor is not a pin".

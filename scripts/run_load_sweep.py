@@ -1,7 +1,7 @@
 """Sweep offered load through the real models and compare policies.
 
 Offered load is expressed as a target utilisation of the *measured* pool capacity
-rather than as a bare request rate. Capacity is ``workers / service_time`` for the
+instead of as a bare request rate. Capacity is ``workers / service_time`` for the
 most accurate variant, so a four-worker pool serving a 12.8 ms model saturates
 near 310 rps. A sweep that stops at 90 rps never leaves the idle regime and shows
 nothing; the interesting behaviour is around and past rho = 1.
@@ -12,16 +12,16 @@ Both policies see the same Poisson arrival stream:
   adaptive       the planner picks a variant under an M/M/c sojourn bound
 
 Requests run through the exported ONNX graphs, so latencies, deadline hits, and
-misses are measured rather than assumed.
+misses are measured, not assumed.
 
 Outputs:
   results/load_sweep.csv     one row per (policy, target utilisation)
   docs/img/load_sweep.png    completion, attainment, latency, and cost vs load
 
 `--replot` redraws the figure from an existing CSV and measures nothing, which is how
-the other figures in this repository are drawn. Everything the figure annotates -- the
-deadline, the worker count, the pool capacity, the accurate variant's name -- comes from
-the serving config rather than from the run, so the redraw cannot retitle the picture.
+the other figures in this repository are drawn. Everything the figure annotates, the
+deadline, the worker count, the pool capacity, the accurate variant's name, comes from
+the serving config instead of from the run, so the redraw cannot retitle the picture.
 
 Usage:
     python scripts/run_load_sweep.py --duration 3

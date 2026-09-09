@@ -20,24 +20,24 @@ Three encodings, three jobs
 ---------------------------
 
 Precision is an identity, so it keeps the categorical hues and markers the four
-existing decoder figures use, imported from `plot_decode_profiles.py` rather than
+existing decoder figures use, imported from `plot_decode_profiles.py` instead of
 restated here.
 
-Cache occupancy is a magnitude, so it gets a sequential ramp of one hue rather than
+Cache occupancy is a magnitude, so it gets a sequential ramp of one hue instead of
 three more categorical colours: 128, 512 and 960 cached tokens are ordered, and three
 unrelated hues would throw that ordering away. The violet ramp is deliberately not the
 precision blue, so a reader cannot carry "blue means fp32" into a panel where blue
 means "512 tokens". Every step is at least 3:1 against white (3.29, 6.22, 12.3) and
 monotone in OKLab lightness (0.657, 0.508, 0.342), which is what makes it a ramp
-rather than three colours in a row.
+instead of three colours in a row.
 
-A phase of a decode step is an identity as well, and it gets its own four hues rather
-than borrowing the precision ones: see the comment on PHASE_COLOURS for the palette,
+A phase of a decode step is an identity as well, and it gets its own four hues instead of
+borrowing the precision ones: see the comment on PHASE_COLOURS for the palette,
 its contrast and colour-deficiency figures, and the trade-off it accepts.
 
 A scheduling policy is an identity too, and it takes the colours the encoder lane's
-load sweep already uses for the same job -- the red-brown for the baseline everything
-is compared against, blue for the policy under test -- with green added for the third.
+load sweep already uses for the same job, the red-brown for the baseline everything
+is compared against, blue for the policy under test, with green added for the third.
 That palette passes the contrast and colour-deficiency checks on every pair, except
 that the green sits below 3:1 against white, which is why every line here is also
 labelled at its end.
@@ -84,17 +84,17 @@ OCCUPANCY_RAMP = ("#9b7fd4", "#6f4bb8", "#3f2472")
 # load sweep gives the policy it compares against.
 POLICY_COLOURS = ("#b2432f", "#2f6fb2", "#1baf7a")
 POLICY_MARKERS = ("o", "s", "^")
-# Prefill intervals in the timeline. A wash rather than a series: it is the cause of
+# Prefill intervals in the timeline. A wash instead of a series: it is the cause of
 # the stall, not a second measurement competing with the line.
 BAND = "#efe9d9"
 
-# The four phases of a decode step are identities rather than magnitudes, so they take
-# categorical hues in a fixed order rather than a ramp. The order is fixed and not
+# The four phases of a decode step are identities instead of magnitudes, so they take
+# categorical hues in a fixed order instead of a ramp. The order is fixed and not
 # cycled: a fifth phase has to be given a colour, because a palette that wraps silently
 # gives two different things the same one.
 #
 # These are four steps of Okabe-Ito, which is a published colour-deficiency-safe
-# qualitative palette rather than a set this repository chose by eye. Hand-picked
+# qualitative palette instead of a set this repository chose by eye. Hand-picked
 # alternatives were tried first and kept failing the checks the palette has to pass: a
 # slate for `Run` read as grey (chroma 0.064 against a 0.1 floor) and every teal put
 # next to a crimson `gather` fell to dE 5.9 under deuteranopia, teal-against-red being
@@ -102,13 +102,13 @@ BAND = "#efe9d9"
 #
 # Against the white surface: run 5.19:1, gather 3.87:1, pad 3.42:1, scatter 3.06:1. The
 # worst adjacent colour-deficiency separation is pad against scatter, dE 7.6 deutan,
-# which sits in the band that is only legal with a second cue -- so those two are the
+# which sits in the band that is only legal with a second cue, so those two are the
 # ones the surface gap separates and the legend names, and they are also the two
-# smallest segments, which is why they are last in the order rather than in the middle.
+# smallest segments, which is why they are last in the order instead of in the middle.
 #
 # The cost of using a standard palette is that its blue, orange and green sit in the
 # same families as fp32, int8 and int4 in the neighbouring figures. That is accepted
-# rather than overlooked: this figure fixes the precision in its title and encodes no
+# instead of overlooked: this figure fixes the precision in its title and encodes no
 # precision at all, so there is no second meaning for a hue to collide with, and a
 # stacked bar is not read as a line chart. The hexes are distinct, which is what
 # tests/test_plot_batching.py checks.
@@ -125,7 +125,7 @@ PHASE_LABELS = {
     "pad": "zero the padding",
     "scatter": "scatter",
 }
-# Segments are separated by a gap of surface rather than by a stroke around each one:
+# Segments are separated by a gap of surface instead of by a stroke around each one:
 # a 2px white edge on a white background reads as a gap, where an outline reads as a
 # border and thickens every segment by two pixels it does not own.
 SEGMENT_GAP_PT = 1.5
@@ -134,9 +134,9 @@ SEGMENT_GAP_PT = 1.5
 def _occupancy_colours(lengths: list[int]) -> dict[int, str]:
     """Assign the ramp shortest to longest, so darker always means more cache.
 
-    Assigned by rank rather than by value, so a sweep at different lengths still reads
+    Assigned by rank instead of by value, so a sweep at different lengths still reads
     in order. More than three lengths would need more steps: the ramp is extended by
-    repeating its darkest step rather than by inventing hues, which is visible as two
+    repeating its darkest step instead of by inventing hues, which is visible as two
     lines the same colour and is meant to be.
     """
     ordered = sorted(set(lengths))
@@ -159,7 +159,7 @@ def _batch_positions(widths: list[int]) -> tuple[list[int], list[str]]:
 def plot_batch_scaling(data: dict, path: Path) -> None:
     """What batching buys, and whether the cost split explains it.
 
-    One panel per precision so nine series are three sets of three rather than a
+    One panel per precision so nine series are three sets of three instead of a
     thicket, sharing one y-axis: panels with their own scales would let a 1.3x and a
     2.4x look alike, which is the comparison the figure exists to make.
     """
@@ -316,10 +316,10 @@ def _scaling_sentence(data: dict) -> str:
 def plot_alternation(data: dict, path: Path) -> None:
     """One schedule over time: nothing decodes while a prefill chunk runs.
 
-    Cumulative tokens rather than one line per sequence, because the shape of the
+    Cumulative tokens instead of one line per sequence, because the shape of the
     stall is the point and six lines would carry the same shape six times. The bands
     are the prefill chunks, and the line is flat across every one of them by
-    construction -- which is the consequence of alternating that the trade-off in
+    construction, which is the consequence of alternating that the trade-off in
     `batch_scheduler.py` is about.
     """
     import matplotlib.pyplot as plt
@@ -532,16 +532,16 @@ def plot_step_composition(data: dict, path: Path, *, precision: str = "fp32") ->
     batch-1 step, which a share panel alone would hide entirely. Shares show that the
     gather's part of it grows as the batch widens, which is the argument for threading
     the copy and is invisible next to a `Run` that sets the scale. The third panel drops
-    `Run` and keeps the three copies this repository owns rather than delegates: on the
+    `Run` and keeps the three copies this repository owns instead of delegates: on the
     step's own axis the padding and the scatter are half a pixel, so a figure that
     claimed to show them there would be a legend entry for a colour the reader cannot
     find.
 
-    Stacked rather than grouped because the four phases are one step rather than four
+    Stacked instead of grouped because the four phases are one step instead of four
     independent measurements: they are what the caller waits through, in order. They are
-    also checked to sum to the measured step -- they agree within 0.5% at every width at
-    the occupancy drawn -- so the stack is not implying an accounting that does not hold.
-    The shares are taken against that sum rather than against `step` so a column reaches
+    also checked to sum to the measured step, they agree within 0.5% at every width at
+    the occupancy drawn, so the stack is not implying an accounting that does not hold.
+    The shares are taken against that sum instead of against `step` so a column reaches
     exactly 100%; the difference is that 0.5%. `tests/test_plot_batching.py` asserts it
     against the committed measurements, because a tolerance quoted in prose and checked
     by nothing is a number that drifts.
@@ -576,7 +576,7 @@ def plot_step_composition(data: dict, path: Path, *, precision: str = "fp32") ->
     def _stack(axis: Any, order: tuple[str, ...], heights_of: Any, ceiling: float) -> None:
         """Stack `order` onto `axis`, gapped only where a segment can afford it.
 
-        The gap between segments is surface showing through rather than a stroke, which
+        The gap between segments is surface showing through instead of a stroke, which
         is why it is white and why it has to be conditional: a 1.5pt edge is wider than
         the scatter's segment at any batch width, so drawing it unconditionally erased
         the data it was supposed to separate. Anything thinner than a hair of the axis
@@ -658,7 +658,7 @@ def plot_step_composition(data: dict, path: Path, *, precision: str = "fp32") ->
         # Value axis only. A vertical gridline earns nothing against a categorical axis
         # whose classes are already labelled, and it leaves a stub of grid standing in
         # the gap between the tallest bar and the top of the axes, which reads as a mark
-        # on the chart rather than as chrome behind it.
+        # on the chart instead of as chrome behind it.
         axis.grid(False, axis="x")
     share.set_ylim(0, 100)
 
@@ -728,7 +728,7 @@ def main() -> int:
             raise SystemExit(
                 f"no colour is assigned to {sorted(unknown)}. A precision keeps one "
                 f"colour across every figure, so add it to SERIES_COLOURS in "
-                f"plot_decode_profiles.py rather than letting matplotlib cycle one."
+                f"plot_decode_profiles.py instead of letting matplotlib cycle one."
             )
         plot_batch_scaling(mechanism, args.output_dir / "batch_scaling.png")
         plot_alternation(mechanism, args.output_dir / "alternation.png")

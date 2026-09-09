@@ -22,7 +22,7 @@ class TestAdaptiveSelector(unittest.TestCase):
         """High load inflates effective service time past the deadline for FP32.
 
         Both variants are checked against the same M/M/c bound, so this asserts
-        the fallback happens because INT8 admits and FP32 does not, rather than
+        the fallback happens because INT8 admits and FP32 does not, instead of
         because neither fits and the fastest variant is returned by default.
         """
         selector = AdaptiveSelector([FP32, INT8], servers=2, load_knee_percent=20.0, load_slope=0.1)
@@ -33,7 +33,7 @@ class TestAdaptiveSelector(unittest.TestCase):
 
     def test_returns_fastest_when_nothing_fits(self):
         # Unmeetable deadline: selector should still resolve to a variant
-        # (the fastest one) rather than raising.
+        # (the fastest one) instead of raising.
         selector = AdaptiveSelector([FP32, INT8], servers=4)
         decision = selector.select(deadline_ms=0.5, arrival_rate_rps=200.0, load_percent=99.0)
         self.assertEqual(decision.variant.name, "int8")

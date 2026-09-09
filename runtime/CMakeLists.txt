@@ -14,14 +14,14 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
 
-# The KV gather splits across cores. Required rather than optional: without it
+# The KV gather splits across cores. Required, not optional. Without it
 # std::thread links on glibc and then aborts at run time, which is a failure mode
 # worth turning into a configure error.
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 # Resolves an SDK whose version equals the onnxruntime wheel's. See the module
-# for why that equality is enforced at configure time rather than documented.
+# for why that equality is enforced at configure time instead of documented.
 include(ResolveOnnxRuntime)
 anytime_resolve_onnxruntime()
 
@@ -38,7 +38,7 @@ target_include_directories(anytime_core
         "${ANYTIME_ORT_ROOT}/include")
 
 # Asserted in tensor.cpp against the value ORT_API_VERSION actually has, so a
-# header arriving from some other include path fails the build rather than the
+# header arriving from some other include path fails the build and not the
 # run.
 target_compile_definitions(anytime_core
     PUBLIC ANYTIME_EXPECTED_ORT_API_VERSION=${ANYTIME_ORT_API_VERSION})

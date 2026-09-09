@@ -17,7 +17,7 @@ The honest comparison for a block-allocated cache is not "against nothing", it i
 against the faster thing it replaces: holding a sequence's KV contiguously by feeding
 the `present` tensors ONNX Runtime returns straight back as the next `past`. That
 costs no gather at all. So this script runs both, reports the difference, and refuses
-to write results if the two disagree on the tokens they emit -- the same divergence
+to write results if the two disagree on the tokens they emit, the same divergence
 guard `profile_variants.py` uses, for the same reason.
 
 The block allocator does not claim to be faster. It claims to make the arena's
@@ -25,7 +25,7 @@ occupancy a number admission and eviction can act on, and this is what that cost
 
 Every latency is a median over repeated passes with the range attached. A single pass
 is not reportable on this host: run-to-run spread is 4-6%, far larger than the spread
-within a pass, and driven by thermal state rather than by anything the code does.
+within a pass, and driven by thermal state instead of by anything the code does.
 
 Writes:
 
@@ -75,11 +75,11 @@ QUICK_CHUNKS = (0, 256)
 DEFAULT_CACHED = (128, 512, 960)
 QUICK_CACHED = (128, 512)
 DEFAULT_REPEATS = 3
-# Decode steps per pass. Small enough that the cache barely grows during one -- 16
-# tokens at 960 cached moves the step by under 1% -- and large enough for a median.
+# Decode steps per pass. Small enough that the cache barely grows during one, 16
+# tokens at 960 cached moves the step by under 1%, and large enough for a median.
 DECODE_STEPS = 16
 # GPT-2's position table. Exceeding it is an out-of-bounds Gather inside ONNX Runtime
-# rather than a graceful stop, and it is an initializer so it cannot be read off the
+# instead of a graceful stop, and it is an initializer so it cannot be read off the
 # graph.
 DEFAULT_MAX_CONTEXT = 1024
 DEFAULT_BLOCK_TOKENS = 64
@@ -91,7 +91,7 @@ DEFAULT_BLOCKS = 24
 # the run is failed. Same bound as profile_variants.py, loose enough not to fire on
 # scheduler noise and tight enough that anything structural trips it.
 #
-# One-sided, and that is a correction rather than a loosening. The check used to be
+# One-sided, and that is a correction, not a loosening. The check used to be
 # two-sided on the premise that the two paths run the same graph on the same shapes, so
 # the only reason to differ was noise. That premise is false once the session is
 # threaded: measured over three runs, INT4 at 512 and 960 cached tokens comes out at
@@ -164,8 +164,8 @@ class DecodeMeasurement:
     """Time per output token at one cached length, and what the arena added to it.
 
     `arena_cost_pct` is the honest statement of that: gather plus scatter as a share
-    of the step, both measured inside the same run rather than by differencing two
-    paths. Differencing was tried first and is worse -- the contiguous reference is
+    of the step, both measured inside the same run instead of by differencing two
+    paths. Differencing was tried first and is worse, the contiguous reference is
     driven from a Python loop that builds 27 numpy feeds per step, so the comparison
     picks up that overhead as well as the arena's and moved 5 points between runs
     while the gather itself moved 0.03 ms.
@@ -179,8 +179,8 @@ class DecodeMeasurement:
     0.83-0.88x at INT4 with a full cache, reproducibly, because the gather leaves the
     staging buffer hot in cache while the contiguous path feeds cold, freshly allocated
     numpy arrays. See `GRAPH_AGREEMENT_TOLERANCE`. This does not make the arena a
-    speedup -- `arena_cost_pct` is the honest statement of what it costs, and it is
-    positive -- it means the comparison is not the controlled experiment its name
+    speedup, `arena_cost_pct` is the honest statement of what it costs, and it is
+    positive. It means the comparison is not the controlled experiment its name
     suggests once the session is threaded.
     """
 
@@ -202,7 +202,7 @@ class CacheCostFit:
     """Coefficients for `kv_admission.CacheCost`, fitted to the measurements.
 
     The policy needs a decode cost and a recompute cost, and both are host- and
-    model-specific. Fitting them here rather than writing them down is the point:
+    model-specific. Fitting them here instead of writing them down is the point:
     Stage 1's result was invalid because a service time was carried over from
     somewhere it did not apply.
     """
@@ -246,8 +246,8 @@ def _graph_bytes(graph: Path) -> int:
 def _prompt(length: int, *, vocab: int, seed: int = 0) -> list[int]:
     """A fixed pseudo-random prompt.
 
-    Random rather than real text on purpose: this measures cost, not quality, and
-    cost depends on the number of tokens rather than on which ones. Perplexity is
+    Random instead of real text on purpose: this measures cost, not quality, and
+    cost depends on the number of tokens instead of on which ones. Perplexity is
     `export_decoder.py`'s job and is scored on real text there.
     """
     rng = np.random.default_rng(seed)
@@ -322,13 +322,13 @@ def _contiguous_decode_pass(
     gather at all: this is the faster thing the block allocator replaces, and the
     reference its graph time is checked against.
 
-    Times what the engine reports for Session::Run rather than the wall clock around
+    Times what the engine reports for Session::Run instead of the wall clock around
     the loop. The loop is Python and builds 27 numpy feeds per step, and that
-    overhead belongs to the reference implementation rather than to the graph, so
+    overhead belongs to the reference implementation instead of to the graph, so
     including it would flatter the arena.
 
-    Deliberately written out here rather than shared with
-    `tests/decoder_reference.py`, which asserts equality rather than measuring time.
+    Deliberately written out here instead of shared with
+    `tests/decoder_reference.py`, which asserts equality instead of measuring time.
     """
     layers, kv_heads, head_dim = geometry.layers, geometry.kv_heads, geometry.head_dim
     names = list(engine.output_names(precision))
@@ -466,7 +466,7 @@ def fit_cache_cost(
     The decode cost is a line in cached tokens, because a decode step re-reads the
     whole cache. The prefill rate is a single rate through the origin, least-squares
     weighted by prompt length, which puts the weight where recompute cost actually
-    matters -- the estimate is used to compare eviction candidates, and the long ones
+    matters. The estimate is used to compare eviction candidates, and the long ones
     are the expensive mistakes.
 
     `recompute_chunk_tokens` selects which prefill measurements the rate is drawn
@@ -526,7 +526,7 @@ def profile_precision(
     extension = load_extension()
     # Same thread count as the session below. This engine is the contiguous-KV
     # reference the arena is cross-checked against, and the check is on time inside
-    # Session::Run as well as on tokens -- so a reference running on a different
+    # Session::Run as well as on tokens, so a reference running on a different
     # number of threads makes the arena look 0.38-0.82x its cost and fails the run.
     # Engine's own default is one thread, deliberately, because the encoder pool
     # depends on it; it is the caller's job to match them here.
@@ -548,7 +548,7 @@ def profile_precision(
     ) as client:
         geometry = client.geometry
         # The width a resume would run at, which is what the recompute rate has to be
-        # fitted from rather than from the single-pass sweep beside it.
+        # fitted from instead of from the single-pass sweep beside it.
         recompute_chunk = client.default_chunk_tokens
         LOGGER.info(
             "  %s: %d layers, %d kv heads, head dim %d -> %.1f KiB per token; arena "
@@ -678,12 +678,12 @@ def profile_precision(
 def host_metadata(intra_op_threads: int) -> dict[str, object]:
     """What the run was taken on, including the settings that change the numbers.
 
-    `intra_op_num_threads` is read from the run rather than written as a constant. It
+    `intra_op_num_threads` is read from the run instead of written as a constant. It
     was a hardcoded 1, which stayed true only for as long as the thread count could
     not change; once it could, the field would have described a configuration this
     file had not been measured under. The cost model fitted here is consumed by
     `run_decode_sweep.py`, so a wrong thread count would not merely be a wrong
-    annotation -- it would have the admission policy reasoning about a different
+    annotation. It would have the admission policy reasoning about a different
     machine from the one it is running on.
     """
     return {
@@ -732,7 +732,7 @@ def main() -> int:
         default=DEFAULT_MAX_CONTEXT,
         help=(
             "Positions the model was trained for. Exceeding it is an out-of-bounds "
-            f"Gather inside ONNX Runtime rather than a graceful stop (default "
+            f"Gather inside ONNX Runtime instead of a graceful stop (default "
             f"{DEFAULT_MAX_CONTEXT})"
         ),
     )

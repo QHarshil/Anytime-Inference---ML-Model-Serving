@@ -45,7 +45,7 @@ class AdaptiveSelector:
     fallback when no variant satisfies the deadline.
 
     ``servers`` must equal the number of workers in the runtime pool this
-    selector feeds. It is taken here rather than on the admission controller so
+    selector feeds. It is taken here and not on the admission controller so
     that a selector can never be paired with a controller that models a
     different pool size; ``AdaptiveServer`` asserts the value matches its pool.
     """
@@ -129,13 +129,13 @@ class AdaptiveSelector:
 
         **This is what caps batching on the encoder lane.** A batch of K needs K
         requests at the runtime at once, and this is the most the controller will
-        ever allow to be there -- so the widest batch the lane can form is this plus
+        ever allow to be there, so the widest batch the lane can form is this plus
         the arrival being decided. For the shipped configuration (38.7 ms deadline,
         four workers) that is 8 for DistilBERT at 12.893 ms and 24 for MiniLM at
         5.189 ms, giving widest batches of 9 and 25. `AdaptiveServer`'s
         ``max_in_flight`` defaults to the pool size and is usually tighter still.
 
-        Computed by asking `select` rather than by evaluating the formula, so the two
+        Computed by asking `select` instead of evaluating the formula, so the two
         cannot drift apart. Monotone in `queue_depth`, so the scan stops at the first
         rejection; `limit` bounds it for a deadline that admits everything.
         """
@@ -160,7 +160,7 @@ class AdaptiveSelector:
 
         ``queue_depth`` is the number of requests already admitted but not yet
         completed. Passing it lets admission respond to the backlog that exists
-        now rather than to a stationary average.
+        now, not to a stationary average.
         """
         if deadline_ms <= 0.0:
             raise ValueError("deadline_ms must be positive")

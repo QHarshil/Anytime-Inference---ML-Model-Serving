@@ -2,7 +2,7 @@
 
 The KV arena is fixed by design; that is what makes it something to decide about.
 This module holds the decision, and `anytime_runtime.DecoderSession` holds the
-mechanism. Deadlines live here rather than in C++ because this is where the rest of
+mechanism. Deadlines live here and not in C++ because this is where the rest of
 the control plane already reasons about them.
 
 Two decisions, one currency
@@ -10,7 +10,7 @@ Two decisions, one currency
 
 **Admission** is block-granular: a request needs `ceil(tokens / block_tokens)`
 blocks, and either they exist or they do not. Unlike the encoder path, there is no
-useful "admit and see" -- a decoding sequence occupies its blocks for hundreds of
+useful "admit and see". A decoding sequence occupies its blocks for hundreds of
 steps, so admitting one the arena cannot hold means evicting somebody later at a
 worse moment.
 
@@ -53,16 +53,16 @@ __all__ = [
 class CacheCost:
     """What a decode step and a recompute cost, on this host, for this model.
 
-    ``decode_ms`` is linear in the number of cached tokens rather than constant,
+    ``decode_ms`` is linear in the number of cached tokens, not constant,
     because a decode step re-reads the whole cache: measured 5.12 ms at 128 tokens,
     6.66 at 512 and 8.15 at 960, which a line through them reproduces within
     0.09 ms.
 
     ``prefill_ms`` is linear too, which is the coarser of the two. Prefill is mildly
-    superlinear -- 0.280 ms per token at 128, 0.364 at 1024 -- so the single fitted
+    superlinear, at 0.280 ms per token at 128 and 0.364 at 1024, so the single fitted
     rate of 0.35 overstates a 128-token recompute by 25% and understates a
     1024-token one by 4%. It is used to compare eviction candidates against each
-    other rather than to promise a completion time, and it errs on the cheap side for
+    other, not to promise a completion time, and it errs on the cheap side for
     long sequences, which is the direction that makes the policy more willing to
     evict them. Worth revisiting if that shows up as churn.
     """
@@ -86,7 +86,7 @@ class CacheCost:
     def decode_span_ms(self, cached_tokens: int, steps: int) -> float:
         """Cost of `steps` decode steps, the cache growing by one token each time.
 
-        Closed form rather than a loop: the per-step cost is linear in the cache
+        Closed form instead of a loop. The per-step cost is linear in the cache
         size, so the total is an arithmetic series. Summing it step by step would
         give the same answer and make the caller's cost depend on how many tokens
         are left.
@@ -224,7 +224,7 @@ class BlockAdmission:
         offered its own blocks.
 
         `already_held` is what that sequence has already got. `tokens` is a total
-        rather than an increment, so a sequence holding six blocks and asking to hold
+        and not an increment, so a sequence holding six blocks and asking to hold
         seven has a shortfall of one; without this it would appear to need all seven
         from scratch and the plan would evict far more than necessary, or refuse.
         """
@@ -293,7 +293,7 @@ class BlockAdmission:
         Doomed sequences go first: they will miss their deadline whether or not they
         are touched, so their blocks are free to take. After them come the sequences
         that survive their own recompute, most surviving slack first, and more blocks
-        first where that ties -- freeing the same room from fewer victims means fewer
+        first where that ties, since freeing the same room from fewer victims means fewer
         recomputes.
 
         Everything else is withheld. A sequence with slack now but none after a

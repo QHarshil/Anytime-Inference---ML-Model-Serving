@@ -3,14 +3,14 @@
 The property everything else depends on is that arrivals are open loop: a request
 enters when its time comes, whether or not anything finished. A driver that ignored
 arrival times would drain a backlog as fast as it could and every latency in the
-results would be a makespan measurement wearing a queueing label -- and it would look
+results would be a makespan measurement wearing a queueing label, and it would look
 entirely plausible, because the numbers would still be ordered the way one expects.
 `test_the_driver_waits_for_an_arrival_rather_than_draining_a_backlog` is the one that
 pins it.
 
 The rest cover the arithmetic that turns per-request timings into a claim: which
 requests a percentile is taken over, what the attainment denominator is, and that time
-to first token is measured from arrival rather than from the start of the run.
+to first token is measured from arrival instead of from the start of the run.
 """
 
 import json
@@ -126,7 +126,7 @@ def test_a_spread_workload_keeps_the_mean_it_claims():
     )
     assert spread.mean_prompt_tokens == pytest.approx(256.0)
     assert spread.longest_prompt_tokens == 448
-    # Cycled rather than sampled, so the mean is exact at any request count that is a
+    # Cycled instead of sampled, so the mean is exact at any request count that is a
     # multiple of the number of lengths.
     assert spread.lengths()[:4] == list(lengths)
 
@@ -234,7 +234,7 @@ def test_percentiles_are_over_completed_requests_and_attainment_is_over_all_of_t
     """An unserved request must not improve the tail by being counted as zero.
 
     It has no time per output token to contribute, so it is excluded from the
-    percentiles -- and included in the attainment denominator, which is where traffic
+    percentiles, and included in the attainment denominator, which is where traffic
     that suffered most belongs. Getting this backwards would make a policy that drops
     half its load look like the best one.
     """
@@ -365,7 +365,7 @@ def test_the_driver_waits_for_an_arrival_rather_than_draining_a_backlog(decoder_
     """Open loop, which is the property every latency in the results depends on.
 
     Two requests, the second arriving 400 ms in. A driver that ignored arrival times
-    would finish in whatever the work takes -- a few milliseconds on this graph -- and
+    would finish in whatever the work takes, a few milliseconds on this graph, and
     report a queueing latency it never measured. The run cannot finish before the last
     arrival.
     """
@@ -400,7 +400,7 @@ def test_a_point_that_overruns_its_budget_fails_rather_than_running_on(decoder_g
     nothing to notice: one run took 9h34m against a 28-minute predecessor before it
     was killed by hand. The budget turns that into a failure with a diagnostic.
 
-    Failing rather than truncating is deliberate. A truncated point is a latency
+    Failing instead of truncating is deliberate. A truncated point is a latency
     distribution missing its slowest requests, which is the half a scheduler is
     judged on, so a short point would read *better* than an honest one.
     """
@@ -430,7 +430,7 @@ def test_a_point_inside_its_budget_is_untouched_by_the_guard(decoder_graph):
     """The guard must not truncate an honest point, which is the failure that would hide.
 
     Same shape as the overrun case with a budget the run comfortably meets, so a guard
-    that fired on elapsed time regardless would show up here rather than as quietly
+    that fired on elapsed time regardless would show up here instead of as quietly
     missing requests in a sweep.
     """
     with DecoderClient(
@@ -499,9 +499,9 @@ def test_a_serial_policy_queues_what_a_batched_one_overlaps(decoder_graph):
     locally on an idle 14-core machine, against 0 in 20 at one thread: a thread pool
     adds more variance than a microsecond graph has signal, and the batched policy
     runs the wider graph so it pays the most of it. The property under test is about
-    *scheduling* -- who waits behind whom -- which is invariant to how many threads
+    *scheduling*, who waits behind whom, which is invariant to how many threads
     ONNX Runtime uses inside an operator. Thread behaviour is covered directly in
-    `test_decoder_session.py`, by comparing outputs rather than durations.
+    `test_decoder_session.py`, by comparing outputs instead of durations.
     """
     workload = WorkloadSpec(label="fixed", prompt_tokens=8, max_new_tokens=3, requests=4)
     arrivals = [0.0, 0.0, 0.0, 0.0]

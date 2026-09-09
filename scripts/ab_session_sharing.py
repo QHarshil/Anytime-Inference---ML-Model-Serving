@@ -2,7 +2,7 @@
 
 `share_sessions` is measured for memory and saves 66% at four workers. What it does to
 latency is the open question, and it has one specific mechanism: shared workers run on
-one ONNX Runtime per-session CPU arena instead of one each. Nothing else changes --
+one ONNX Runtime per-session CPU arena instead of one each. Nothing else changes,
 `intra_op_num_threads` is 1 either way so a Run stays single-threaded, and the weights
 are read-only.
 
@@ -13,11 +13,11 @@ The gate
 treatment: at one worker there is nothing to share**, so the two arms load the identical
 one backend. A host that has drifted shows up here and nowhere else. This is the same
 discipline `results/ab_copy_threads/check_arm.py` applies to the decoder path, for the
-same reason -- that A/B had three degraded arms and three healthy ones inside 28 minutes
+same reason, that A/B had three degraded arms and three healthy ones inside 28 minutes
 and the load average ranked them backwards.
 
 An arm whose control is outside tolerance is not a slow result, it is not a result, and
-the driver retakes it rather than recording it.
+the driver retakes it instead of recording it.
 
 Pairing
 -------

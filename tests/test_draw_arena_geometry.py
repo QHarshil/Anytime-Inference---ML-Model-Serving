@@ -1,4 +1,4 @@
-"""Guards on `scripts/draw_arena_geometry.py`, which draws the arena rather than plots it.
+"""Guards on `scripts/draw_arena_geometry.py`, which draws the arena instead of plots it.
 
 A schematic has a failure mode a measured figure does not: nothing contradicts it. There
 is no JSON behind it to disagree with, so a drawing that shows the scatter landing at
@@ -8,9 +8,9 @@ reader who already knows the answer would catch.
 So the drawing takes every number from `Batch` and `Geometry`, and this checks those
 instead of the pixels: the block arithmetic against the ceiling division the sweep script
 already uses and the extension's own constant, the padding against the batch's longest,
-and the scatter's landing against `past_len` rather than the width the batch happened to
-have. The last group checks the illustration still illustrates -- a sequence whose blocks
-are scattered, a tail block held and not full, a row that pads more than it copies --
+and the scatter's landing against `past_len` instead of the width the batch happened to
+have. The last group checks the illustration still illustrates, a sequence whose blocks
+are scattered, a tail block held and not full, a row that pads more than it copies,
 because an edit that tidied those away would leave a figure that draws nothing worth
 drawing and no other test would notice.
 
@@ -178,7 +178,7 @@ def test_a_drawn_sequence_holds_a_block_it_has_not_filled():
 
 def test_a_drawn_row_pads_more_positions_than_it_copies():
     """The padding trap the second panel is for. Rows of equal length pad nothing and
-    the hatched hole -- and the reason the clear is timed apart from the copy --
+    the hatched hole, and the reason the clear is timed apart from the copy,
     disappears from the figure."""
     batch = draw.BATCH
     assert any(batch.padding(row) > row.length for row in batch.rows)

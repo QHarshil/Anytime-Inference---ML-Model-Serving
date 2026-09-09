@@ -13,7 +13,7 @@ What is measured here, and what is not
 
 This script measures the *mechanism*: how a batched decode step scales with the
 batch, and what a batch of unequal lengths pays for being right-padded. It does not
-measure serving behaviour under load -- there are no arrivals, no deadlines and no
+measure serving behaviour under load. There are no arrivals, no deadlines and no
 queueing here. `run_decode_sweep.py` does that, with an open-loop Poisson arrival
 process, and the two are deliberately separate: a mechanism is best measured in
 isolation and a policy is only meaningful under load.
@@ -25,10 +25,10 @@ A steady-state batched step needs every sequence resident before the first
 measurement, and the scheduler already has the knob for that:
 `prefill_chunks_per_decode`. Set high, prefill runs ahead of decode, so the batch
 fills and then every subsequent iteration is a decode step over all of it. That is
-the scheduler's own configuration rather than a bypass of it, and it is stated in
+the scheduler's own configuration instead of a bypass of it, and it is stated in
 the results as `assembled_prefill_first`.
 
-It is not free of consequences and they are recorded rather than hidden. Each
+It is not free of consequences and they are recorded, not hidden. Each
 sequence's prefill completing costs one decode step over whoever is resident at the
 time, so by the time a batch of B is assembled the first sequence has emitted B
 tokens and the last has emitted one. The batch therefore carries a spread of about
@@ -111,7 +111,7 @@ DEFAULT_REPEATS = 3
 DEFAULT_STEPS = 16
 DEFAULT_BLOCK_TOKENS = 64
 DEFAULT_MAX_CONTEXT = 1024
-# Batch width for the padding regimes. 8 rather than the largest measured width: the
+# Batch width for the padding regimes. 8 instead of the largest measured width: the
 # question is what length variance costs, and a wider batch would confound it with the
 # scaling being measured separately above.
 PADDING_BATCH = 8
@@ -126,13 +126,13 @@ PREFILL_FIRST = 1 << 30
 # multiples of the chunk width so the last chunk of each prompt is short, and
 # deliberately more requests than the batch width so the schedule has something
 # queued. The arena is sized to hold all of them: if it could not, the trace would be
-# a picture of admission rather than of alternation.
+# a picture of admission instead of of alternation.
 TRACE_PROMPTS = (700, 300, 520, 180, 640, 420)
 TRACE_NEW_TOKENS = 24
 TRACE_BATCH = 4
 # Iterations allowed for a batch to become resident before the run is failed. Ten
 # times the chunks a full-context batch of 32 needs, so hitting it means something is
-# wrong rather than slow.
+# wrong instead of slow.
 ASSEMBLY_STEP_BUDGET = 4096
 
 
@@ -145,8 +145,8 @@ class ScalingPoint:
     Throughput is the other direction and `tokens_per_s` carries it.
 
     `scheduler_overhead_p50_ms` is the wall time around `step()` minus the duration
-    the runtime reported for the invocation inside it -- the Python scheduler's own
-    cost, measured rather than assumed to be negligible. Differenced per step and then
+    the runtime reported for the invocation inside it, the Python scheduler's own
+    cost, measured, not assumed to be negligible. Differenced per step and then
     taken as a median, not the difference of two medians: the second cannot be
     negative and the first can, which is how the mistake announced itself.
     """
@@ -197,7 +197,7 @@ class PaddingPoint:
 class StepSplit:
     """A decode step's cost, split into what a batch can amortise and what it cannot.
 
-    Refitted here from this script's own batch-1 points rather than read from
+    Refitted here from this script's own batch-1 points instead of read from
     `results/decode_profiles.json`, so the prediction and the measurement it is
     compared against come from one run at one thermal state. That it also reproduces
     the P3 fit is a cross-check worth having; that it is fitted from the same run is
@@ -240,7 +240,7 @@ class AlternationTrace:
     Recorded at two settings of `prefill_chunks_per_decode` because that knob is the
     trade the scheduler's docstring describes: more chunks per decode step is faster
     to first token and stalls resident sequences for longer. `max_decode_gap_ms` is
-    the measured version of that stall -- the longest a sequence that was already
+    the measured version of that stall, the longest a sequence that was already
     decoding went without a token.
     """
 
@@ -295,10 +295,10 @@ def _graph_bytes(graph: Path) -> int:
 def _prompt(length: int, *, vocab: int, seed: int) -> list[int]:
     """A fixed pseudo-random prompt, distinct per seed.
 
-    Distinct rather than one prompt repeated across the batch: identical rows would
+    Distinct instead of one prompt repeated across the batch: identical rows would
     time the same and hide a gather or mask fault that mixed one row's cache into
-    another's. Random rather than real text because this measures cost, and cost
-    depends on how many tokens there are rather than on which ones.
+    another's. Random instead of real text because this measures cost, and cost
+    depends on how many tokens there are instead of on which ones.
     """
     rng = np.random.default_rng(seed)
     return rng.integers(0, vocab, size=length).astype(np.int64).tolist()
@@ -360,7 +360,7 @@ def _assemble(
         f"the decode phase ({scheduler.waiting} still waiting, {client.free_blocks} of "
         f"{client.capacity_blocks} blocks free). The arena has to hold the whole batch "
         f"at once for a batched step to be measurable; size it from the widest batch "
-        f"and longest prompt in the sweep rather than from one point."
+        f"and longest prompt in the sweep instead of from one point."
     )
 
 
@@ -399,7 +399,7 @@ def _measure_steps(
                 f"expected a decode step over {expect_batch} sequence(s) and got a "
                 f"{step.kind} step over {step.batch_size}. With prefill running ahead "
                 f"of decode there should be nothing left to prefill by now, so this is "
-                f"a fault in the measurement rather than a slow result."
+                f"a fault in the measurement instead of a slow result."
             )
         record = step.records[0]
         samples["total"].append(record.total_ms)
@@ -408,9 +408,9 @@ def _measure_steps(
         samples["run"].append(record.run_ms)
         samples["scatter"].append(record.scatter_ms)
         samples["wall"].append(wall_ms)
-        # Paired, per step, rather than one aggregate minus another. Taking the median
+        # Paired, per step, instead of one aggregate minus another. Taking the median
         # of the wall times and subtracting the median of the durations mixes two
-        # aggregations -- a pooled median against a median of per-pass medians -- and
+        # aggregations, a pooled median against a median of per-pass medians, and
         # they disagree by more than the quantity being measured when the passes drift.
         # It produced a negative overhead at the widest batch, which is not a thing that
         # can happen: the wall clock around a call cannot be shorter than what the call
@@ -553,7 +553,7 @@ def padding_regimes(*, longest: int, batch_size: int, floor: float) -> dict[str,
     """Three batches: all longest, spread up to longest, all at the spread's mean.
 
     The spread is linear from `floor * longest` to `longest` so the mean is stated
-    rather than sampled, which keeps the uniform-at-mean regime exactly comparable to
+    instead of sampled, which keeps the uniform-at-mean regime exactly comparable to
     it. A sampled spread would differ in mean from run to run and the subtraction
     would carry that difference.
     """
@@ -576,7 +576,7 @@ def tokens_disagree(expected: list[int], actual: list[int]) -> bool:
     """Whether two runs of one prompt emitted different tokens.
 
     Compared over the prefix both produced. Batch widths are measured with different
-    token budgets -- assembling a wider batch spends more of them -- so the shorter run
+    token budgets, assembling a wider batch spends more of them, so the shorter run
     bounds the comparison. Trimming to the shorter is not a weakening of the check: a
     divergence at step k shows up in every run that reached step k, and the first
     batched step is step one.
@@ -619,14 +619,14 @@ def fit_step_split(scaling: list[ScalingPoint]) -> StepSplit:
 def apply_scaling_derivations(scaling: list[ScalingPoint], split: StepSplit) -> None:
     """Fill in the speedups, once every point at a cached length has been measured.
 
-    Derived rather than measured separately: the denominator is the batch-1 point at
+    Derived instead of measured separately: the denominator is the batch-1 point at
     the same cached length, so a run that measured them at different times would be
     comparing across thermal states.
     """
     serial = {point.cached_tokens: point.step.p50_ms for point in scaling if point.batch_size == 1}
     # One cached length cannot separate the constant term from the per-token one, so a
     # single-point fit reports a slope of zero and would predict perfect amortisation
-    # at every width. That is an artefact of the sweep rather than a prediction, so the
+    # at every width. That is an artefact of the sweep, not a prediction, so the
     # comparison is withheld instead of being printed as a failure of the model.
     predictable = split.fitted_from_points >= 2
     for point in scaling:
@@ -658,8 +658,8 @@ def record_alternation(
 ) -> AlternationTrace:
     """Drive a whole schedule and record every iteration of it.
 
-    One trace, driven to completion, at the scheduler's own alternation setting rather
-    than the prefill-first assembly the scaling points use. This is where a decode
+    One trace, driven to completion, at the scheduler's own alternation setting and not
+    the prefill-first assembly the scaling points use. This is where a decode
     step stalling behind a prefill chunk is visible, so it is measured here and not
     inferred from the chunk width.
     """
@@ -683,7 +683,7 @@ def record_alternation(
 
     steps: list[TraceStep] = []
     # Wall clock of each token, per sequence, so the gap a stalled sequence saw is
-    # measured rather than derived from the chunk width.
+    # measured instead of derived from the chunk width.
     token_times: dict[str, list[float]] = {request_id: [] for request_id in request_ids}
     origin = time.perf_counter()
     while not scheduler.idle():
@@ -761,9 +761,9 @@ def blocks_for_sweep(
 ) -> int:
     """Arena size the widest configuration in this sweep needs.
 
-    Derived rather than defaulted: a fixed block count silently caps how wide a batch
+    Derived instead of defaulted: a fixed block count silently caps how wide a batch
     can be measured, and the failure mode is a sweep that stops early with a message
-    about the arena rather than a wrong number, which is better but still avoidable.
+    about the arena instead of a wrong number, which is better but still avoidable.
     """
     longest = max(cached_lengths)
     per_sequence = min(max_context, longest + max(batch_sizes) + steps + 4)
@@ -782,7 +782,7 @@ def feasible(cached_tokens: int, batch_size: int, steps: int, max_context: int) 
     Assembling a batch of B costs the first sequence B tokens before the measurement
     starts, so a wide batch at a nearly full cache runs past the position table. GPT-2
     stops at 1024 and exceeding it is an out-of-bounds Gather inside ONNX Runtime
-    rather than a graceful stop.
+    instead of a graceful stop.
     """
     return cached_tokens + batch_size + steps + 4 <= max_context
 
@@ -794,7 +794,7 @@ def host_metadata(
 ) -> dict[str, object]:
     """What the run was taken on, including the settings that change the numbers.
 
-    `intra_op_num_threads` is read from the run rather than written as a constant. It
+    `intra_op_num_threads` is read from the run instead of written as a constant. It
     was a hardcoded 1 while the thread count was not configurable, and leaving it that
     way once it was would have made every recorded artefact describe a configuration
     it had not been measured under. `copy_threads` is here for the same reason and was
@@ -1058,10 +1058,10 @@ def main() -> int:
         help=(
             "Stop ONNX Runtime's intra-op workers busy-waiting between parallel "
             "sections. They do by default, which starts the next section sooner and "
-            "holds the cores in between -- and what runs between two Runs here is a "
+            "holds the cores in between, and what runs between two Runs here is a "
             "bandwidth-bound gather. Measured at --copy-threads 8: it buys the gather "
             "1.9% and costs Run 1.79x, for a 1.65x worse step, so this is the control "
-            "that establishes the default rather than a lever. Off by default, "
+            "that establishes the default instead of a lever. Off by default, "
             "matching ONNX Runtime and every recorded number"
         ),
     )

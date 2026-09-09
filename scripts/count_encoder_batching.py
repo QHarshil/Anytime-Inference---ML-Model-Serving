@@ -1,9 +1,9 @@
-"""What encoder batching costs and changes, in counts rather than seconds.
+"""What encoder batching costs and changes, in counts instead of seconds.
 
 The encoder path had no batching, so every number in the variant frontier and the load
 sweep describes batch size 1. `serving/batching.py` adds it. This measures what that
 does to the *answers* and to the *work*, both of which are properties of the workload
-and the graph rather than of how busy the host is -- so unlike a throughput claim, none
+and the graph instead of of how busy the host is, so unlike a throughput claim, none
 of this needs a quiet machine and none of it is gated.
 
 Three questions, and the third is the one that produced a finding.
@@ -21,15 +21,15 @@ Three questions, and the third is the one that produced a finding.
    amortisation ceiling is explicit: nothing about batching can be worth more than the
    per-Run work it removes.
 
-3. **Does a request's answer depend on who shares its batch?** For FP32, no -- to
+3. **Does a request's answer depend on who shares its batch?** For FP32, no, to
    1.1e-05 of a logit, and it is the control here: logically independent of the
    quantisation question, so it says the harness is sound.
 
-   That 1.1e-05 is reduction order rather than noise. A padded row makes the pooled
+   That 1.1e-05 is reduction order instead of noise. A padded row makes the pooled
    sum longer, a vectorised reduction regroups its terms by lane, and float addition
-   is not associative -- so how far the answer moves depends on which kernel ran, and
+   is not associative, so how far the answer moves depends on which kernel ran, and
    differs by architecture. `tests/test_batching.py` bounds a synthetic case of it
-   rather than asserting equality, having first asserted equality and failed CI.
+   instead of asserting equality, having first asserted equality and failed CI.
 
    For INT8, **yes**. Both quantised variants carry 50 `DynamicQuantizeLinear` nodes,
    which compute an activation scale at runtime from the tensor actually fed. Batching
@@ -37,11 +37,11 @@ Three questions, and the third is the one that produced a finding.
    validation sentences it moves a logit by up to 1.2 and flips 0.2-0.7% of
    predictions.
 
-   **But the same is true of padding alone at batch 1**, which flips 4 of 872 -- so the
+   **But the same is true of padding alone at batch 1**, which flips 4 of 872, so the
    effect belongs to dynamic quantisation meeting a padded tensor, not to batching, and
    the shipped `padding="max_length"` benchmark already sits inside it. Accuracy moves
    by at most +-0.5pp and does not systematically fall. That is why this is reported as
-   a determinism property rather than an accuracy regression.
+   a determinism property instead of an accuracy regression.
 
 The FP32 accuracies this reproduces are 91.06% for DistilBERT and 90.14% for MiniLM,
 which are the numbers already in `configs/serving.yaml`. That agreement is not
@@ -74,7 +74,7 @@ from anytime_serving.utils.logger import get_logger  # noqa: E402
 
 LOGGER = get_logger("scripts.count_encoder_batching")
 
-# What the load sweep and the variant profiler tokenise to. Repeated here rather than
+# What the load sweep and the variant profiler tokenise to. Repeated here instead of
 # imported so this script does not drag their dependencies in, and asserted against
 # them by tests/test_count_encoder_batching.py.
 BENCHMARK_SEQUENCE_LENGTH = 128
@@ -98,7 +98,7 @@ VARIANT_PATHS = {
 
 # The op types the census below reports. `DynamicQuantizeLinear` is the mechanism
 # under test; the rest are there because counting zero of it proves nothing on its
-# own -- an FP32 graph also has zero. What distinguishes a static INT8 graph from an
+# own, an FP32 graph also has zero. What distinguishes a static INT8 graph from an
 # unquantised one is that the weights are 8-bit and the scales are initialisers.
 CENSUS_OPS = (
     "DynamicQuantizeLinear",
@@ -114,7 +114,7 @@ CENSUS_OPS = (
 def group_in_arrival_order(count: int, width: int) -> list[list[int]]:
     """Split `count` requests into contiguous batches of at most `width`.
 
-    Arrival order rather than length-sorted. Sorting by length is what the decoder's
+    Arrival order instead of length-sorted. Sorting by length is what the decoder's
     `length_bucketing` does and it would shrink the padding below; measuring the
     unsorted case first is what says how much there is to shrink.
     """
@@ -139,7 +139,7 @@ def fixed_padding_fraction(lengths: Sequence[int], sequence_length: int) -> floa
     """Padding share when every row is padded to a fixed width, batched or not.
 
     This is what the committed encoder benchmarks do at `sequence_length = 128`, and it
-    is the baseline any batched number here has to beat rather than be compared against
+    is the baseline any batched number here has to beat instead of be compared against
     zero.
     """
     if not lengths:
@@ -177,7 +177,7 @@ def _assemble(
 def _quantise_nodes(path: Path) -> int:
     """How many `DynamicQuantizeLinear` nodes the graph carries.
 
-    The mechanism behind the INT8 result, counted rather than asserted: each one
+    The mechanism behind the INT8 result, counted instead of asserted: each one
     computes an activation scale from the tensor it is handed, so a batched or padded
     tensor gives a different scale to every row in it.
     """
@@ -262,7 +262,7 @@ def measure_variant(
         logits = np.concatenate([run(f) for f in outputs])
         flips = int((logits.argmax(1) != reference.argmax(1)).sum())
         accuracy = float((logits.argmax(1) == labels).mean())
-        # Per request rather than over the whole array, because a maximum cannot tell
+        # Per request instead of over the whole array, because a maximum cannot tell
         # one sentence sitting on a rounding boundary apart from every sentence
         # wobbling. `rows_moved` is what separates those two, and they have different
         # causes: a threshold crossing in a fixed quantisation grid against float
@@ -429,10 +429,10 @@ def main() -> int:
         "dataset": "glue/sst2 validation",
         "gated": False,
         "host": {
-            # Recorded rather than pinned. The counts here do not depend on the host,
+            # Recorded instead of pinned. The counts here do not depend on the host,
             # but `max_abs_logit_delta` does: it is reduction order, the kernel that
             # runs follows the ONNX Runtime version, and pyproject.toml carries a
-            # floor rather than a pin. See docs/runtime.md, "Why the floor is not a
+            # floor instead of a pin. See docs/runtime.md, "Why the floor is not a
             # pin".
             "onnxruntime": ort.__version__,
             "machine": platform.machine(),

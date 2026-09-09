@@ -1,5 +1,5 @@
 [build-system]
-# The runtime is a compiled extension rather than a subprocess, so building the
+# The runtime is a compiled extension, not a subprocess, so building the
 # package means running CMake.
 #
 # onnxruntime appears here as a fallback, not as the authority. The extension has
@@ -74,7 +74,7 @@ cmake.version = ">=3.20"
 wheel.packages = ["src/anytime_serving"]
 # Keep the configure and build output visible. A version mismatch against the
 # onnxruntime wheel is reported as a configure-time error, and that message is
-# worth reading rather than burying.
+# worth reading instead of burying.
 build.verbose = true
 logging.level = "INFO"
 
@@ -99,7 +99,7 @@ ignore = [
 
 [tool.mypy]
 # numpy 2.5 onward writes PEP 695 `type` statements into its stubs, which mypy
-# refuses to parse when told to target an older version -- it fails inside
+# refuses to parse when told to target an older version. It fails inside
 # numpy/__init__.pyi before reaching any of this project's code. Support for
 # Python 3.10 is unaffected and still enforced elsewhere: ruff's target-version
 # rejects newer syntax, and the test matrix runs 3.10 directly.

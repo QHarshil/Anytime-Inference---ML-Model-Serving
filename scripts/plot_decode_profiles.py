@@ -48,7 +48,7 @@ SERIES_COLOURS = {
     "int4": "#1baf7a",
 }
 SERIES_MARKERS = {"fp32": "o", "int8": "s", "int4": "^"}
-# Chrome sits one shade off the surface rather than competing with the data.
+# Chrome sits one shade off the surface instead of competing with the data.
 INK = "#0b0b0b"
 INK_MUTED = "#52514e"
 GRID = "#e1e0d9"
@@ -68,7 +68,7 @@ def _style(axis: Any, *, xlabel: str, ylabel: str, title: str, label_room: bool 
     axis.tick_params(colors=INK_MUTED, labelsize=8)
     if label_room:
         # The end-of-line labels are drawn past the last point, so leave them room
-        # inside the axes rather than letting them run into the next panel.
+        # inside the axes instead of letting them run into the next panel.
         axis.margins(x=0.16)
 
 
@@ -76,8 +76,8 @@ def _label_ends(axis: Any, entries: list[tuple[float, float, str, str]]) -> None
     """Name each series at its right-hand end, so colour is not the only cue.
 
     Called after the data is plotted, because the labels are spread apart in display
-    space and that needs the resolved axis limits. Two series ending 7% apart -- fp32
-    and int8 routinely do -- otherwise print on top of each other, which is the one
+    space and that needs the resolved axis limits. Two series ending 7% apart, fp32
+    and int8 routinely do, otherwise print on top of each other, which is the one
     way a direct label is worse than no label at all.
     """
     if not entries:
@@ -291,13 +291,13 @@ def plot_arena_cost(data: dict, path: Path) -> None:
         color=INK_MUTED,
     )
 
-    # One precision's longest step, named rather than taken from a flattened max, so
+    # One precision's longest step, named instead of taken from a flattened max, so
     # the quoted bandwidth belongs to a row somebody can find in the JSON.
     reference = data["precisions"][0]
     longest = max(reference["decode"], key=lambda row: row["cached_tokens"])
     # MB per ms is GB per s, so there is no factor of 1000 here.
     bandwidth = longest["cache_mb"] / longest["gather_p50_ms"]
-    # Below the panels rather than inside one: the gather lines run corner to corner,
+    # Below the panels instead of inside one: the gather lines run corner to corner,
     # so there is no room in the axes that does not cross the data.
     figure.text(
         0.5,
@@ -329,8 +329,8 @@ def plot_chunked_prefill(data: dict, path: Path) -> None:
     figure, (left, right) = plt.subplots(1, 2, figsize=(11.0, 4.2))
 
     # Widths come from the first precision and the rest are plotted against them, so a
-    # precision measured at different widths would be visible as a short line rather
-    # than silently redrawing the axis.
+    # precision measured at different widths would be visible as a short line instead
+    # of silently redrawing the axis.
     widths = [row["chunk_tokens"] for row in _chunk_sweep(data["precisions"][0], prompt)]
     labels = ["one pass" if width == 0 else str(width) for width in widths]
     positions = list(range(len(widths)))
@@ -437,7 +437,7 @@ def main() -> int:
     if unknown:
         raise SystemExit(
             f"no colour is assigned to {sorted(unknown)}. A precision keeps one colour "
-            f"across every figure, so add it to SERIES_COLOURS rather than letting "
+            f"across every figure, so add it to SERIES_COLOURS instead of letting "
             f"matplotlib cycle one."
         )
 

@@ -10,16 +10,16 @@ The comparison this makes, and the one it deliberately does not
 Every row here is **sequence length 128 for every request**, which is what
 `run_load_sweep.py` and `profile_variants.py` tokenise to. So no arm pays more padding
 than any other and this isolates the GEMM effect alone. The padding a real ragged
-workload would add is measured separately and exactly by the counting script -- 18.7% at
-width 2 rising to 47.8% at width 32 -- and the two multiply. Mixing them into one number
+workload would add is measured separately and exactly by the counting script, 18.7% at
+width 2 rising to 47.8% at width 32, and the two multiply. Mixing them into one number
 would hide which half moved.
 
 What it does not measure is the pool. `intra_op_num_threads` is 1, as in serving, and the
 pool already turns N cores into N concurrent single-request Runs. So a width-K speedup
 below K is not a win: it is the same core-seconds spent less parallelisably. The decoder
 gains from batching because a one-token step is a GEMV with nothing to divide; a
-128-token encoder request is already a GEMM, which is why this was worth measuring rather
-than assuming.
+128-token encoder request is already a GEMM, which is why this was worth measuring,
+not assuming.
 
 The gate
 --------
@@ -30,14 +30,14 @@ the 12.893 ms in `configs/serving.yaml`. That control is *logically* independent
 treatment: at width 1 there is no batching, so it cannot move because batching worked or
 failed, and it is the same graph and the same number
 `scripts/ab_session_sharing.py` gates the encoder on. A pass whose control is outside the
-tolerance is discarded rather than recorded, which is the rule
+tolerance is discarded, not recorded, which is the rule
 `results/ab_copy_threads/check_arm.py` applies to the decoder arms.
 
 **One control session, used for every variant.** The first version of this script gated
 each variant on its own recorded service time, which silently gated nothing for the INT8
 variants: `configs/serving.yaml` carries service times for the two FP32 variants only, so
 `recorded` was None, the check was skipped, and the payload still declared itself gated.
-A separate control arm is what makes the claim true for every row rather than for two of
+A separate control arm is what makes the claim true for every row instead of for two of
 them.
 
 Arms alternate direction from pass to pass, so a host drifting monotonically through the
@@ -84,7 +84,7 @@ VARIANT_PATHS = {
 def time_width(session, declared: set[str], width: int, *, reps: int, warmup: int) -> float:
     """Median per-request ms for one Run of `width` rows at SEQUENCE_LENGTH.
 
-    Per request rather than per Run, so the number is directly comparable to the
+    Per request instead of per Run, so the number is directly comparable to the
     service time the planner uses and to every other width.
     """
     rng = np.random.default_rng(20260824 + width)

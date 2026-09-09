@@ -1,6 +1,6 @@
 """Sweep offered load through the batching scheduler and compare scheduling policies.
 
-The mechanism -- what a batched decode step costs and what padding adds to it -- is
+The mechanism, what a batched decode step costs and what padding adds to it, is
 measured by `profile_batching.py`. This measures the thing a scheduler exists for:
 what happens to time to first token and time per output token when requests arrive
 faster than one at a time can serve them.
@@ -9,9 +9,9 @@ Arrivals are an open-loop Poisson process at a swept rate, independent of comple
 which is the same shape `run_load_sweep.py` uses for the encoder lane and for the same
 reason. A closed-loop burst measures a makespan; it cannot show a saturation knee or a
 queueing tail, and the tail is what a scheduler is judged on. Load is expressed as a
-fraction of *measured* capacity rather than as a bare request rate: capacity here is
+fraction of *measured* capacity instead of as a bare request rate: capacity here is
 the completion rate the batched policy sustains with a full backlog, measured before
-the sweep starts rather than derived from a formula.
+the sweep starts instead of derived from a formula.
 
 Three policies, one arrival stream
 ----------------------------------
@@ -24,7 +24,7 @@ Three policies, one arrival stream
   batched-preempting  arena for fewer sequences than the batch width, with
                       BlockAdmission deciding who is resident. Past rho = 1 the arena
                       fills, so this is the configuration where preempt-and-recompute
-                      is on the critical path rather than a curiosity.
+                      is on the critical path instead of a curiosity.
 
 All three see the same arrival times and the same prompts, from the same seed.
 
@@ -41,8 +41,8 @@ with a capacity deliberately, and `resident_capacity` records it.
 The SLO is stated, not derived
 ------------------------------
 
-Attainment is measured against an absolute pair -- a time to first token target and a
-time per output token target -- and both are arguments. They are deliberately not
+Attainment is measured against an absolute pair, a time to first token target and a
+time per output token target, and both are arguments. They are deliberately not
 derived from the unloaded latency: a target set at a multiple of what one sequence
 alone achieves is a target defined by not batching, and batching would fail it by
 construction at every rate. The unloaded numbers are still measured and recorded, as
@@ -57,8 +57,8 @@ What `--bucketing-ab` measures instead
 
 Length bucketing decides *who shares a decode step*, so it can only do anything when
 more sequences are decoding than fit in one. None of the three policies above satisfy
-that -- `serial` is a batch of one and the other two hold no more sequences than the
-width -- so `--bucketing-ab` runs its own pair: one arena deeper than the batch width,
+that, `serial` is a batch of one and the other two hold no more sequences than the
+width, so `--bucketing-ab` runs its own pair: one arena deeper than the batch width,
 measured with the ordering rule off and on, over the spread workload where padding is
 what costs. It writes separate files, so a policy experiment cannot overwrite the
 recorded sweep.
@@ -118,12 +118,12 @@ QUICK_REQUESTS = 24
 # Primary workload. 256 prompt tokens and 64 generated: long enough that decode
 # dominates the request, short enough that a sweep of six rates against three policies
 # finishes in one sitting. The prompt-length and output-length trade is measured
-# separately by the matrix below rather than by moving this.
+# separately by the matrix below instead of by moving this.
 DEFAULT_PROMPT_TOKENS = 256
 DEFAULT_NEW_TOKENS = 64
 DEFAULT_BATCH = 8
 # Sequences the preempting policy's arena holds, against a batch width of 8. Half the
-# width, so eviction is reachable well before rho = 1 rather than only at the extreme.
+# width, so eviction is reachable well before rho = 1 instead of only at the extreme.
 PREEMPTING_RESIDENT = 4
 DEFAULT_BLOCK_TOKENS = 64
 DEFAULT_MAX_CONTEXT = 1024
@@ -139,8 +139,8 @@ SHAPE_MATRIX = ((128, 64), (512, 64), (896, 64), (256, 192))
 VARIANCE_LENGTHS = (64, 192, 320, 448)
 # Wall-clock ceiling for one point. Generous against the ~200s a slow point takes at
 # the default workload, tight enough that a mis-measured capacity fails in minutes
-# rather than overnight. See `drive` for why a point that overruns is failed rather
-# than truncated.
+# instead of overnight. See `drive` for why a point that overruns is failed and not
+# truncated.
 DEFAULT_POINT_BUDGET_S = 900.0
 
 # Arena depth for the bucketing A/B, in sequences, against a batch width of 8. Three
@@ -161,7 +161,7 @@ class PolicySpec:
     """A scheduling policy, as an arena size and a batch width.
 
     `resident_capacity` is how many full sequences of the workload the arena holds.
-    It is part of the policy rather than of the host: with the whole generation
+    It is part of the policy instead of of the host: with the whole generation
     reserved up front, that number is the concurrency limit.
 
     `length_bucketing` only means anything when `resident_capacity` exceeds
@@ -206,8 +206,8 @@ class RequestOutcome:
     """One request, as the client that sent it would have experienced it.
 
     `ttft_ms` is from arrival to first token and therefore includes every queue the
-    request sat in. `GenerationRecord.ttft_ms` is a different number -- the graph time
-    of the prefill alone -- and under load the two diverge by however long the request
+    request sat in. `GenerationRecord.ttft_ms` is a different number, the graph time
+    of the prefill alone, and under load the two diverge by however long the request
     waited, which is the quantity this sweep exists to measure.
     """
 
@@ -314,7 +314,7 @@ def blocks_for(*, sequences: int, tokens_each: int, block_tokens: int) -> int:
 def variance_workload(*, new_tokens: int, requests: int) -> WorkloadSpec:
     """The spread workload: four prompt lengths at the fixed workload's mean.
 
-    Holding the mean is what makes the comparison about variance rather than about
+    Holding the mean is what makes the comparison about variance instead of about
     length. Used by the shape matrix and by the bucketing A/B, from one definition so
     the two cannot drift into measuring different workloads.
     """
@@ -341,19 +341,19 @@ def drive(
 
     Open loop: a request arrives when its time comes whether or not anything finished.
     Arrivals are only noticed between iterations, which is a real property of a
-    synchronous scheduler rather than an artefact of this driver -- a server can admit
+    synchronous scheduler instead of an artefact of this driver, a server can admit
     only between the runs it is already doing.
 
-    While nothing is resident the driver sleeps to the next arrival rather than
+    While nothing is resident the driver sleeps to the next arrival instead of
     spinning, so an idle interval costs wall time and not CPU.
 
     `budget_s` bounds how long one point may take. A point's duration is
     `requests / (utilisation * capacity)` and capacity is *measured*, so a capacity
     that comes out low makes the arrival window grow without anything noticing: one
     run took 9h34m against a 28-minute predecessor because of it. Exceeding the
-    budget raises rather than truncating the point, because a partial point is a
-    latency distribution missing its slowest requests -- which is the half that
-    matters -- and reporting it would be worse than not measuring.
+    budget raises instead of truncating the point, because a partial point is a
+    latency distribution missing its slowest requests, which is the half that
+    matters, and reporting it would be worse than not measuring.
     """
     arrival_of: dict[str, float] = {}
     token_times: dict[str, list[float]] = defaultdict(list)
@@ -387,7 +387,7 @@ def drive(
             if submitted >= len(requests):
                 break
             # Nothing to do until the next arrival. Sleeping is what makes this an
-            # offered load rather than a backlog drained as fast as possible.
+            # offered load instead of a backlog drained as fast as possible.
             gap = arrivals[submitted] - (time.perf_counter() - origin)
             if gap > 0:
                 time.sleep(gap)
@@ -403,7 +403,7 @@ def drive(
                 f"{policy} at rho={utilisation}: the scheduler had "
                 f"{scheduler.waiting} request(s) waiting and "
                 f"{len(scheduler.preempted)} preempted but no work to do. That is a "
-                f"deadlock rather than an idle moment, so the run is failed instead of "
+                f"deadlock instead of an idle moment, so the run is failed instead of "
                 f"spinning."
             )
         steps.append(
@@ -549,7 +549,7 @@ def summarise(
 def _cost_model(path: Path, precision: str) -> CacheCost:
     """The fitted cost model the eviction policy needs.
 
-    Read from `profile_decode.py`'s output rather than written down here. A policy
+    Read from `profile_decode.py`'s output instead of written down here. A policy
     weighing recompute against deadline slack with made-up coefficients would evict the
     wrong sequences and look like it was working, which is the failure this project has
     already had once.
@@ -577,7 +577,7 @@ def _cost_model(path: Path, precision: str) -> CacheCost:
 def host_metadata(intra_op_threads: int) -> dict[str, object]:
     """What the run was taken on, including the settings that change the numbers.
 
-    `intra_op_num_threads` is read from the run rather than written as a constant. It
+    `intra_op_num_threads` is read from the run instead of written as a constant. It
     was a hardcoded 1 while the thread count was not configurable, and leaving it that
     way once it was would have made every recorded artefact describe a configuration
     it had not been measured under.
@@ -632,7 +632,7 @@ def measure_reference(
 ) -> tuple[float, float]:
     """Time to first token and time per output token for one request, alone.
 
-    Not the SLO -- the SLO is stated absolutely, because deriving it from this would
+    Not the SLO. That is stated absolutely, because deriving it from this would
     define the target by the absence of batching. This is the reference the loaded
     percentiles are read against.
     """
@@ -692,8 +692,8 @@ def measure_capacity(
 ) -> float:
     """Completion rate with a full backlog: the capacity the sweep is expressed against.
 
-    Measured rather than derived. A closed-loop backlog is the most favourable arrival
-    pattern there is -- the batch is always as full as the arena allows -- so a Poisson
+    Measured instead of derived. A closed-loop backlog is the most favourable arrival
+    pattern there is, the batch is always as full as the arena allows, so a Poisson
     stream at rho = 1 of this figure will not achieve it, which is the point of
     expressing load as a fraction of it.
     """
@@ -778,8 +778,8 @@ def run_point(
         rng=np.random.default_rng(seed),
     )[: workload.requests]
     if len(arrivals) < workload.requests:
-        # The Poisson draw came up short of the request count; pad the window rather
-        # than measuring fewer requests at this point than at the others.
+        # The Poisson draw came up short of the request count; pad the window instead
+        # of measuring fewer requests at this point than at the others.
         gap = 1.0 / max(offered_rps, 1e-9)
         last = arrivals[-1] if arrivals else 0.0
         arrivals = arrivals + [
@@ -825,10 +825,10 @@ def run_point(
 def bucketing_policies(*, batch: int, resident: int) -> tuple[PolicySpec, PolicySpec]:
     """The A/B arms: one arena, one batch width, one bit of policy between them.
 
-    `resident` has to exceed `batch` or the comparison is vacuous -- with every
+    `resident` has to exceed `batch` or the comparison is vacuous, with every
     resident sequence in every step there is nothing for an ordering rule to choose,
     which is exactly why the three policies the main sweep runs cannot show this
-    effect and why these two exist separately rather than joining them.
+    effect and why these two exist separately instead of joining them.
     """
     if resident <= batch:
         raise SystemExit(
@@ -874,7 +874,7 @@ def run_bucketing_ab(
     """Both halves of what bucketing is worth: capacity, then who waited.
 
     Each arm measures its own capacity, because the arms are being compared on what
-    they can sustain -- expressing one against the other's capacity would bake the
+    they can sustain, expressing one against the other's capacity would bake the
     answer into the axis. The load points are then a fraction of each arm's own
     figure, which is the same convention the main sweep uses between policies.
     """
@@ -942,7 +942,7 @@ def _write_bucketing_ab(
 ) -> int:
     """Run the A/B and write it to its own files.
 
-    Its own files rather than the sweep's: a run measuring one policy question must
+    Its own files instead of the sweep's: a run measuring one policy question must
     not be able to overwrite `decode_sweep.json`, which holds a different workload
     under different policies and is what the documented numbers come from.
     """
@@ -1038,7 +1038,7 @@ def main() -> int:
         type=float,
         default=DEFAULT_POINT_BUDGET_S,
         help=(
-            "Wall-clock ceiling for one point, after which the run fails rather than "
+            "Wall-clock ceiling for one point, after which the run fails instead of "
             f"continuing (default {DEFAULT_POINT_BUDGET_S:.0f})"
         ),
     )
@@ -1064,7 +1064,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Measure length bucketing against arrival order on the spread workload, "
-            "and nothing else. Writes decode_bucketing.json rather than "
+            "and nothing else. Writes decode_bucketing.json instead of "
             "decode_sweep.json, so it cannot overwrite the recorded sweep"
         ),
     )
@@ -1186,7 +1186,7 @@ def main() -> int:
     )
     LOGGER.info(
         "Unloaded: %.1f ms to first token, %.2f ms a token. SLO is %.0f / %.0f ms, "
-        "stated rather than derived from those",
+        "stated instead of derived from those",
         reference_ttft,
         reference_tpot,
         args.ttft_slo_ms,

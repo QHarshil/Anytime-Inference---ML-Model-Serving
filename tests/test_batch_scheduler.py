@@ -1,6 +1,6 @@
 """Tests for the continuous batching scheduler.
 
-The scheduler owns one decision -- what runs next -- and the assertion that matters
+The scheduler owns one decision, what runs next, and the assertion that matters
 is that owning it changes nothing about the answers. Every sequence has to emit the
 same tokens it would have emitted alone, whether it was batched with seven others,
 stalled behind somebody else's prefill chunk, evicted part way through and recomputed,
@@ -79,7 +79,7 @@ def test_every_sequence_emits_what_it_would_have_alone(
     and has to agree too, since it is the reference the batched ones are measured
     against. Bucketing reorders who shares a step, which is exactly the kind of change
     that must not reach the answers: at a cap of 3 there are four sequences to choose
-    three from, so it is choosing here rather than taking what it is given.
+    three from, so it is choosing here instead of taking what it is given.
     """
     requests = [_request(index, length=length) for index, length in enumerate([9, 6, 11, 4])]
     expected = {request.request_id: _alone(decoder_graph, request) for request in requests}
@@ -152,7 +152,7 @@ def _trace(scheduler):
     """Each iteration's kind, with how many sequences were decoding when it began.
 
     The condition matters. Consecutive prefill chunks are correct when nothing is
-    decoding -- there is nobody to starve, and refusing to get on with the prompts
+    decoding, there is nobody to starve, and refusing to get on with the prompts
     would be worse. The guarantee is about a sequence that *is* decoding, so the
     assertion has to know which iterations had one.
     """
@@ -199,7 +199,7 @@ def test_raising_the_chunk_budget_lets_prefill_run_ahead(decoder_graph):
     """The knob has to actually move the schedule, or it is decoration.
 
     With three chunks allowed per decode step, consecutive prefill chunks are exactly
-    what should happen -- that is the trade being bought.
+    what should happen. That is the trade being bought.
     """
     requests = [_request(index, length=12, max_new_tokens=3) for index in range(4)]
     with _client(decoder_graph) as client:
@@ -400,7 +400,7 @@ def test_logits_stay_the_next_token_distribution_through_a_batched_schedule(deco
 
 
 # Iterations allowed to get every sequence decoding. Alternation spends about three
-# per sequence, so this is generous enough that reaching it means a hang rather than
+# per sequence, so this is generous enough that reaching it means a hang instead of
 # a slow start.
 _ASSEMBLY_BUDGET = 400
 
@@ -412,9 +412,9 @@ def _batch_trace(client, scheduler, requests, *, steps):
     because the ordering rule has nothing to decide until residency exceeds the batch
     width, which is the whole condition under which bucketing does anything at all.
 
-    The range is snapshotted per step rather than recomputed at the end. Rows served
+    The range is snapshotted per step instead of recomputed at the end. Rows served
     more often have grown more, so one set of final lengths does not describe a batch
-    from twenty steps ago -- and a rule that keeps picking the same rows is exactly the
+    from twenty steps ago, and a rule that keeps picking the same rows is exactly the
     one that would be flattered by the mistake. Taken immediately after the step, when
     every row of that batch has gained the same single token, it is the range that was
     actually selected.
@@ -451,7 +451,7 @@ def _longest_gap(trace, request_ids):
     """The most decode steps any sequence went unserved.
 
     Counted from the start of the window, so a sequence never served at all is charged
-    the whole of it rather than being silently skipped.
+    the whole of it instead of being silently skipped.
     """
     worst = 0
     for request_id in request_ids:
@@ -495,7 +495,7 @@ def test_bucketing_puts_similar_lengths_in_one_step(decoder_graph):
 
 
 def test_no_sequence_waits_longer_than_the_decoding_set(decoder_graph):
-    """The starvation bound, which is a property of anchoring rather than a guard.
+    """The starvation bound, which is a property of anchoring, not a guard.
 
     The anchor is always the head of the queue and is always moved to the back, so an
     unserved sequence's position strictly decreases and it becomes the anchor within N
@@ -590,7 +590,7 @@ def test_bucketing_off_still_takes_the_front_of_the_queue(decoder_graph):
 
     Checked only on steps that did not just promote a sequence out of prefill. A
     promotion appends to the decoding set inside the same iteration, so the queue this
-    loop saw beforehand is genuinely not the one the batch was drawn from -- and once
+    loop saw beforehand is genuinely not the one the batch was drawn from, and once
     the queue is already at least a batch wide, appending to its back cannot change
     its front anyway.
     """
@@ -622,16 +622,16 @@ def _row_stability(decoder_graph, *, sequences, max_batch, bucketing, max_new_to
     """Contention, and how often a sequence keeps its row index between decode steps.
 
     Returns `(contention, index_stable, member_stable)`. Contention is the mean decoding
-    set size over the batch width, measured rather than assumed: it is set by how fast
+    set size over the batch width, measured, not assumed: it is set by how fast
     sequences finish against how fast they arrive, so submitting 96 requests does not
     mean 96 are resident. Getting that wrong reads the whole effect backwards.
 
     `index_stable` is the fraction of rows holding the same sequence as the same row in
-    the previous decode step -- the condition an incremental gather needs, because the
+    the previous decode step, the condition an incremental gather needs, because the
     staged tensor is addressed by row. `member_stable` is the weaker one: the sequence
     was somewhere in the previous batch, so a permutation could repair it.
 
-    No timing anywhere, so this is a property of the schedule rather than a measurement
+    No timing anywhere, so this is a property of the schedule, not a measurement
     of the host, and it is exactly reproducible.
     """
     client = _client(decoder_graph, num_blocks=32768)
@@ -670,8 +670,8 @@ def test_a_full_batch_moves_every_row_and_an_unfull_one_does_not(decoder_graph):
     step. Skipping that for a row whose sequence has not moved would be free, and whether
     it is worth building comes down to how often a row keeps its sequence.
 
-    It depends entirely on contention, and the change is a cliff rather than a slope.
-    Below one -- more slots than decoding sequences -- every sequence runs every step and
+    It depends entirely on contention, and the change is a cliff, not a slope.
+    Below one, more slots than decoding sequences, every sequence runs every step and
     a row turns over only when somebody finishes: about 94% stable. At and above one,
     `_run_decode_batch` rotates the served batch to the back of the queue so the next
     step draws different sequences, and stability falls to under 10%.
@@ -705,9 +705,9 @@ def test_length_bucketing_is_not_what_moves_the_rows(decoder_graph):
     """The rotation happens with bucketing off, so bucketing cannot be the cause.
 
     Worth pinning because the obvious suspect is wrong. Bucketing re-picks who shares a
-    step, so it looks like the thing that would move a sequence between rows -- but
+    step, so it looks like the thing that would move a sequence between rows, but
     `_run_decode_batch` rotates the queue whether it is on or off, and bucketing is
-    neutral to slightly favourable at matched contention rather than harmful.
+    neutral to slightly favourable at matched contention instead of harmful.
     """
     _, plain_index, _ = _row_stability(decoder_graph, sequences=96, max_batch=32, bucketing=False)
     _, bucketed_index, _ = _row_stability(decoder_graph, sequences=96, max_batch=32, bucketing=True)

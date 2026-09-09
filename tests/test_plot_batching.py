@@ -6,7 +6,7 @@ measured, or one that encodes an ordered quantity as if it were unordered.
 
 Four of those are checkable without looking at pixels: that the cache-occupancy ramp is
 assigned shortest to longest so darker always means more cache, that a precision with
-no colour assigned is refused rather than given whatever matplotlib cycles to next,
+no colour assigned is refused instead of given whatever matplotlib cycles to next,
 that a missing input skips its own figures instead of failing the run, and that the
 files land where they were asked for. Reading the render is still required and is not
 something a test does.
@@ -255,7 +255,7 @@ def _run(tmp_path, monkeypatch, *, mechanism=None, sweep=None, output=None):
 def test_the_occupancy_ramp_runs_shortest_to_longest():
     """Cache occupancy is a magnitude, so darker has to mean more of it.
 
-    Assigned by rank rather than by value, so a sweep at other lengths still reads in
+    Assigned by rank instead of by value, so a sweep at other lengths still reads in
     order. If this were assigned in whatever order the measurements happened to appear,
     the panel would still draw and would encode nothing.
     """
@@ -304,7 +304,7 @@ def test_every_drawn_phase_has_its_own_colour_and_label():
 
 def test_more_policies_than_colours_is_refused_rather_than_wrapped(tmp_path, monkeypatch):
     """Indexing modulo a three-colour palette gave a fourth policy the baseline's colour
-    and marker, which reads as the baseline plotted twice rather than as a new policy."""
+    and marker, which reads as the baseline plotted twice instead of as a new policy."""
     rows = [
         _sweep_row(policy, utilisation)
         for policy in ("serial", "batched-8", "batched-8-preempting", "invented-fourth")
@@ -317,8 +317,8 @@ def test_more_policies_than_colours_is_refused_rather_than_wrapped(tmp_path, mon
 
 
 def test_a_composition_precision_that_was_not_measured_is_skipped(tmp_path, monkeypatch):
-    """Skipped rather than raised: the other figures in the run are still honest, and an
-    absent precision is a fact about the measurement rather than a fault in the drawing."""
+    """Skipped instead of raised: the other figures in the run are still honest, and an
+    absent precision is a fact about the measurement, not a fault in the drawing."""
     data = _mechanism(precisions=[_profile("int8")])
     status, output = _run(tmp_path, monkeypatch, mechanism=data)
     assert status == 0
@@ -391,7 +391,7 @@ def test_the_scaling_figure_handles_one_precision(tmp_path, monkeypatch):
 
 
 def test_the_headline_sentence_quotes_the_widest_batch_at_both_extremes(tmp_path):
-    """The suptitle states the claim, so it has to come from the data rather than a guess."""
+    """The suptitle states the claim, so it has to come from the data instead of a guess."""
     sentence = plot._scaling_sentence(_mechanism())
     assert "batch 8" in sentence
     assert "2.33x" in sentence
@@ -403,12 +403,12 @@ def test_the_four_phases_account_for_the_measured_step():
     """The stack claims the four phases are the step. This is the claim, checked.
 
     `plot_step_composition` draws `run`, `gather`, `pad` and `scatter` as one stacked
-    column per batch width and takes each share against their sum rather than against the
+    column per batch width and takes each share against their sum instead of against the
     measured `step`, so a column reaches exactly 100%. That is only honest if the sum is
     the step, and the docstring quotes how closely: within 0.5% at every width, at the
     occupancy the figure draws.
 
-    Scoped the way the figure is scoped -- fp32, the widest cache occupancy -- rather than
+    Scoped the way the figure is scoped, fp32, the widest cache occupancy, instead of
     over every point in the file. The residual is larger at lower occupancies (4.0% at 512
     cached, 2.4% at 128) where the step is small enough for per-step overhead to show, and
     a test that averaged those in would be testing something the figure does not draw.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the offline profiling and evaluation pipeline.
 
-Stages are declared in ``STAGES`` rather than spelled out one call at a time, so
+Stages are declared in ``STAGES`` instead of spelled out one call at a time, so
 ``--quick`` reaches every stage that accepts it and the pass/fail policy for each
 stage is visible in one place.
 

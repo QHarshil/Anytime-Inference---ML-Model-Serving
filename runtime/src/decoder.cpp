@@ -49,9 +49,9 @@ DecoderSession::DecoderSession(const std::string& path, int block_tokens, std::s
 }
 
 void DecoderSession::derive_geometry(int block_tokens) {
-    // Read off the graph rather than taken from a model config. A config that
+    // Read off the graph instead of taken from a model config. A config that
     // disagrees with the graph it describes would produce a cache of the wrong
-    // shape, and the failure would be wrong logits rather than an error.
+    // shape, and the failure would be wrong logits and not an error.
     const auto inputs = index_by_name(model_->input_names());
     const auto outputs = index_by_name(model_->output_names());
 
@@ -157,7 +157,7 @@ bool DecoderSession::open(const std::string& id, int reserve_tokens) {
         blocks = pool_->allocate(needed);
         if (blocks.empty()) {
             // Refusing, not throwing: this is the admission controller asking
-            // whether there is room, and "no" is an answer rather than a failure.
+            // whether there is room, and "no" is an answer and not a failure.
             return false;
         }
     }
@@ -251,7 +251,7 @@ StepResult DecoderSession::step(const std::string& id, SequenceCache& sequence,
                                     static_cast<std::size_t>(geometry_.head_dim);
     const std::size_t halves = static_cast<std::size_t>(geometry_.layers) * 2;
 
-    // Sized to what the sequence reserved rather than to what this step needs.
+    // Sized to what the sequence reserved, not to what this step needs.
     // Growing to the exact past length would zero-fill a region the gather is about
     // to overwrite, and a decode step adds one token, so that cost would land on
     // every step. Sizing to the reservation instead means one growth per sequence
@@ -301,7 +301,7 @@ StepResult DecoderSession::step(const std::string& id, SequenceCache& sequence,
     if (has_attention_mask_) {
         // All ones, because on this path every cached position is attended to:
         // one sequence, so its past is exactly as wide as its length, and eviction
-        // drops a whole sequence rather than part of one. There is no hole here.
+        // drops a whole sequence and not part of one. There is no hole here.
         //
         // That is a property of running one sequence, not of the design. A batch
         // shares one past_sequence_length, so a row shorter than the longest is
@@ -353,7 +353,7 @@ StepResult DecoderSession::step(const std::string& id, SequenceCache& sequence,
     double verify_ms = 0.0;
     if (past_len > 0 && prefix_verified_.find(id) == prefix_verified_.end()) {
         // The scatter below writes only the new tail, which is only correct if the
-        // graph concatenates the past it was given rather than rewriting it.
+        // graph concatenates the past it was given instead of rewriting it.
         // Measured bitwise true on GPT-2, but it is a property of the exported
         // graph and not of the ONNX specification, so it is checked once per
         // sequence instead of trusted. A mismatch raises: scattering the whole
@@ -424,7 +424,7 @@ StepResult DecoderSession::prefill(const std::string& id, const std::vector<std:
 
     const int prompt = static_cast<int>(tokens.size());
     // Reserved up front so a prompt too large for the arena fails before any of it
-    // has been run, rather than part way through a chunked prefill.
+    // has been run, and not part way through a chunked prefill.
     reserve(id, sequence, prompt);
 
     const int width = chunk_tokens > 0 ? std::min(chunk_tokens, prompt) : prompt;
@@ -536,7 +536,7 @@ BatchStepResult DecoderSession::decode_batch(const std::vector<std::string>& ids
     const std::size_t wanted = std::max<std::size_t>(row_floats * batch, 1);
 
     // A batch whose rows are all the same length pads nothing, and then the clearing
-    // pass should cost exactly nothing rather than the price of walking every row to
+    // pass should cost exactly nothing, not the price of walking every row to
     // discover there is nothing to do. Deciding once keeps pad_ms an honest zero in
     // that case instead of a small number that invites being explained.
     bool needs_pad = false;
@@ -556,9 +556,9 @@ BatchStepResult DecoderSession::decode_batch(const std::vector<std::string>& ids
         }
     }
 
-    // Split over slots rather than over rows. Each slot owns its own staging buffer,
-    // so the tasks share nothing at all, and there are layers * 2 of them -- 24 on
-    // GPT-2 -- against a batch that may be 1. Splitting over rows would leave nothing
+    // Split over slots instead of over rows. Each slot owns its own staging buffer,
+    // so the tasks share nothing at all, and there are layers * 2 of them, 24 on
+    // GPT-2, against a batch that may be 1. Splitting over rows would leave nothing
     // to divide on the batch sizes where a decode step is cheapest.
     //
     // Below the floor the copy is small enough that synchronising costs more than it
@@ -645,7 +645,7 @@ BatchStepResult DecoderSession::decode_batch(const std::vector<std::string>& ids
 
     if (has_position_ids_) {
         // True absolute positions, so a padded row's new token is placed where the
-        // sequence says rather than where the batch's width would put it.
+        // sequence says, not where the batch's width would put it.
         position_ids_.resize(batch);
         for (std::size_t b = 0; b < batch; ++b) {
             position_ids_[b] = past_len[b];

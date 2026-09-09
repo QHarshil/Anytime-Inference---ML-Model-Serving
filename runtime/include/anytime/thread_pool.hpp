@@ -12,20 +12,20 @@ namespace anytime {
 
 /// A fixed set of worker threads for splitting one bulk copy across cores.
 ///
-/// Deliberately the smallest thing that does the job. There is exactly one caller --
-/// the KV gather in `DecoderSession::decode_batch` -- and it wants a blocking
+/// Deliberately the smallest thing that does the job. There is exactly one caller,
+/// the KV gather in `DecoderSession::decode_batch`, and it wants a blocking
 /// `parallel_for` over a few dozen independent slots, not a general task system. No
 /// work stealing: every slot of a decode step copies the same number of bytes, so a
 /// static split is already balanced and a deque per worker would only add contention.
 ///
-/// Persistent rather than spawned per call, because the work is sometimes small. At
+/// Persistent, not spawned per call, because the work is sometimes small. At
 /// batch 1 the whole gather is 0.18 ms and starting eight threads costs more than that,
 /// so a pool that spawned per step would be a slowdown at exactly the sizes where the
 /// gather is already cheap.
 ///
 /// Not a general-purpose pool in one important way: `parallel_for` must not be called
-/// from a worker. Nothing does, and a nested call would deadlock rather than
-/// misbehave quietly, so it is documented rather than detected.
+/// from a worker. Nothing does, and a nested call would deadlock instead of
+/// misbehaving quietly, so it is documented and not detected.
 class ThreadPool {
   public:
     /// `threads` is the total number of runners including the calling thread, so a
@@ -40,14 +40,14 @@ class ThreadPool {
 
     /// Run `body(i)` for every i in [0, count), and return once all of them have.
     ///
-    /// The calling thread takes a share rather than blocking, so a pool of one costs
+    /// The calling thread takes a share instead of blocking, so a pool of one costs
     /// nothing but a loop.
     ///
     /// An exception from any index is captured and rethrown here, because letting one
-    /// escape a worker calls std::terminate. Today's only caller cannot reach it --
+    /// escape a worker calls std::terminate. Today's only caller cannot reach it,
     /// `decode_batch` totals a batch's shortfall and refuses before it reserves
-    /// anything, so the gather never runs against a span that cannot hold it -- so
-    /// this is a guard against a future caller rather than a path under test. If
+    /// anything, so the gather never runs against a span that cannot hold it. So
+    /// this is a guard against a future caller and not a path under test. If
     /// several throw, the first by index wins and the rest are dropped; they are
     /// symptoms of one call.
     void parallel_for(std::size_t count, const std::function<void(std::size_t)>& body);

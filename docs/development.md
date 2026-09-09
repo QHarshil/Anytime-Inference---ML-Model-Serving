@@ -16,8 +16,8 @@ bindings are [pybind11](https://pybind11.readthedocs.io/en/stable/). An
 [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) SDK matching the
 `onnxruntime` wheel is downloaded once into
 `~/.cache/anytime-inference-planner/`; nothing needs to be fetched by hand. See
-[`../runtime/README.md`](../runtime/README.md) for why the version is derived rather
-than pinned.
+[`../runtime/README.md`](../runtime/README.md) for why the version is derived and not
+pinned.
 
 ### Dependency groups
 
@@ -53,7 +53,7 @@ Markers, declared in `pytest.ini` with `--strict-markers`:
 | `needs_torch` | requires torch, torchvision, or transformers |
 | `needs_runtime` | requires the compiled `anytime_runtime` extension |
 
-Tests skip cleanly rather than failing when an optional dependency is absent. The
+Tests skip cleanly when an optional dependency is absent, instead of failing. The
 serving tests build a tiny ONNX graph on the fly, so they need neither torch nor a
 compiled runtime.
 
@@ -66,9 +66,9 @@ supposed to provide and a missing one fails instead:
 ANYTIME_REQUIRE_BACKENDS=extension,python pytest -q tests/test_runtime_engine.py
 ```
 
-Two switches go the other way: they make an assertion stricter than the suite can
-afford by default, because what they demand is a property of one machine rather than
-of the code.
+Two switches go the other way. They make an assertion stricter than the suite can
+afford by default, because what they demand is a property of one machine and not of the
+code.
 
 | Variable | Demands |
 | --- | --- |
@@ -82,27 +82,39 @@ shipped once each: the first cost a clean clone, the second cost a red CI run.
 ## A teardown abort that leaves every test passing
 
 Running the `test-minimal` job's test list on macOS aborts at process teardown in about
-3 of 10 runs, on Python 3.12 and 3.14 and on ONNX Runtime 1.26.0 and 1.29.0:
+3 of 10 runs. Seen on Python 3.12 and 3.14, and on ONNX Runtime 1.26.0 and 1.29.0:
 
 ```
 libc++abi: terminating due to uncaught exception of type std::__1::system_error:
 recursive_mutex lock failed: Invalid argument
 ```
 
-**Every test passes and pytest reports success. Exit code 134 is the only signal.** So:
+Every test passes and pytest reports success. Exit code 134 is the only signal, so:
 
-- **Check `$?`, and distinguish 0 from 134 from anything else.** A loop that counts
-  non-zero cannot tell an abort from a harness that failed to run the tests at all.
-- **`pytest -q 2>&1 | tail -3` reports tail's exit code, not pytest's.**
-- **In zsh, an unquoted `$VAR` holding a list of paths is one argument.** `pytest -q
-  $TESTS` exits 4 with "file or directory not found", which reads as a failure if only
-  the exit code is checked. Use an array and `"${TESTS[@]}"`.
+- Check `$?`, and tell 0, 134 and everything else apart. A loop that counts non-zero
+  cannot tell an abort from a harness that never ran the tests.
+- `pytest -q 2>&1 | tail -3` reports tail's exit code, not pytest's.
+- In zsh an unquoted `$VAR` holding a list of paths is a single argument. `pytest -q
+  $TESTS` then exits 4 with "file or directory not found", which looks like a failure
+  if you only check the exit code. Use an array and `"${TESTS[@]}"`.
 
-The full suite is far less affected than the minimal list, which is the odd part.
-`recursive_mutex` is a C++ mutex, so `EINVAL` means locking storage that is already
-destroyed -- something touches ONNX Runtime state at static-destructor time. It has
-never fired on CI, and the likeliest reason is that CI is Linux and this message is
-libc++'s. `.claude/PROGRESS.md` has the captured `pip freeze` and the bisect so far.
+What is known so far:
+
+- The full suite is much less affected than the minimal list. Running more tests after
+  the minimal list makes the abort less likely, which is unexplained.
+- Dropping `tests/test_batching.py` from the list still gives 2 of 10, so the abort is
+  not confined to that module.
+- Arms measured at 3/10, 1/10 and 2/10 cannot be separated at n = 10. Do not read an
+  ordering into them.
+- `recursive_mutex` is a C++ mutex, so `EINVAL` means locking storage that is already
+  destroyed. Something touches ONNX Runtime state at static-destructor time.
+- It has never fired on CI. The likeliest reason is that CI runs Linux while this
+  message comes from libc++, so the next check is one CI run repeating the minimal
+  list ten times.
+
+The aborting environment, for comparison against a future one: Python 3.14.0, macOS
+arm64, `pip install -e . pytest`, onnxruntime 1.29.0 for both the wheel and the linked
+SDK, onnx 1.22.0, numpy 2.5.2, protobuf 7.36.0, pytest 9.1.1.
 
 ## Lint and types
 
@@ -184,34 +196,33 @@ python scripts/count_encoder_batching.py      # results/encoder_batching.json; c
 python scripts/profile_encoder_batching.py    # results/encoder_batching_timed.json; timed, gated, needs a quiet host
 ```
 
-`export_onnx.py` reuses an FP32 graph that is already on disk rather than rebuilding it:
-every committed encoder number was measured against the graph that is there, and a
+`export_onnx.py` reuses an FP32 graph that is already on disk instead of rebuilding
+it. Every committed encoder number was measured against the graph that is there, and a
 re-export differing by so much as a node would silently make those numbers describe
 something else. Delete the directory to force a rebuild.
 
-`export_decoder.py` takes `--model` and is model-agnostic, which was a claim until a
-second model existed to check it against. It holds, with one defect found and fixed:
-the KV geometry was read off the model config rather than off the graph. It now reads
-the graph, the way `DecoderSession::derive_geometry` does on the C++ side, and asserts
-the config agrees. **Give a second model its own `--output`**; the default would
-overwrite the GPT-2 profile.
+`export_decoder.py` takes `--model` and is model-agnostic. That was a claim until a
+second model existed to check it against. It holds, with one defect found and fixed.
+The KV geometry was read off the model config. It now reads the graph, the way
+`DecoderSession::derive_geometry` does on the C++ side, and asserts the config agrees.
+Give a second model its own `--output`, or the default overwrites the GPT-2 profile.
 
-The last two are the two halves of the encoder-batching question and they are separate
-on purpose. `count_encoder_batching.py` measures padding shares, run counts and whether
-a batched answer differs from an unbatched one -- all properties of the workload and the
-graph, so **it carries no host gate and a contended machine cannot corrupt it**.
-`profile_encoder_batching.py` times a Run at several widths, so it does: every pass
-re-measures width 1 against `configs/serving.yaml` and a pass outside the band is
-discarded rather than recorded. Splitting them is what let the counting half be finished
-on a busy host.
+The last two are the two halves of the encoder-batching question and they are
+separate on purpose. `count_encoder_batching.py` measures padding shares, run counts and
+whether a batched answer differs from an unbatched one. Those are all properties of the
+workload and the graph, so it carries no host gate and a contended machine cannot
+corrupt it. `profile_encoder_batching.py` times a Run at several widths, so it does need
+a gate. Every pass re-measures width 1 against `configs/serving.yaml` and a pass outside
+the band is discarded. Splitting them is what let the counting half be finished on a
+busy host.
 
-Ten files under `results/` are committed rather than ignored, listed in `.gitignore`
-and totalling 240 KB: the measurements every figure in `docs/img/` is drawn from, plus
-the tables on `docs/benchmarks.md` that have no figure -- session sharing and encoder
-batching. They are there so a checkout can redraw each figure and check the numbers in
-the docs against the data behind them, rather than having to take both on trust.
-Everything else under `results/` -- the A/B arm directories, the per-request CSVs, the
-inference cache -- stays ignored.
+Ten files under `results/` are committed, listed in `.gitignore` and totalling
+240 KB. They hold the measurements every figure in `docs/img/` is drawn from, plus the
+tables on `docs/benchmarks.md` that have no figure, meaning session sharing and encoder
+batching. A checkout can then redraw each figure and check the numbers in the docs
+against the data behind them, instead of taking both on trust. Everything else under
+`results/` stays ignored: the A/B arm directories, the per-request CSVs, and the
+inference cache.
 
 `decoder_profiles.json` and `decode_profiles.json` are different files by one
 letter: the first is what the export measured about each precision (size,
